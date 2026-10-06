@@ -231,6 +231,16 @@ void Session::storageCancel(quint32 requestId) {
     storage_->cancel(requestId);
 }
 
+void Session::storageUpload(const QString& devId, const QString& localPath, const QString& remoteFolder,
+                            quint32 requestId) {
+    const auto dev = parseDevId(devId);
+    if (!topic_ || !dev) {
+        emit storage_->uploadFinished(requestId, {}, tr("Not connected."));
+        return;
+    }
+    storage_->upload(*dev, localPath, remoteFolder, requestId);
+}
+
 void Session::requestServerStats() {
     if (!node_) {
         emit serverReport(tr("Not running."));

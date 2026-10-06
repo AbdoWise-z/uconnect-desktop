@@ -21,6 +21,7 @@ QVariant TransferListModel::data(const QModelIndex& index, int role) const {
     case TotalRole: return QVariant::fromValue(t.total);
     case StateRole: return t.state;
     case ErrorRole: return t.error;
+    case DirectionRole: return t.upload ? QStringLiteral("upload") : QStringLiteral("download");
     default: return {};
     }
 }
@@ -36,6 +37,7 @@ QHash<int, QByteArray> TransferListModel::roleNames() const {
         {TotalRole, "total"},
         {StateRole, "transferState"},
         {ErrorRole, "error"},
+        {DirectionRole, "direction"},
     };
 }
 
@@ -44,9 +46,10 @@ int TransferListModel::rowOf(quint32 id) const {
     return it == rows_.end() ? -1 : static_cast<int>(it - rows_.begin());
 }
 
-void TransferListModel::add(quint32 id, const QString& devId, const QString& remotePath) {
+void TransferListModel::add(quint32 id, const QString& devId, const QString& remotePath,
+                           const QString& localPath, bool upload) {
     beginInsertRows({}, static_cast<int>(rows_.size()), static_cast<int>(rows_.size()));
-    rows_.push_back({id, devId, remotePath, {}, 0, -1, QStringLiteral("active"), {}});
+    rows_.push_back({id, devId, remotePath, localPath, 0, -1, QStringLiteral("active"), {}, upload});
     endInsertRows();
     emit activeCountChanged();
 }
@@ -63,7 +66,8 @@ void TransferListModel::finish(quint32 id, const QString& localPath, const QStri
     const int row = rowOf(id);
     if (row < 0) return;
     Transfer& t = rows_[row];
-    t.localPath = localPath;
+    if (!t.upload) t.localPath = localPath;
+    else if (!localPath.isEmpty()) t.remotePath = localPath;
     t.error     = error;
     t.state     = canceled ? QStringLiteral("canceled")
                   : error.isEmpty() ? QStringLiteral("done")
@@ -75,6 +79,11 @@ void TransferListModel::finish(quint32 id, const QString& localPath, const QStri
 QString TransferListModel::fileName(quint32 id) const {
     const int row = rowOf(id);
     return row < 0 ? QString() : rows_.at(row).remotePath.section(QLatin1Char('/'), -1);
+}
+
+QString TransferListModel::devId(quint32 id) const {
+    const int row = rowOf(id);
+    return row < 0 ? QString() : rows_.at(row).devId;
 }
 
 int TransferListModel::activeCount() const {

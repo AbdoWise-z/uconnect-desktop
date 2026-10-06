@@ -132,6 +132,7 @@ public:
     // `transfers`; the returned id identifies the request.
     Q_INVOKABLE quint32 storageList(const QString& devId, const QString& path);
     Q_INVOKABLE quint32 storageDownload(const QString& devId, const QString& remotePath);
+    Q_INVOKABLE int     storageUpload(const QString& devId, const QString& remoteFolder, const QList<QUrl>& files);
     Q_INVOKABLE void    storageCancel(quint32 requestId);
     Q_INVOKABLE void    showInFolder(const QString& localPath) const;
     Q_INVOKABLE QString localPath(const QUrl& url) const;
@@ -161,6 +162,7 @@ signals:
     void notify(const QString& message);
     void storageListed(quint32 requestId, const QString& path, const QVariantList& entries,
                        const QString& error);
+    void storageUploaded(const QString& devId, const QString& remotePath);
     void trustChanged();
 
 private:

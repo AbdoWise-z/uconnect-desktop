@@ -64,7 +64,7 @@ QtObject {
 
     function serviceDescription(service) {
         switch (service) {
-        case "storage": return qsTr("Browse shared folders and download files from them.")
+        case "storage": return qsTr("Browse shared folders, download files and upload new ones.")
         case "camera": return qsTr("View a live feed from the device's camera.")
         case "screen": return qsTr("Watch the device's screen.")
         case "control": return qsTr("See the device's screen and control its mouse and keyboard.")

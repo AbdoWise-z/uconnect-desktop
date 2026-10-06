@@ -1,9 +1,10 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import UConnect
 
-// Browses another device's shared folders and downloads files from them.
+// Browses another device's shared folders and transfers files in both directions.
 Item {
     id: view
 
@@ -18,6 +19,10 @@ Item {
     property bool loading: false
     property string error: ""
     property bool transfersOpen: false
+    readonly property var peer: { App.peers.revision; return App.peers.get(devId) }
+    readonly property bool uploadGranted: peer.grantedToMe !== undefined
+                                          && peer.grantedToMe.indexOf("storage.upload") >= 0
+    readonly property bool canUpload: connected && uploadGranted && path !== "/" && !loading && error.length === 0
 
     readonly property var current: fileList.currentIndex >= 0 && fileList.currentIndex < entries.count
                                    ? entries.get(fileList.currentIndex) : null
@@ -76,6 +81,20 @@ Item {
         App.storageDownload(devId, childPath(e.name))
         transfersOpen = true
     }
+    function upload(files) {
+        if (!canUpload) return false
+        const added = App.storageUpload(devId, path, files)
+        if (added > 0) transfersOpen = true
+        return added > 0
+    }
+
+    FileDialog {
+        id: uploadDialog
+        title: qsTr("Upload files to %1").arg(view.deviceName)
+        fileMode: FileDialog.OpenFiles
+        acceptLabel: qsTr("Upload")
+        onAccepted: view.upload(selectedFiles)
+    }
 
     ListModel {
         id: entries
@@ -93,6 +112,9 @@ Item {
             }
             for (const e of list) entries.append(e)
             fileList.currentIndex = entries.count > 0 ? 0 : -1
+        }
+        function onStorageUploaded(deviceId, remotePath) {
+            if (deviceId === view.devId && view.parentPath(remotePath) === view.path) view.load()
         }
     }
 
@@ -169,7 +191,15 @@ Item {
                     onClicked: view.download(fileList.currentIndex)
                 }
                 UToolButton {
-                    text: qsTr("Downloads")
+                    text: qsTr("Upload")
+                    enabled: view.canUpload
+                    tip: !view.uploadGranted ? qsTr("This device has not granted upload permission.")
+                         : view.path === "/" ? qsTr("Open a shared folder to upload files.")
+                         : qsTr("Choose files to upload to this folder")
+                    onClicked: uploadDialog.open()
+                }
+                UToolButton {
+                    text: qsTr("Transfers")
                     checkable: true
                     checked: view.transfersOpen
                     onClicked: view.transfersOpen = !view.transfersOpen
@@ -204,6 +234,18 @@ Item {
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
+
+            DropArea {
+                id: fileDrop
+                anchors.fill: parent
+                onEntered: drag => {
+                    drag.accepted = drag.hasUrls
+                }
+                onDropped: drop => {
+                    if (view.upload(drop.urls)) drop.accept(Qt.CopyAction)
+                    else drop.accepted = false
+                }
+            }
 
             ListView {
                 id: fileList
@@ -339,9 +381,59 @@ Item {
                     onClicked: view.load()
                 }
             }
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: 8
+                visible: fileDrop.containsDrag
+                color: Theme.panel
+                opacity: 0.96
+                radius: Theme.radius
+                border.width: 2
+                border.color: view.canUpload ? Theme.accent : Theme.border
+
+                ColumnLayout {
+                    anchors.centerIn: parent
+                    width: Math.min(440, parent.width - 48)
+                    spacing: 10
+                    Text {
+                        Layout.fillWidth: true
+                        text: view.canUpload ? qsTr("Drop files to upload") : qsTr("Upload unavailable")
+                        font.pixelSize: 20
+                        font.bold: true
+                        horizontalAlignment: Text.AlignHCenter
+                        color: Theme.text
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WordWrap
+                        horizontalAlignment: Text.AlignHCenter
+                        color: Theme.textSecondary
+                        text: !view.connected ? qsTr("Connect to this device first.")
+                              : !view.uploadGranted ? qsTr("Ask this device to grant upload permission.")
+                              : view.path === "/" ? qsTr("Open a shared folder first.")
+                              : !view.canUpload ? qsTr("Wait for the folder to load, or retry the listing.")
+                              : qsTr("Upload to %1. Existing files are kept; duplicate names get a numbered suffix.").arg(view.path)
+                    }
+                }
+            }
         }
 
-        // --- downloads -------------------------------------------------------
+        Text {
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            Layout.topMargin: 6
+            Layout.bottomMargin: 6
+            text: view.path === "/" ? qsTr("Open a shared folder to upload files.")
+                  : view.uploadGranted ? qsTr("Drop local files here or use Upload. Folders are not supported.")
+                  : qsTr("This device has not granted upload permission.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.smallFontSize
+            wrapMode: Text.WordWrap
+        }
+
+        // --- transfers -------------------------------------------------------
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 1
@@ -365,7 +457,7 @@ Item {
                     Layout.rightMargin: 8
                     spacing: 10
                     Text {
-                        text: qsTr("Downloads")
+                        text: qsTr("Transfers")
                         color: Theme.text
                         font.bold: true
                     }
@@ -373,7 +465,7 @@ Item {
                         Layout.fillWidth: true
                         elide: Text.ElideMiddle
                         textFormat: Text.PlainText
-                        text: qsTr("Saved to %1").arg(App.downloadFolder)
+                        text: qsTr("Downloads saved to %1").arg(App.downloadFolder)
                         color: Theme.textSecondary
                         font.pixelSize: Theme.smallFontSize
                     }
@@ -407,6 +499,7 @@ Item {
                         required property real total
                         required property string transferState
                         required property string error
+                        required property string direction
 
                         readonly property bool mine: devId === view.devId
                         width: ListView.view.width
@@ -420,7 +513,14 @@ Item {
                             spacing: 12
 
                             Text {
-                                Layout.preferredWidth: 240
+                                Layout.preferredWidth: 62
+                                text: transfer.direction === "upload" ? qsTr("Upload") : qsTr("Download")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.smallFontSize
+                            }
+
+                            Text {
+                                Layout.preferredWidth: Math.min(200, view.width * 0.25)
                                 text: transfer.fileName
                                 textFormat: Text.PlainText
                                 elide: Text.ElideMiddle
@@ -466,7 +566,7 @@ Item {
                                 onClicked: App.storageCancel(transfer.transferId)
                             }
                             ULink {
-                                visible: transfer.transferState === "done"
+                                visible: transfer.transferState === "done" && transfer.direction === "download"
                                 text: qsTr("Show in Folder")
                                 font.pixelSize: Theme.smallFontSize
                                 onClicked: App.showInFolder(transfer.localPath)

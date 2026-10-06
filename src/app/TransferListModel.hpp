@@ -1,5 +1,5 @@
 #pragma once
-// Downloads from other devices' storage, newest last.
+// Uploads and downloads, newest last.
 
 #include <QAbstractListModel>
 #include <QString>
@@ -21,6 +21,7 @@ public:
         TotalRole,
         StateRole,  // "active" | "done" | "failed" | "canceled"
         ErrorRole,
+        DirectionRole,  // "upload" | "download"
     };
     Q_ENUM(Role)
 
@@ -30,10 +31,12 @@ public:
     QVariant               data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 
-    void add(quint32 id, const QString& devId, const QString& remotePath);
+    void add(quint32 id, const QString& devId, const QString& remotePath,
+             const QString& localPath = {}, bool upload = false);
     void progress(quint32 id, qint64 received, qint64 total);
     void finish(quint32 id, const QString& localPath, const QString& error, bool canceled);
     QString fileName(quint32 id) const;
+    QString devId(quint32 id) const;
 
     int activeCount() const;
     // Removes finished, failed and canceled rows.
@@ -52,6 +55,7 @@ private:
         qint64  total    = -1;
         QString state;
         QString error;
+        bool upload = false;
     };
     int rowOf(quint32 id) const;
 

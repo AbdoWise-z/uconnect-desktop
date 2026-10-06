@@ -17,7 +17,7 @@ Window {
         { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address startup automatically" },
         { id: "device", title: qsTr("Device"), depth: 0, keywords: "name computer" },
         { id: "services", title: qsTr("Services"), depth: 0, keywords: "offer share" },
-        { id: "storage", title: Theme.serviceLabel("storage"), depth: 1, parent: "services", keywords: "files shared folders download" },
+        { id: "storage", title: Theme.serviceLabel("storage"), depth: 1, parent: "services", keywords: "files shared folders download upload drag drop" },
         { id: "camera", title: Theme.serviceLabel("camera"), depth: 1, parent: "services", keywords: "video webcam" },
         { id: "screen", title: Theme.serviceLabel("screen"), depth: 1, parent: "services", keywords: "display" },
         { id: "control", title: Theme.serviceLabel("control"), depth: 1, parent: "services", keywords: "mouse keyboard" },
@@ -389,7 +389,7 @@ Window {
             }
             Indented {
                 Help {
-                    text: qsTr("Devices in the topic can browse the folders below and download any file in them. They cannot change, add or delete anything.")
+                    text: qsTr("Devices can browse, download or upload files in these folders when you grant the corresponding permission. Uploads add new files without overwriting existing ones.")
                 }
             }
 

@@ -119,6 +119,21 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
                 else if (!canceled)
                     emit notify(tr("Download of %1 failed: %2").arg(transfers_.fileName(id), error));
             });
+    connect(storage, &StorageService::uploadProgress, this, [this](quint32 id, qint64 sent, qint64 total) {
+        transfers_.progress(id, sent, total);
+    });
+    connect(storage, &StorageService::uploadFinished, this,
+            [this](quint32 id, const QString& remotePath, const QString& error) {
+                const bool canceled = canceled_.remove(id);
+                const QString devId = transfers_.devId(id);
+                transfers_.finish(id, remotePath, error, canceled);
+                if (error.isEmpty()) {
+                    emit notify(tr("Uploaded %1").arg(transfers_.fileName(id)));
+                    emit storageUploaded(devId, remotePath);
+                } else if (!canceled) {
+                    emit notify(tr("Upload of %1 failed: %2").arg(transfers_.fileName(id), error));
+                }
+            });
 
     worker_.setObjectName(QStringLiteral("uconnect-session"));
     worker_.start();
@@ -399,6 +414,29 @@ quint32 AppController::storageDownload(const QString& devId, const QString& remo
 void AppController::storageCancel(quint32 requestId) {
     canceled_.insert(requestId);
     onSession([s = session_, requestId] { s->storageCancel(requestId); });
+}
+
+int AppController::storageUpload(const QString& devId, const QString& remoteFolder, const QList<QUrl>& files) {
+    if (remoteFolder == QLatin1String("/")) {
+        emit notify(tr("Open a shared folder before uploading."));
+        return 0;
+    }
+    int added = 0;
+    int skipped = 0;
+    QSet<QString> seen;
+    for (const QUrl& url : files) {
+        const QString path = url.toLocalFile();
+        const QFileInfo info(path);
+        if (!url.isLocalFile() || !info.isFile() || !info.isReadable()) { ++skipped; continue; }
+        if (seen.contains(info.absoluteFilePath())) continue;
+        seen.insert(info.absoluteFilePath());
+        const quint32 id = nextRequestId_++;
+        transfers_.add(id, devId, remoteFolder + QLatin1Char('/') + info.fileName(), path, true);
+        onSession([s = session_, devId, path, remoteFolder, id] { s->storageUpload(devId, path, remoteFolder, id); });
+        ++added;
+    }
+    if (skipped > 0) emit notify(tr("Skipped %n item(s). Uploads accept local files only.", nullptr, skipped));
+    return added;
 }
 
 void AppController::showInFolder(const QString& localPath) const {

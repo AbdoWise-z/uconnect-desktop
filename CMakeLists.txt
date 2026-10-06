@@ -209,6 +209,7 @@ if (UCD_BUILD_TESTS)
 
     function(ucd_add_test name)
         qt_add_executable(${name} tests/${name}.cpp)
+        set_target_properties(${name} PROPERTIES WIN32_EXECUTABLE FALSE)
         target_link_libraries(${name} PRIVATE uconnect_desktop_core Qt6::Test)
         add_test(NAME ${name} COMMAND ${name})
         if (WIN32)
@@ -218,4 +219,18 @@ if (UCD_BUILD_TESTS)
 
     ucd_add_test(IdentityTest)
     ucd_add_test(StorageServiceTest)
+
+    ucd_add_test(StorageViewTest)
+    target_sources(StorageViewTest PRIVATE
+        src/app/PeerListModel.cpp src/app/PeerListModel.hpp
+        src/app/TransferListModel.cpp src/app/TransferListModel.hpp)
+    target_link_libraries(StorageViewTest PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+    target_compile_definitions(StorageViewTest PRIVATE UCD_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    set_tests_properties(StorageViewTest PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+    if (WIN32)
+        set_property(TEST StorageViewTest APPEND PROPERTY ENVIRONMENT
+            "QT_PLUGIN_PATH=${QT6_INSTALL_PREFIX}/plugins"
+            "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
+    endif ()
 endif ()

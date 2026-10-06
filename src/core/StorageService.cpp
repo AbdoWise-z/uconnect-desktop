@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTimer>
+#include <QTemporaryFile>
 
 #include "core/Hello.hpp"
 #include "core/Permissions.hpp"
@@ -117,9 +118,9 @@ QJsonObject entryJson(const QFileInfo& fi, const QString& name) {
     };
 }
 
-std::vector<uint8_t> dataFrame(quint32 id, const QByteArray& bytes) {
+std::vector<uint8_t> dataFrame(quint32 id, const QByteArray& bytes, bool upload = false) {
     std::vector<uint8_t> out(static_cast<size_t>(bytes.size()) + 5);
-    out[0] = static_cast<uint8_t>(MessageKind::Data);
+    out[0] = static_cast<uint8_t>(upload ? MessageKind::StorageUploadData : MessageKind::Data);
     out[1] = static_cast<uint8_t>(id >> 24);
     out[2] = static_cast<uint8_t>(id >> 16);
     out[3] = static_cast<uint8_t>(id >> 8);
@@ -135,8 +136,8 @@ QString errorText(const QString& code) {
     if (code == QLatin1String("denied")) return StorageService::tr("Access denied.");
     if (code == QLatin1String("not_a_dir")) return StorageService::tr("Not a folder.");
     if (code == QLatin1String("not_a_file")) return StorageService::tr("Not a file.");
-    if (code == QLatin1String("busy")) return StorageService::tr("The device is busy with other downloads; try again shortly.");
-    if (code == QLatin1String("io")) return StorageService::tr("The device could not read the file.");
+    if (code == QLatin1String("busy")) return StorageService::tr("The device is busy with other transfers; try again shortly.");
+    if (code == QLatin1String("io")) return StorageService::tr("The device could not read or save the file.");
     if (code == QLatin1String("bad_request")) return StorageService::tr("The device rejected the request.");
     return StorageService::tr("The request failed.");
 }
@@ -188,11 +189,22 @@ StorageService::~StorageService() = default;
 void StorageService::setOffered(bool offered) {
     offered_ = offered;
     if (offered_) return;
-    for (const auto& [key, o] : outgoing_) sendError(o.dev, o.id, QStringLiteral("not_offered"));
-    outgoing_.clear();
+    std::erase_if(outgoing_, [&](const auto& kv) {
+        if (kv.second.upload) return false;
+        sendError(kv.second.dev, kv.second.id, QStringLiteral("not_offered"));
+        return true;
+    });
+    while (!incoming_.empty()) {
+        const auto key = incoming_.begin()->first;
+        failIncoming(key.first, key.second, QStringLiteral("not_offered"));
+    }
 }
 
 void StorageService::setSharedFolders(const QStringList& folders) {
+    while (!incoming_.empty()) {
+        const auto key = incoming_.begin()->first;
+        failIncoming(key.first, key.second, QStringLiteral("denied"));
+    }
     folders_.clear();
     cachedPath_.clear();
     for (const QString& path : folders) {
@@ -256,6 +268,10 @@ QJsonArray StorageService::listing(const QString& absolutePath, const SharedFold
         QDir::DirsFirst | QDir::Name | QDir::IgnoreCase);
     for (const QFileInfo& fi : infos) {
         if (!isValidComponent(fi.fileName())) continue;
+        const bool partial = std::any_of(incoming_.begin(), incoming_.end(), [&](const auto& kv) {
+            return kv.second.file->fileName().compare(fi.absoluteFilePath(), kPathCase) == 0;
+        });
+        if (partial) continue;
         if (fi.isSymLink() || fi.isJunction()) {
             const QString target = realPath(fi.absoluteFilePath());
             if (target.isEmpty() || !isWithin(target, folder.canonical)) continue;
@@ -315,10 +331,10 @@ void StorageService::serveRead(const uconnect::DevId& dev, const QJsonObject& re
     if (info.isDir()) return sendError(dev, *id, QStringLiteral("not_a_file"));
     if (!info.isFile()) return sendError(dev, *id, QStringLiteral("not_found"));
 
-    const auto key = std::make_pair(dev, *id);
+    const auto key = std::make_tuple(dev, *id, false);
     if (outgoing_.contains(key)) return sendError(dev, *id, QStringLiteral("bad_request"));
     const auto mine = std::count_if(outgoing_.begin(), outgoing_.end(),
-                                    [&](const auto& kv) { return kv.first.first == dev; });
+                                    [&](const auto& kv) { return kv.second.dev == dev && !kv.second.upload; });
     if (static_cast<size_t>(mine) >= kMaxOutgoingPerPeer) return sendError(dev, *id, QStringLiteral("busy"));
 
     auto file = std::make_unique<QFile>(resolved->second);
@@ -340,26 +356,49 @@ void StorageService::sendError(const uconnect::DevId& dev, quint32 id, const QSt
 // Sends file chunks round-robin across transfers until the budget for this
 // turn is spent or every peer's queue is full, then yields to the event loop.
 void StorageService::pump() {
+    for (auto it = replies_.begin(); it != replies_.end();) {
+        if (Clock::now() > it->deadline || send_(it->dev, it->message)) it = replies_.erase(it);
+        else ++it;
+    }
+    // Start at most four uploads per peer; additional files wait locally.
+    for (auto& [id, u] : uploads_) {
+        if (u.requested) continue;
+        const auto active = std::count_if(uploads_.begin(), uploads_.end(), [&](const auto& kv) {
+            return kv.second.dev == u.dev && kv.second.requested;
+        });
+        if (static_cast<size_t>(active) >= kMaxOutgoingPerPeer) {
+            u.deadline = Clock::now() + kRequestTimeout;
+            continue;
+        }
+        auto& o = outgoing_.at(std::make_tuple(u.dev, id, true));
+        if (!send_(u.dev, encodeControl({{"t", "fs.write"}, {"id", qint64(id)}, {"path", u.folder},
+                                         {"name", QFileInfo(u.localPath).fileName()}, {"size", u.total}})))
+            continue;
+        u.requested = true;
+        u.deadline = Clock::now() + kRequestTimeout;
+        o.ready = false;
+    }
     qint64 budget     = kPumpBudget;
     bool   progressed = true;
     while (budget > 0 && progressed) {
         progressed = false;
         for (auto it = outgoing_.begin(); it != outgoing_.end() && budget > 0;) {
             Outgoing& o = it->second;
+            if (!o.ready) { ++it; continue; }
             if (o.queue.empty() && !o.done) {
                 const QByteArray chunk = o.file->read(kChunkSize);
                 if (!chunk.isEmpty()) {
-                    o.queue.push_back(dataFrame(o.id, chunk));
+                    o.queue.push_back(dataFrame(o.id, chunk, o.upload));
                     o.sent += chunk.size();
                 } else {
                     const bool failed = o.file->error() != QFileDevice::NoError;
                     o.file->close();
                     o.done = true;
-                    o.queue.push_back(failed ? encodeControl({{"t", "fs.err"},
+                    o.queue.push_back(failed ? encodeControl({{"t", o.upload ? "fs.write.cancel" : "fs.err"},
                                                               {"id", qint64(o.id)},
                                                               {"code", "io"},
                                                               {"error", errorText(QStringLiteral("io"))}})
-                                             : encodeControl({{"t", "fs.read.end"},
+                                             : encodeControl({{"t", o.upload ? "fs.write.end" : "fs.read.end"},
                                                               {"id", qint64(o.id)},
                                                               {"sent", o.sent}}));
                 }
@@ -369,16 +408,186 @@ void StorageService::pump() {
                 continue;
             }
             budget -= static_cast<qint64>(o.queue.front().size());
+            if (o.upload) {
+                auto& u = uploads_.at(o.id);
+                if (o.queue.front()[0] == static_cast<uint8_t>(MessageKind::StorageUploadData))
+                    u.sent += static_cast<qint64>(o.queue.front().size()) - 5;
+                u.deadline = Clock::now() + kStallTimeout;
+                if (Clock::now() - u.lastProgress >= kProgressEvery || o.done) {
+                    u.lastProgress = Clock::now();
+                    emit uploadProgress(o.id, u.sent, u.total);
+                }
+            }
             o.queue.pop_front();
             progressed = true;
-            if (o.done && o.queue.empty()) it = outgoing_.erase(it);
+            if (o.done && o.queue.empty()) {
+                const quint32 id = o.id;
+                const bool failed = o.upload && o.file->error() != QFileDevice::NoError;
+                it = outgoing_.erase(it);
+                if (failed) finishUpload(id, {}, tr("Could not read the local file."));
+            }
             else ++it;
         }
     }
-    if (!outgoing_.empty()) pumpTimer_->start(budget > 0 ? 25 : 0);
+    if (!outgoing_.empty() || !replies_.empty()) pumpTimer_->start(budget > 0 ? 25 : 0);
 }
 
 // --- requester ----------------------------------------------------------------
+
+void StorageService::upload(const uconnect::DevId& dev, const QString& localPath,
+                            const QString& remoteFolder, quint32 id) {
+    const QFileInfo info(localPath);
+    auto file = std::make_unique<QFile>(localPath);
+    if (!info.isFile() || !file->open(QIODevice::ReadOnly)) {
+        emit uploadFinished(id, {}, tr("Select a readable file to upload. Folders are not supported."));
+        return;
+    }
+    Upload u;
+    u.dev = dev;
+    u.localPath = localPath;
+    u.folder = remoteFolder;
+    u.total = file->size();
+    u.deadline = Clock::now() + kRequestTimeout;
+    uploads_.emplace(id, std::move(u));
+    Outgoing o;
+    o.dev = dev;
+    o.id = id;
+    o.file = std::move(file);
+    o.upload = true;
+    o.ready = false;
+    outgoing_.emplace(std::make_tuple(dev, id, true), std::move(o));
+    emit uploadProgress(id, 0, info.size());
+    updateTicker();
+    if (!pumpTimer_->isActive()) pumpTimer_->start(0);
+}
+
+void StorageService::serveWrite(const uconnect::DevId& dev, const QJsonObject& req) {
+    const auto id = idOf(req);
+    if (!id) return;
+    const auto key = std::make_pair(dev, *id);
+    if (incoming_.contains(key)) return failIncoming(dev, *id, QStringLiteral("bad_request"));
+    if (!offered_) return failIncoming(dev, *id, QStringLiteral("not_offered"));
+    if (!authorize_(dev, perm::StorageUpload)) return failIncoming(dev, *id, QStringLiteral("forbidden"));
+    const auto active = std::count_if(incoming_.begin(), incoming_.end(), [&](const auto& kv) {
+        return kv.first.first == dev;
+    });
+    if (static_cast<size_t>(active) >= kMaxOutgoingPerPeer)
+        return failIncoming(dev, *id, QStringLiteral("busy"));
+
+    const QString path = req.value("path").toString();
+    const QString name = req.value("name").toString();
+    const qint64 total = req.value("size").toInteger(-1);
+    if (total < 0 || !isValidComponent(name) || name.contains(QLatin1Char('/')) || safeFileName(name) != name)
+        return failIncoming(dev, *id, QStringLiteral("bad_request"));
+    QString code;
+    const auto resolved = resolve(path, &code);
+    if (!resolved) return failIncoming(dev, *id, code);
+    if (!QFileInfo(resolved->second).isDir()) return failIncoming(dev, *id, QStringLiteral("not_a_dir"));
+
+    Incoming in;
+    in.folder = resolved->second;
+    in.root = resolved->first->canonical;
+    in.name = name;
+    in.virtualFolder = QLatin1Char('/') + path.split(QLatin1Char('/'), Qt::SkipEmptyParts).join(QLatin1Char('/'));
+    in.total = total;
+    in.deadline = Clock::now() + kStallTimeout;
+    in.file = std::make_unique<QTemporaryFile>(QDir(in.folder).filePath(QStringLiteral(".uconnect-upload-XXXXXX.part")));
+    if (!in.file->open()) return failIncoming(dev, *id, QStringLiteral("io"));
+    incoming_.emplace(key, std::move(in));
+    updateTicker();
+    sendWriteReply(dev, {{"t", "fs.write.r"}, {"id", qint64(*id)}});
+}
+
+void StorageService::sendWriteReply(const uconnect::DevId& dev, const QJsonObject& reply) {
+    auto message = encodeControl(reply);
+    if (send_(dev, message)) return;
+    // Bound retries even if a peer keeps requesting while its queue is full.
+    if (replies_.size() >= 256) return;
+    replies_.push_back({dev, std::move(message), Clock::now() + kRequestTimeout});
+    if (!pumpTimer_->isActive()) pumpTimer_->start(25);
+}
+
+void StorageService::failIncoming(const uconnect::DevId& dev, quint32 id, const QString& code) {
+    incoming_.erase(std::make_pair(dev, id));  // QTemporaryFile removes the partial file
+    updateTicker();
+    sendWriteReply(dev, {{"t", "fs.write.err"}, {"id", qint64(id)}, {"code", code}});
+}
+
+void StorageService::onWriteData(const uconnect::DevId& dev, std::span<const uint8_t> message) {
+    if (message.size() < 5) return;
+    const quint32 id = (quint32{message[1]} << 24) | (quint32{message[2]} << 16) |
+                       (quint32{message[3]} << 8) | quint32{message[4]};
+    const auto it = incoming_.find(std::make_pair(dev, id));
+    if (it == incoming_.end()) return;
+    if (!offered_ || !authorize_(dev, perm::StorageUpload))
+        return failIncoming(dev, id, QStringLiteral("forbidden"));
+    Incoming& in = it->second;
+    const auto bytes = message.subspan(5);
+    const qint64 n = static_cast<qint64>(bytes.size());
+    if (n > kChunkSize || n > in.total - in.received)
+        return failIncoming(dev, id, QStringLiteral("bad_request"));
+    if (in.file->write(reinterpret_cast<const char*>(bytes.data()), n) != n)
+        return failIncoming(dev, id, QStringLiteral("io"));
+    in.received += n;
+    in.deadline = Clock::now() + kStallTimeout;
+}
+
+void StorageService::onWriteEnd(const uconnect::DevId& dev, const QJsonObject& msg) {
+    const auto id = idOf(msg);
+    const auto it = id ? incoming_.find(std::make_pair(dev, *id)) : incoming_.end();
+    if (it == incoming_.end()) return;
+    if (!offered_ || !authorize_(dev, perm::StorageUpload))
+        return failIncoming(dev, *id, QStringLiteral("forbidden"));
+    Incoming& in = it->second;
+    if (in.received != in.total || msg.value("sent").toInteger(-1) != in.received)
+        return failIncoming(dev, *id, QStringLiteral("bad_request"));
+    // Re-resolve before saving: a changed share or link must not redirect a write.
+    QString code;
+    const auto resolved = resolve(in.virtualFolder, &code);
+    if (!resolved || resolved->second.compare(in.folder, kPathCase) != 0 ||
+        resolved->first->canonical.compare(in.root, kPathCase) != 0 ||
+        realPath(in.file->fileName()).isEmpty() || !isWithin(realPath(in.file->fileName()), in.root))
+        return failIncoming(dev, *id, QStringLiteral("denied"));
+    if (!in.file->flush()) return failIncoming(dev, *id, QStringLiteral("io"));
+    const QString finalPath = uniquePath(in.folder, in.name);
+    if (!in.file->rename(finalPath)) return failIncoming(dev, *id, QStringLiteral("io"));
+    in.file->setAutoRemove(false);
+    const QString remotePath = in.virtualFolder + QLatin1Char('/') + QFileInfo(finalPath).fileName();
+    incoming_.erase(it);
+    cachedPath_.clear();
+    updateTicker();
+    sendWriteReply(dev, {{"t", "fs.write.done"}, {"id", qint64(*id)}, {"path", remotePath}});
+}
+
+void StorageService::onWriteReply(const uconnect::DevId& dev, const QJsonObject& msg) {
+    const auto id = idOf(msg);
+    const auto it = id ? uploads_.find(*id) : uploads_.end();
+    if (it == uploads_.end() || it->second.dev != dev || !it->second.requested) return;
+    const QString type = msg.value("t").toString();
+    if (type == QLatin1String("fs.write.r")) {
+        const auto out = outgoing_.find(std::make_tuple(dev, *id, true));
+        if (out == outgoing_.end() || out->second.ready) return;
+        out->second.ready = true;
+        it->second.deadline = Clock::now() + kStallTimeout;
+        if (!pumpTimer_->isActive()) pumpTimer_->start(0);
+    } else if (type == QLatin1String("fs.write.done")) {
+        // A completion is valid only after every byte and the end frame were sent.
+        if (outgoing_.contains(std::make_tuple(dev, *id, true)) || it->second.sent != it->second.total) return;
+        emit uploadProgress(*id, it->second.sent, it->second.total);
+        finishUpload(*id, msg.value("path").toString(), {});
+    } else {
+        finishUpload(*id, {}, errorText(msg.value("code").toString()));
+    }
+}
+
+void StorageService::finishUpload(quint32 id, const QString& remotePath, const QString& error) {
+    auto node = uploads_.extract(id);
+    if (node.empty()) return;
+    outgoing_.erase(std::make_tuple(node.mapped().dev, id, true));
+    updateTicker();
+    if (!outgoing_.empty() && !pumpTimer_->isActive()) pumpTimer_->start(0);
+    emit uploadFinished(id, remotePath, error);
+}
 
 void StorageService::list(const uconnect::DevId& dev, const QString& path, quint32 id) {
     lists_[id] = PendingList{dev, path, {}, Clock::now() + kRequestTimeout};
@@ -401,6 +610,11 @@ void StorageService::download(const uconnect::DevId& dev, const QString& remoteP
 }
 
 void StorageService::cancel(quint32 id) {
+    if (auto it = uploads_.find(id); it != uploads_.end()) {
+        if (it->second.requested)
+            send_(it->second.dev, encodeControl({{"t", "fs.write.cancel"}, {"id", qint64(id)}}));
+        finishUpload(id, {}, tr("Canceled"));
+    }
     if (auto it = downloads_.find(id); it != downloads_.end()) {
         send_(it->second.dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
         finishDownload(id, tr("Canceled"));
@@ -538,6 +752,10 @@ void StorageService::finishDownload(quint32 id, const QString& error) {
 
 bool StorageService::handleMessage(const uconnect::DevId& dev, std::span<const uint8_t> message) {
     if (message.empty()) return false;
+    if (message[0] == static_cast<uint8_t>(MessageKind::StorageUploadData)) {
+        onWriteData(dev, message);
+        return true;
+    }
     // Storage is the only service sending data frames so far.
     if (message[0] == static_cast<uint8_t>(MessageKind::Data)) {
         onReadData(dev, message);
@@ -550,8 +768,16 @@ bool StorageService::handleMessage(const uconnect::DevId& dev, std::span<const u
 
     if (t == QLatin1String("fs.list")) serveList(dev, *msg);
     else if (t == QLatin1String("fs.read")) serveRead(dev, *msg);
+    else if (t == QLatin1String("fs.write")) serveWrite(dev, *msg);
+    else if (t == QLatin1String("fs.write.end")) onWriteEnd(dev, *msg);
+    else if (t == QLatin1String("fs.write.cancel")) {
+        if (const auto id = idOf(*msg)) incoming_.erase(std::make_pair(dev, *id));
+        updateTicker();
+    }
+    else if (t == QLatin1String("fs.write.r") || t == QLatin1String("fs.write.done") ||
+             t == QLatin1String("fs.write.err")) onWriteReply(dev, *msg);
     else if (t == QLatin1String("fs.cancel")) {
-        if (const auto id = idOf(*msg)) outgoing_.erase(std::make_pair(dev, *id));
+        if (const auto id = idOf(*msg)) outgoing_.erase(std::make_tuple(dev, *id, false));
     }
     else if (t == QLatin1String("fs.list.r")) onListPage(dev, *msg);
     else if (t == QLatin1String("fs.read.r")) onReadStart(dev, *msg);
@@ -561,7 +787,13 @@ bool StorageService::handleMessage(const uconnect::DevId& dev, std::span<const u
 }
 
 void StorageService::peerGone(const uconnect::DevId& dev) {
-    std::erase_if(outgoing_, [&](const auto& kv) { return kv.first.first == dev; });
+    std::erase_if(outgoing_, [&](const auto& kv) { return kv.second.dev == dev; });
+    std::erase_if(incoming_, [&](const auto& kv) { return kv.first.first == dev; });
+    std::erase_if(replies_, [&](const Reply& r) { return r.dev == dev; });
+    std::vector<quint32> uploads;
+    for (const auto& [id, u] : uploads_)
+        if (u.dev == dev) uploads.push_back(id);
+    for (quint32 id : uploads) finishUpload(id, {}, tr("The device disconnected."));
 
     std::vector<quint32> lists, downloads;
     for (const auto& [id, p] : lists_)
@@ -574,6 +806,9 @@ void StorageService::peerGone(const uconnect::DevId& dev) {
 
 void StorageService::reset() {
     outgoing_.clear();
+    incoming_.clear();
+    replies_.clear();
+    while (!uploads_.empty()) finishUpload(uploads_.begin()->first, {}, tr("Disconnected."));
     cachedPath_.clear();
     std::vector<quint32> lists, downloads;
     for (const auto& [id, p] : lists_) lists.push_back(id);
@@ -585,6 +820,17 @@ void StorageService::reset() {
 void StorageService::checkDeadlines() {
     const auto           now = Clock::now();
     std::vector<quint32> lists, downloads;
+    std::vector<quint32> uploads;
+    for (const auto& [id, u] : uploads_)
+        if (now > u.deadline) uploads.push_back(id);
+    for (quint32 id : uploads) {
+        send_(uploads_.at(id).dev, encodeControl({{"t", "fs.write.cancel"}, {"id", qint64(id)}}));
+        finishUpload(id, {}, tr("The upload stalled or the device did not respond."));
+    }
+    std::vector<std::pair<uconnect::DevId, quint32>> incoming;
+    for (const auto& [key, in] : incoming_)
+        if (now > in.deadline) incoming.push_back(key);
+    for (const auto& key : incoming) failIncoming(key.first, key.second, QStringLiteral("io"));
     for (const auto& [id, p] : lists_)
         if (now > p.deadline) lists.push_back(id);
     for (const auto& [id, d] : downloads_)
@@ -598,7 +844,7 @@ void StorageService::checkDeadlines() {
 }
 
 void StorageService::updateTicker() {
-    if (lists_.empty() && downloads_.empty()) ticker_->stop();
+    if (lists_.empty() && downloads_.empty() && uploads_.empty() && incoming_.empty()) ticker_->stop();
     else if (!ticker_->isActive()) ticker_->start();
 }
 
