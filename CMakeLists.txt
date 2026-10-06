@@ -26,7 +26,7 @@ set(UCONNECT_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     uconnect
     GIT_REPOSITORY https://github.com/AbdoWise-z/uconnect.git
-    GIT_TAG master
+    GIT_TAG 7fc35921de5ba67acb860defb246e65be68e3fa3
 )
 FetchContent_MakeAvailable(uconnect)
 # uconnect's targets use ${CMAKE_SOURCE_DIR}/include, which only points at its
@@ -167,6 +167,21 @@ endif ()
 set_target_properties(uconnect_desktop PROPERTIES
     WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
     MACOSX_BUNDLE TRUE)
+if (APPLE)
+    set_target_properties(uconnect_desktop PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "dev.uconnect.desktop"
+        MACOSX_BUNDLE_BUNDLE_NAME "uConnect"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
+    find_program(UCD_MACDEPLOYQT macdeployqt
+        HINTS "${QT6_INSTALL_PREFIX}/bin" "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}"
+        NO_DEFAULT_PATH REQUIRED)
+    add_custom_command(TARGET uconnect_desktop POST_BUILD
+        COMMAND "${UCD_MACDEPLOYQT}" "$<TARGET_BUNDLE_DIR:uconnect_desktop>"
+                "-qmldir=${CMAKE_CURRENT_SOURCE_DIR}/qml" -always-overwrite -codesign=-
+        COMMENT "Deploying Qt runtime inside the macOS app bundle"
+        VERBATIM)
+endif ()
 
 # --- Windows: make the build directory runnable -------------------------------
 # Copies the Qt DLLs, QML modules and plugins next to the executable, so it runs
@@ -209,7 +224,7 @@ if (UCD_BUILD_TESTS)
 
     function(ucd_add_test name)
         qt_add_executable(${name} tests/${name}.cpp)
-        set_target_properties(${name} PROPERTIES WIN32_EXECUTABLE FALSE)
+        set_target_properties(${name} PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
         target_link_libraries(${name} PRIVATE uconnect_desktop_core Qt6::Test)
         add_test(NAME ${name} COMMAND ${name})
         if (WIN32)

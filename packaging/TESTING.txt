@@ -1,0 +1,34 @@
+uConnect Desktop 0.1.0 -- file-sharing test build
+
+Start
+-----
+Windows: extract the entire ZIP, then run uConnect.exe.
+macOS: extract the ZIP, then open uConnect.app.
+The application includes its Qt runtime; testers do not need to install Qt.
+These are development builds without publisher signing or Apple notarization.
+
+Connect both devices
+--------------------
+1. Use the same reachable rendezvous server (host:port) on both devices.
+2. Create a New Topic on one device and privately share its Copy Link.
+3. Paste that link on the other device and Connect.
+4. Verify the device fingerprints and trust the other device.
+
+Test file sharing
+-----------------
+1. On the receiving device, open Settings > Services > Storage.
+   Enable Offer Storage and add a folder.
+2. In the other device's permissions, grant Storage > Observe, Download
+   and Upload as needed. Upload is a separate permission.
+3. On the sending device, open the receiver's Storage service, then
+   open a shared folder. The root list of shares is not an upload target.
+4. Drop local files into the browser, or click Upload to choose files.
+5. Check progress and cancellation in Transfers. Successful uploads
+   refresh the folder listing. Duplicate names receive a numbered suffix;
+   existing files are never overwritten. Folder uploads are not supported.
+6. Download a file back and compare its contents on the two devices.
+
+Both devices must use a version with upload support for upload tests.
+Downloads are saved to the folder configured in Settings > Services > Storage.
+The ZIP does not include a rendezvous server; use your existing server.
+View > Debug Window (Ctrl+Shift+D) provides the connection state and log.
