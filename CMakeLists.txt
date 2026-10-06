@@ -248,4 +248,14 @@ if (UCD_BUILD_TESTS)
             "QT_PLUGIN_PATH=${QT6_INSTALL_PREFIX}/plugins"
             "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
     endif ()
+
+    ucd_add_test(SettingsTest)
+    target_sources(SettingsTest PRIVATE
+        src/app/AppController.cpp src/app/AppController.hpp
+        src/app/PeerListModel.cpp src/app/PeerListModel.hpp
+        src/app/TransferListModel.cpp src/app/TransferListModel.hpp)
+    target_link_libraries(SettingsTest PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+    target_compile_definitions(SettingsTest PRIVATE UCD_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    get_property(_ucd_gui_test_environment TEST StorageViewTest PROPERTY ENVIRONMENT)
+    set_tests_properties(SettingsTest PROPERTIES ENVIRONMENT "${_ucd_gui_test_environment}")
 endif ()

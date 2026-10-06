@@ -118,6 +118,12 @@ Window {
         draft.services = next
     }
 
+    function addSharedFolder(url) {
+        const path = App.localPath(url)
+        if (path.length > 0 && draft.sharedFolders.indexOf(path) < 0)
+            draft.sharedFolders = draft.sharedFolders.concat([path])
+    }
+
     function openAt(pageId) {
         load()
         query = ""
@@ -140,11 +146,7 @@ Window {
     FolderDialog {
         id: shareFolderDialog
         title: qsTr("Choose a Folder to Share")
-        onAccepted: {
-            const path = App.localPath(selectedFolder)
-            if (path.length > 0 && draft.sharedFolders.indexOf(path) < 0)
-                draft.sharedFolders = draft.sharedFolders.concat([path])
-        }
+        onAccepted: dlg.addSharedFolder(selectedFolder)
     }
 
     FolderDialog {

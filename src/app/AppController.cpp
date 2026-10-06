@@ -214,9 +214,10 @@ void AppController::applySettings(const QVariantMap& values) {
     if (values.contains(Key::Services))
         setServices(servicesFromNames(values.value(Key::Services).toStringList()));
 
-    if (values.contains(Key::SharedFolders)) {
+    // The dialog uses public field names; Key::* names are the disk schema.
+    if (values.contains(QStringLiteral("sharedFolders"))) {
         QStringList folders;
-        for (const QString& f : values.value(Key::SharedFolders).toStringList())
+        for (const QString& f : values.value(QStringLiteral("sharedFolders")).toStringList())
             if (!f.trimmed().isEmpty() && !folders.contains(f)) folders << f;
         if (folders != sharedFolders_) {
             sharedFolders_ = folders;
@@ -225,8 +226,8 @@ void AppController::applySettings(const QVariantMap& values) {
             pushSharedFolders();
         }
     }
-    if (values.contains(Key::DownloadFolder)) {
-        const QString folder = values.value(Key::DownloadFolder).toString().trimmed();
+    if (values.contains(QStringLiteral("downloadFolder"))) {
+        const QString folder = values.value(QStringLiteral("downloadFolder")).toString().trimmed();
         if (!folder.isEmpty() && folder != downloadFolder_) {
             downloadFolder_ = folder;
             settings.setValue(Key::DownloadFolder, folder);
@@ -235,8 +236,8 @@ void AppController::applySettings(const QVariantMap& values) {
     }
 
     bool trustTouched = false;
-    if (values.contains(Key::DefaultPerms)) {
-        const QStringList perms = knownOnly(values.value(Key::DefaultPerms).toStringList());
+    if (values.contains(QStringLiteral("defaultPermissions"))) {
+        const QStringList perms = knownOnly(values.value(QStringLiteral("defaultPermissions")).toStringList());
         if (perms != defaultPermissions_) {
             defaultPermissions_ = perms;
             settings.setValue(Key::DefaultPerms, perms);

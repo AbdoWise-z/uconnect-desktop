@@ -6,7 +6,7 @@ Configure a Release build with the compiler and Qt paths appropriate for your ma
 
 ```powershell
 cmake -S . -B cmake-build-pkg -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/mingw_64
-cmake --build cmake-build-pkg --target uconnect_desktop IdentityTest StorageServiceTest StorageViewTest --parallel
+cmake --build cmake-build-pkg --target uconnect_desktop IdentityTest StorageServiceTest StorageViewTest SettingsTest --parallel
 ctest --test-dir cmake-build-pkg --output-on-failure
 powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Label test1
 ```
