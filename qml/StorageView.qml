@@ -162,22 +162,24 @@ Item {
     function fileNameOf(url) {
         return decodeURIComponent(url.toString().split("/").pop())
     }
-    // Uploads into `folder` (this one by default). Files that would clash with
-    // ones shown here can replace them if this device may write; otherwise
-    // they are added with a numbered name.
+    // Uploads files and folders into `folder` (this one by default). Items
+    // that clash with ones shown here can replace them (folders: merge into
+    // them) if this device may write; otherwise they get a numbered name.
     function upload(files, folder) {
         const target = folder !== undefined ? folder : path
         if (!canUploadTo(target)) return false
         if (target === path && canWrite) {
             const clashes = files.filter(url => entryNamed(fileNameOf(url)) !== null)
             if (clashes.length > 0) {
+                const folders = clashes.filter(url => entryNamed(fileNameOf(url)).dir).length
                 prompt.pending = { files: files, folder: target }
-                prompt.ask(qsTr("Replace existing files?"),
-                           clashes.length === 1
-                           ? qsTr("“%1” already exists in %2.").arg(fileNameOf(clashes[0])).arg(target)
-                           : qsTr("%1 of these files already exist in %2.").arg(clashes.length).arg(target),
+                prompt.ask(folders > 0 ? qsTr("Merge with existing folders?") : qsTr("Replace existing files?"),
+                           (clashes.length === 1
+                            ? qsTr("“%1” already exists in %2.").arg(fileNameOf(clashes[0])).arg(target)
+                            : qsTr("%1 of these items already exist in %2.").arg(clashes.length).arg(target))
+                           + (folders > 0 ? " " + qsTr("Merging adds to the existing folder and replaces files of the same name.") : ""),
                            [{ id: "keep", label: qsTr("Keep Both") },
-                            { id: "replace", label: qsTr("Replace"), primary: true }])
+                            { id: "replace", label: folders > 0 ? qsTr("Merge") : qsTr("Replace"), primary: true }])
                 return true
             }
         }
@@ -243,6 +245,12 @@ Item {
         fileMode: FileDialog.OpenFiles
         acceptLabel: qsTr("Upload")
         onAccepted: view.upload(selectedFiles)
+    }
+    FolderDialog {
+        id: uploadFolderDialog
+        title: qsTr("Upload a folder to %1").arg(view.deviceName)
+        acceptLabel: qsTr("Upload")
+        onAccepted: view.upload([selectedFolder])
     }
 
     PromptDialog {
@@ -404,12 +412,13 @@ Item {
                     onClicked: view.downloadSelection()
                 }
                 UToolButton {
-                    text: qsTr("Upload")
+                    id: uploadButton
+                    text: qsTr("Upload ▾")
                     enabled: view.canUpload
                     tip: !view.uploadGranted ? qsTr("This device has not granted upload permission.")
                          : view.path === "/" ? qsTr("Open a shared folder to upload files.")
-                         : qsTr("Choose files to upload to this folder")
-                    onClicked: uploadDialog.open()
+                         : qsTr("Upload files or a folder to this folder")
+                    onClicked: uploadMenu.popup(uploadButton, 0, uploadButton.height)
                 }
                 UToolButton {
                     text: qsTr("New Folder")
@@ -813,7 +822,7 @@ Item {
                     spacing: 10
                     Text {
                         Layout.fillWidth: true
-                        text: view.canUpload ? qsTr("Drop files to upload") : qsTr("Upload unavailable")
+                        text: view.canUpload ? qsTr("Drop files or folders to upload") : qsTr("Upload unavailable")
                         font.pixelSize: 20
                         font.bold: true
                         horizontalAlignment: Text.AlignHCenter
@@ -878,6 +887,18 @@ Item {
     }
 
     UMenu {
+        id: uploadMenu
+        UMenuItem {
+            text: qsTr("Files...")
+            onTriggered: uploadDialog.open()
+        }
+        UMenuItem {
+            text: qsTr("Folder...")
+            onTriggered: uploadFolderDialog.open()
+        }
+    }
+
+    UMenu {
         id: contextMenu
         UMenuItem {
             text: view.current && view.current.dir ? qsTr("Open") : qsTr("Download")
@@ -913,6 +934,11 @@ Item {
             text: qsTr("Upload Files...")
             enabled: view.canUpload
             onTriggered: uploadDialog.open()
+        }
+        UMenuItem {
+            text: qsTr("Upload Folder...")
+            enabled: view.canUpload
+            onTriggered: uploadFolderDialog.open()
         }
         UMenuSeparator {}
         UMenuItem {

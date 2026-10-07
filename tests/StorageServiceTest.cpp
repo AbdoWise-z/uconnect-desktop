@@ -296,6 +296,18 @@ private slots:
         QCOMPARE(second.localPath, QStringLiteral("/share/sub/New folder (1)"));
         QVERIFY(QFileInfo(share_ + "/sub/New folder").isDir());
 
+        // A folder upload merging: the existing folder is answered, not a new one.
+        QJsonObject merge = mkdir;
+        merge.insert("existing", true);
+        QCOMPARE(op(merge).localPath, QStringLiteral("/share/sub/New folder"));
+        QVERIFY(!QFileInfo::exists(share_ + "/sub/New folder (2)"));
+        // ...but never a link out of the share; that gets a folder of its own.
+        if (haveEscapeLink_) {
+            const auto out = op({{"t", "fs.mkdir"}, {"path", "/share"}, {"name", "escape"}, {"existing", true}});
+            QCOMPARE(out.localPath, QStringLiteral("/share/escape (1)"));
+            QVERIFY(QDir().rmdir(share_ + "/escape (1)"));
+        }
+
         QVERIFY(!op({{"t", "fs.mkdir"}, {"path", "/share/sub"}, {"name", "../x"}}).error.isEmpty());
         QVERIFY(!op({{"t", "fs.mkdir"}, {"path", "/share/../outside"}, {"name", "x"}}).error.isEmpty());
         QVERIFY(!QFileInfo::exists(outside_ + "/x"));

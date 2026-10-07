@@ -162,6 +162,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     connect(storage, &StorageService::operationFinished, this,
             [this](quint32 id, const QString& path, const QString& error) {
                 const QString devId = operationDevices_.take(id);
+                if (batchFolders_.contains(id)) return onBatchFolder(id, path, error);
                 if (!error.isEmpty()) emit notify(error);
                 emit storageOperationFinished(id, devId, path, error);
             });
@@ -170,6 +171,10 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
                 const bool canceled = canceled_.remove(id);
                 const QString devId = transfers_.devId(id);
                 transfers_.finish(id, remotePath, error, canceled);
+                if (batchOfUpload_.contains(id)) {
+                    if (error.isEmpty()) emit storageUploaded(devId, remotePath);
+                    return onBatchUpload(id, error, canceled);
+                }
                 if (error.isEmpty()) {
                     emit notify(tr("Uploaded %1").arg(transfers_.fileName(id)));
                     emit storageUploaded(devId, remotePath);
@@ -623,24 +628,124 @@ int AppController::storageUpload(const QString& devId, const QString& remoteFold
         emit notify(tr("Open a shared folder before uploading."));
         return 0;
     }
+    // With folders in the drop, everything goes in one batch with one summary.
+    const bool anyFolder = std::any_of(files.begin(), files.end(), [](const QUrl& url) {
+        return url.isLocalFile() && QFileInfo(url.toLocalFile()).isDir();
+    });
+    const quint32 batch = anyFolder ? nextRequestId_++ : 0;
+    if (anyFolder) {
+        uploadBatches_[batch].devId   = devId;
+        uploadBatches_[batch].replace = replace;
+    }
+
     int added = 0;
     int skipped = 0;
     QSet<QString> seen;
     for (const QUrl& url : files) {
-        const QString path = url.toLocalFile();
-        const QFileInfo info(path);
-        if (!url.isLocalFile() || !info.isFile() || !info.isReadable()) { ++skipped; continue; }
+        const QFileInfo info(url.toLocalFile());
+        if (!url.isLocalFile() || !info.exists() || !info.isReadable()) { ++skipped; continue; }
         if (seen.contains(info.absoluteFilePath())) continue;
         seen.insert(info.absoluteFilePath());
-        const quint32 id = nextRequestId_++;
-        transfers_.add(id, devId, remoteFolder + QLatin1Char('/') + info.fileName(), path, true);
-        onSession([s = session_, devId, path, remoteFolder, id, replace] {
-            s->storageUpload(devId, path, remoteFolder, id, replace);
-        });
+        if (info.isDir()) folderForBatch(batch, remoteFolder, info.absoluteFilePath(), true);
+        else uploadFile(devId, info.absoluteFilePath(), remoteFolder, replace, batch);
         ++added;
     }
-    if (skipped > 0) emit notify(tr("Skipped %n item(s). Uploads accept local files only.", nullptr, skipped));
+    if (skipped > 0) emit notify(tr("Skipped %n item(s) that could not be read.", nullptr, skipped));
+    if (anyFolder) finishUploadBatchIfDone(batch);
     return added;
+}
+
+void AppController::uploadFile(const QString& devId, const QString& localPath, const QString& remoteFolder,
+                               bool replace, quint32 batchId) {
+    if (batchId != 0) {
+        UploadBatch& batch = uploadBatches_[batchId];
+        if (batch.files >= kMaxBatchFiles || !QFileInfo(localPath).isReadable()) {
+            ++batch.failed;
+            if (batch.firstError.isEmpty())
+                batch.firstError = batch.files >= kMaxBatchFiles
+                                       ? tr("only the first %1 files are uploaded").arg(kMaxBatchFiles)
+                                       : tr("could not read %1").arg(QFileInfo(localPath).fileName());
+            return;
+        }
+        ++batch.files;
+        ++batch.pending;
+    }
+    const quint32 id = nextRequestId_++;
+    if (batchId != 0) batchOfUpload_.insert(id, batchId);
+    transfers_.add(id, devId, joinRemote(remoteFolder, QFileInfo(localPath).fileName()), localPath, true);
+    onSession([s = session_, devId, localPath, remoteFolder, id, replace] {
+        s->storageUpload(devId, localPath, remoteFolder, id, replace);
+    });
+}
+
+// Creates the folder on the device (or, when replacing, reuses one of that
+// name), then uploads what is in it; subfolders follow the same way.
+void AppController::folderForBatch(quint32 batchId, const QString& remoteParent, const QString& localDir, bool top) {
+    UploadBatch& batch = uploadBatches_[batchId];
+    ++batch.pending;
+    QJsonObject request{{"t", "fs.mkdir"}, {"path", remoteParent},
+                        {"name", safeFileName(QFileInfo(localDir).fileName())}};
+    if (batch.replace) request.insert("existing", true);
+    const quint32 id = startOperation(batch.devId, request);
+    batchFolders_.insert(id, {batchId, localDir, top});
+}
+
+void AppController::onBatchFolder(quint32 opId, const QString& remotePath, const QString& error) {
+    const BatchFolder step = batchFolders_.take(opId);
+    if (!uploadBatches_.contains(step.batch)) return;
+    UploadBatch& batch = uploadBatches_[step.batch];
+    --batch.pending;
+    if (!error.isEmpty()) {
+        ++batch.failed;
+        batch.firstError = batch.firstError.isEmpty() ? error : batch.firstError;
+        return finishUploadBatchIfDone(step.batch);
+    }
+    if (step.top) {
+        batch.topFolders << remotePath;
+        emit storageOperationFinished(opId, batch.devId, remotePath, {});  // the view shows the new folder
+    }
+    const QString devId = batch.devId;  // `batch` may move as the hash grows
+    const bool    replace = batch.replace;
+    const QFileInfoList children = QDir(step.localDir).entryInfoList(
+        QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden, QDir::DirsFirst | QDir::Name);
+    for (const QFileInfo& child : children) {
+        if (child.isDir()) {
+            // A linked folder could lead back up the tree; it is not followed.
+            if (child.isSymLink() || child.isJunction()) continue;
+            folderForBatch(step.batch, remotePath, child.absoluteFilePath(), false);
+        } else {
+            uploadFile(devId, child.absoluteFilePath(), remotePath, replace, step.batch);
+        }
+    }
+    finishUploadBatchIfDone(step.batch);
+}
+
+void AppController::onBatchUpload(quint32 uploadId, const QString& error, bool canceled) {
+    const quint32 batchId = batchOfUpload_.take(uploadId);
+    if (!uploadBatches_.contains(batchId)) return;
+    UploadBatch& batch = uploadBatches_[batchId];
+    --batch.pending;
+    if (error.isEmpty()) {
+        ++batch.uploaded;
+    } else if (!canceled) {
+        ++batch.failed;
+        batch.firstError = batch.firstError.isEmpty() ? error : batch.firstError;
+    }
+    finishUploadBatchIfDone(batchId);
+}
+
+void AppController::finishUploadBatchIfDone(quint32 batchId) {
+    const auto it = uploadBatches_.find(batchId);
+    if (it == uploadBatches_.end() || it->pending > 0) return;
+    const UploadBatch batch = *it;
+    uploadBatches_.erase(it);
+    if (batch.failed == 0)
+        emit notify(batch.topFolders.size() == 1
+                        ? tr("Uploaded %1 (%n file(s))", nullptr, batch.uploaded)
+                              .arg(batch.topFolders.first().section(QLatin1Char('/'), -1))
+                        : tr("Uploaded %n file(s)", nullptr, batch.uploaded));
+    else
+        emit notify(tr("Upload finished with %n problem(s): %1", nullptr, batch.failed).arg(batch.firstError));
 }
 
 void AppController::showInFolder(const QString& localPath) const {

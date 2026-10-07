@@ -17,7 +17,9 @@
 //     {"t":"fs.write.cancel", "id":u32}
 //     {"t":"fs.rename", "id":u32, "path":"/Docs/a.txt", "name":"b.txt"}
 //     {"t":"fs.delete", "id":u32, "path":"/Docs/a.txt"}   files or folders
-//     {"t":"fs.mkdir",  "id":u32, "path":"/Docs", "name":"New folder"}
+//     {"t":"fs.mkdir",  "id":u32, "path":"/Docs", "name":"New folder",
+//      "existing":bool}  existing: answer with a folder of that name if there
+//                         is one instead of adding "New folder (1)"
 //
 //   offerer -> requester
 //     kind 1  {"t":"fs.list.r", "id", "path", "offset", "total",
@@ -30,7 +32,8 @@
 //     kind 1  {"t":"fs.write.done", "id", "path"}  after saving the file
 //     kind 1  {"t":"fs.write.err", "id", "code"}
 //     kind 1  {"t":"fs.done", "id", "path"}   rename, delete or mkdir succeeded;
-//             path is the result (delete: what was removed; also "trashed")
+//             path is the result (delete: what was removed; also "trashed";
+//             mkdir: also "existed" when an existing folder was reused)
 //       code: not_offered | forbidden | not_found | denied | not_a_dir |
 //             not_a_file | busy | io | bad_request | exists | root
 //

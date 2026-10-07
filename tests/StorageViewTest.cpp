@@ -288,6 +288,17 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(prompt, "choose", Q_ARG(QVariant, QVariant("replace"))));
         QCOMPARE(app_.uploaded, files);
         QVERIFY(app_.replaced);
+
+        // A folder of the same name is merged into rather than replaced.
+        app_.uploaded.clear();
+        const QList<QUrl> folder{QUrl::fromLocalFile("C:/tmp/Photos")};
+        show({entry("Photos", true)});
+        QVERIFY(dropAt(folder, rowPoint(5)));
+        QVERIFY(prompt->property("visible").toBool());
+        QCOMPARE(prompt->property("title").toString(), QStringLiteral("Merge with existing folders?"));
+        QVERIFY(QMetaObject::invokeMethod(prompt, "choose", Q_ARG(QVariant, QVariant("replace"))));
+        QCOMPARE(app_.uploaded, folder);
+        QVERIFY(app_.replaced);
     }
 
     // Dragging a selection out first fetches it; letting go too early cancels.

@@ -763,13 +763,23 @@ void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& r
     if (!resolved) return sendError(dev, *id, code);
     if (!QFileInfo(resolved->second).isDir()) return sendError(dev, *id, QStringLiteral("not_a_dir"));
 
+    const QString parent = virtualPath(path.split(QLatin1Char('/'), Qt::SkipEmptyParts));
+    // "existing": a folder upload merging into a folder of the same name. It
+    // is reused only if it resolves inside the share like any other path.
+    if (req.value("existing").toBool()) {
+        QString    ignored;
+        const auto there = resolve(parent + QLatin1Char('/') + name, &ignored);
+        if (there && QFileInfo(there->second).isDir())
+            return sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+                                        {"path", parent + QLatin1Char('/') + name}, {"existed", true}});
+    }
+
     const QString target = uniquePath(resolved->second, name);
     if (!QDir().mkdir(target)) return sendError(dev, *id, QStringLiteral("io"));
 
     cachedPath_.clear();
     sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
-                         {"path", virtualPath(path.split(QLatin1Char('/'), Qt::SkipEmptyParts)) +
-                                      QLatin1Char('/') + QFileInfo(target).fileName()}});
+                         {"path", parent + QLatin1Char('/') + QFileInfo(target).fileName()}});
 }
 
 void StorageService::operation(const uconnect::DevId& dev, QJsonObject request, quint32 id) {

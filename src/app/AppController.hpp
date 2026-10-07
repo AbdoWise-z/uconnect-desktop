@@ -132,8 +132,10 @@ public:
     // `transfers`; the returned id identifies the request.
     Q_INVOKABLE quint32 storageList(const QString& devId, const QString& path);
     Q_INVOKABLE quint32 storageDownload(const QString& devId, const QString& remotePath);
+    // `files` may include folders, which are uploaded with everything in them.
     // `replace`: overwrite files of the same name (needs their storage.write)
-    // instead of adding numbered copies.
+    // and merge into folders of the same name, instead of adding numbered
+    // copies.
     Q_INVOKABLE int     storageUpload(const QString& devId, const QString& remoteFolder, const QList<QUrl>& files,
                                       bool replace = false);
     // Write operations; each finishes with storageOperationFinished().
@@ -196,6 +198,12 @@ private:
     void    onBatchList(quint32 listId, const QVariantList& entries, const QString& error);
     void    onBatchDownload(quint32 downloadId, const QString& localPath, const QString& error, bool canceled);
     void    finishBatchIfDone(quint32 batchId);
+    void    uploadFile(const QString& devId, const QString& localPath, const QString& remoteFolder, bool replace,
+                       quint32 batchId);
+    void    folderForBatch(quint32 batchId, const QString& remoteParent, const QString& localDir, bool top);
+    void    onBatchFolder(quint32 opId, const QString& remotePath, const QString& error);
+    void    onBatchUpload(quint32 uploadId, const QString& error, bool canceled);
+    void    finishUploadBatchIfDone(quint32 batchId);
     void pushSharedFolders();
     void pushAccessPolicy();
     void loadTrust();
@@ -257,6 +265,27 @@ private:
     QHash<quint32, BatchList>     batchLists_;        // list request id ->
     QHash<quint32, quint32>       batchOfDownload_;   // download id -> batch
     QHash<quint32, int>           topSlotOfDownload_;
+
+    // An upload that includes folders: each folder is created on the device
+    // before what is in it is uploaded.
+    struct UploadBatch {
+        QString     devId;
+        bool        replace  = false;
+        QStringList topFolders;  // remote paths of the folders asked for
+        QString     firstError;
+        int         pending  = 0;  // folders and files not yet finished
+        int         files    = 0;
+        int         uploaded = 0;
+        int         failed   = 0;
+    };
+    struct BatchFolder {
+        quint32 batch = 0;
+        QString localDir;
+        bool    top = false;
+    };
+    QHash<quint32, UploadBatch> uploadBatches_;
+    QHash<quint32, BatchFolder> batchFolders_;   // mkdir request id ->
+    QHash<quint32, quint32>     batchOfUpload_;  // upload id -> batch
 
     std::deque<QString> log_;
     QString             serverReport_;
