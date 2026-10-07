@@ -26,6 +26,11 @@ Window {
     }
     readonly property var openOffers: App.syncOffers.filter(o => !o.joined)
     property var pendingJoin: null
+    // The selected folder's members, rebuilt only when they change, not with
+    // every bit of progress (which would recreate the checkboxes under the mouse).
+    property var members: []
+    readonly property string membersSignature: current ? JSON.stringify(current.members) : ""
+    onMembersSignatureChanged: members = current ? current.members : []
     property string pendingPath: ""
 
     function stateText(f) {
@@ -459,7 +464,7 @@ Window {
                             text: qsTr("Send: the device gets this folder and your changes. Accept: you take its changes. A device that only gets sent the folder keeps a copy without changing yours. Only devices you trust can take part.")
                         }
                         Repeater {
-                            model: win.current ? win.current.members : []
+                            model: win.members
                             delegate: RowLayout {
                                 id: member
                                 required property var modelData
@@ -511,7 +516,7 @@ Window {
                             }
                         }
                         Help {
-                            visible: win.current && win.current.members.length === 0
+                            visible: win.current && win.members.length === 0
                             text: qsTr("Trust a device first (from its context menu in the device list) to sync with it.")
                         }
 

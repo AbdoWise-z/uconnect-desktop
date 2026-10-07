@@ -50,6 +50,7 @@ ApplicationWindow {
     property var serviceWindows: ({})
 
     function openService(service, devId) {
+        if (service === "sync") return syncWindow.show()  // one window for every synced folder
         const key = service + ":" + devId
         let w = serviceWindows[key]
         if (!w) {
@@ -204,6 +205,8 @@ ApplicationWindow {
                 onOpenRequested: devId => root.openService(service, devId)
             }
             UMenuSeparator {}
+            UMenuItem { action: syncAction }
+            UMenuSeparator {}
             UMenuItem {
                 text: qsTr("Configure Services...")
                 onTriggered: root.openSettings("services")
@@ -213,7 +216,6 @@ ApplicationWindow {
             title: qsTr("View")
             UMenuItem { action: devicesPanelAction }
             UMenuItem { action: statusBarAction }
-            UMenuItem { action: syncAction }
             UMenuItem { action: storageActivityAction }
             UMenuSeparator {}
             UMenuItem { action: debugAction }

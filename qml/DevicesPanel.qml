@@ -160,6 +160,18 @@ Rectangle {
         }
     }
 
+    // Synced folders for the menu, rebuilt only when folders come, go or are
+    // renamed: App.syncFolders changes with every bit of sync progress.
+    property var syncFolderList: []
+    readonly property string syncSignature: App.syncFolders.map(f => f.id + "\u0001" + f.label).join("\u0002")
+    onSyncSignatureChanged: syncFolderList = App.syncFolders.map(f => ({ id: f.id, label: f.label }))
+    Component.onCompleted: syncFolderList = App.syncFolders.map(f => ({ id: f.id, label: f.label }))
+    function syncGrant(folderId, key) {
+        const f = App.syncFolders.find(x => x.id === folderId)
+        const m = f ? f.members.find(x => x.key === key) : undefined
+        return m ? m : { receive: false, contribute: false }
+    }
+
     UMenu {
         id: contextMenu
 
@@ -231,6 +243,36 @@ Rectangle {
                 }
                 onObjectAdded: (index, object) => permissionsMenu.insertItem(index, object)
                 onObjectRemoved: (index, object) => permissionsMenu.removeItem(object)
+            }
+        }
+        // Folder sync has its own permissions, per folder.
+        UMenu {
+            id: syncMenu
+            title: qsTr("Synced Folders")
+            enabled: contextMenu.trusted && panel.syncFolderList.length > 0
+
+            Instantiator {
+                model: panel.syncFolderList.reduce((all, f) => all.concat([{ id: f.id, label: f.label, send: true },
+                                                                           { id: f.id, label: f.label, send: false }]), [])
+                delegate: UMenuItem {
+                    required property var modelData
+                    readonly property bool grantedNow: {
+                        const g = panel.syncGrant(modelData.id, contextMenu.identityKey)
+                        return modelData.send ? g.receive : g.contribute
+                    }
+                    text: modelData.label + " › " + (modelData.send ? qsTr("Send") : qsTr("Accept"))
+                    hint: modelData.send ? qsTr("it gets the folder") : qsTr("you take its changes")
+                    checkable: true
+                    checked: grantedNow
+                    onTriggered: {
+                        const g = panel.syncGrant(modelData.id, contextMenu.identityKey)
+                        App.setSyncMember(modelData.id, contextMenu.identityKey,
+                                          modelData.send ? checked : g.receive, modelData.send ? g.contribute : checked)
+                        checked = Qt.binding(() => grantedNow)
+                    }
+                }
+                onObjectAdded: (index, object) => syncMenu.insertItem(index, object)
+                onObjectRemoved: (index, object) => syncMenu.removeItem(object)
             }
         }
         UMenuSeparator {}

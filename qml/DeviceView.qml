@@ -29,6 +29,19 @@ Flickable {
     signal trustRequested(string devId)
     signal settingsRequested(string pageId)
 
+    // Synced folders, rebuilt only when folders come, go or are renamed:
+    // App.syncFolders changes with every bit of sync progress.
+    property var syncFolderList: []
+    readonly property string syncSignature: App.syncFolders.map(f => f.id + "\u0001" + f.label).join("\u0002")
+    onSyncSignatureChanged: syncFolderList = App.syncFolders.map(f => ({ id: f.id, label: f.label }))
+    Component.onCompleted: syncFolderList = App.syncFolders.map(f => ({ id: f.id, label: f.label }))
+    function syncGrant(folderId) {
+        const f = App.syncFolders.find(x => x.id === folderId)
+        const m = f && !gone ? f.members.find(x => x.key === peer.identityKey) : undefined
+        return m ? m : { receive: false, contribute: false }
+    }
+    readonly property var offeredToMe: gone ? [] : App.syncOffers.filter(o => o.key === peer.identityKey && !o.joined)
+
     clip: true
     contentWidth: width
     contentHeight: body.implicitHeight + 56
@@ -232,6 +245,59 @@ Flickable {
             visible: !view.trusted
             text: qsTr("Edit default permissions...")
             onClicked: view.settingsRequested("permissions")
+        }
+
+        TitledSeparator {
+            text: qsTr("Synced Folders")
+        }
+        Text {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: Theme.textSecondary
+            text: !view.trusted
+                  ? qsTr("Only trusted devices take part in folder sync.")
+                  : view.syncFolderList.length === 0
+                  ? qsTr("You have no synced folders yet.")
+                  : qsTr("Send: it gets the folder and your changes. Accept: you take its changes.")
+        }
+        Repeater {
+            model: view.trusted ? view.syncFolderList : []
+            delegate: RowLayout {
+                id: syncRow
+                required property var modelData
+                readonly property var grant: view.syncGrant(modelData.id)
+                Layout.fillWidth: true
+                spacing: 12
+                Text {
+                    Layout.fillWidth: true
+                    text: syncRow.modelData.label
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Theme.text
+                }
+                UCheckBox {
+                    text: qsTr("Send")
+                    checked: syncRow.grant.receive
+                    onToggled: App.setSyncMember(syncRow.modelData.id, view.peer.identityKey, checked, syncRow.grant.contribute)
+                }
+                UCheckBox {
+                    text: qsTr("Accept")
+                    checked: syncRow.grant.contribute
+                    onToggled: App.setSyncMember(syncRow.modelData.id, view.peer.identityKey, syncRow.grant.receive, checked)
+                }
+            }
+        }
+        Text {
+            Layout.fillWidth: true
+            visible: view.offeredToMe.length > 0
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            color: Theme.text
+            text: qsTr("%1 offers you: %2").arg(view.name).arg(view.offeredToMe.map(o => o.label).join(", "))
+        }
+        ULink {
+            text: view.offeredToMe.length > 0 ? qsTr("Join in Synced Folders...") : qsTr("Open Synced Folders...")
+            onClicked: view.serviceRequested("sync", view.devId)
         }
 
         TitledSeparator {
