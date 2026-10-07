@@ -111,6 +111,7 @@ private:
         QHash<QString, quint64> sent;      // folder -> our seq the peer has
         QSet<QString>           helloSent;
         QSet<QString>           listening;  // folders it asked for our index of
+        QSet<QString>           heard;      // folders whose index it has sent us
         std::deque<std::vector<uint8_t>> queue;
         int inflight = 0;  // block requests to it
     };
@@ -129,7 +130,8 @@ private:
     sync::Grant grantFor(const QString& folderId, const QString& key) const;
     void openFolder(const sync::FolderConfig& config);
     void sendOffers(const uconnect::DevId& dev);
-    void sendHellos(const uconnect::DevId& dev);
+    // `reply`: answering the peer's hello; a reply is never answered.
+    void sendHellos(const uconnect::DevId& dev, bool reply = false);
     void sendIndex(const uconnect::DevId& dev, const QString& folderId, bool full);
     void enqueue(const uconnect::DevId& dev, std::vector<uint8_t> message);
     void pump();

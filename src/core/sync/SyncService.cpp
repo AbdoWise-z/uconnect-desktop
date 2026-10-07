@@ -207,7 +207,7 @@ void SyncService::sendOffers(const uconnect::DevId& dev) {
     enqueue(dev, encodeControl({{"t", "sync.offers"}, {"folders", offers}}));
 }
 
-void SyncService::sendHellos(const uconnect::DevId& dev) {
+void SyncService::sendHellos(const uconnect::DevId& dev, bool reply) {
     auto it = peers_.find(dev);
     if (it == peers_.end()) return;
     Peer& peer = it->second;
@@ -220,7 +220,8 @@ void SyncService::sendHellos(const uconnect::DevId& dev) {
                                     {"folder", id},
                                     {"epoch", QString::number(f.state->epoch)},
                                     {"peerEpoch", r == f.state->remotes.cend() ? QString() : QString::number(r->epoch)},
-                                    {"seen", r == f.state->remotes.cend() ? 0 : qint64(r->seen)}}));
+                                    {"seen", r == f.state->remotes.cend() ? 0 : qint64(r->seen)},
+                                    {"reply", reply}}));
     }
 }
 
@@ -238,7 +239,12 @@ void SyncService::onHello(const uconnect::DevId& dev, const QJsonObject& msg) {
         p->second.listening.insert(id);
         sendIndex(dev, id, !same);
     }
-    if (g.receive || g.contribute) sendHellos(dev);
+    // Our hello may have arrived before it had this folder: until its index
+    // comes, answer with ours so it knows to send it. Replies are not
+    // answered, so two devices cannot keep this going.
+    const bool reply = !msg.value("reply").toBool() && g.contribute && !p->second.heard.contains(id);
+    if (reply) p->second.helloSent.remove(id);
+    if (g.receive || g.contribute) sendHellos(dev, reply);
 }
 
 void SyncService::sendIndex(const uconnect::DevId& dev, const QString& folderId, bool full) {
@@ -273,6 +279,7 @@ void SyncService::onIndex(const uconnect::DevId& dev, const QJsonObject& msg) {
     if (p == peers_.end()) return;
     Folder* f = folder(msg.value("folder").toString());
     if (!f || !f->state->config.peers.value(p->second.key).contribute) return;
+    p->second.heard.insert(msg.value("folder").toString());
     QVector<FileEntry> entries;
     for (const auto& v : msg.value("entries").toArray())
         if (auto e = FileEntry::fromJson(v.toObject())) entries << *e;

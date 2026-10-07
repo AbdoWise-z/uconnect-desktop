@@ -350,6 +350,21 @@ private slots:
         QVERIFY(!QFile::exists(at(0, ".syncskip")));
     }
 
+    // A member joining while already connected (as when accepting an offer).
+    void joinsWhileConnected() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        write(at(0, "a.txt"), "alpha");
+        n.join(0);
+        n.link(0, 1);
+        QTest::qWait(500);
+        n.join(1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "a.txt")), QByteArray("alpha"), 10000);
+        write(at(1, "b.txt"), "from bob");
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(0, "b.txt")), QByteArray("from bob"), 10000);
+    }
+
     void relaysThroughAMember() {
         Net& n = *net_;
         n.add("alice");

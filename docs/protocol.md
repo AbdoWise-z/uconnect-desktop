@@ -377,7 +377,7 @@ member through any chain of members that are online.
 | message | meaning |
 |---|---|
 | `{"t":"sync.offers", "folders":[{"id","label"}]}` | the folders this device sends the peer; sent on connect and when that changes |
-| `{"t":"sync.hello", "folder", "epoch", "peerEpoch", "seen"}` | "I take part in this folder." `epoch`: the sender's index epoch. `peerEpoch`/`seen`: how much of the receiver's index the sender has (`""`/0 if none) |
+| `{"t":"sync.hello", "folder", "epoch", "peerEpoch", "seen", "reply"}` | "I take part in this folder." `epoch`: the sender's index epoch. `peerEpoch`/`seen`: how much of the receiver's index the sender has (`""`/0 if none). A device answers a hello (with `reply:true`) while it accepts from the sender but has not had its index yet, since its own hello may have come before the sender had the folder; a reply is never answered |
 | `{"t":"sync.index", "folder", "epoch", "full", "entries":[...]}` | index entries. `full:true` on the first message of a complete resend: the receiver drops what it held of that index |
 | `{"t":"sync.get", "id", "folder", "path", "block", "offset", "size", "hash"}` | ask for one block of a file |
 | kind 4 `[4][u32 id][bytes]` | the block, in frames of at most 256 KiB |
