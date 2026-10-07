@@ -14,6 +14,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStringDecoder>
+#include <QUuid>
 #include <QStandardPaths>
 #include <QSysInfo>
 #include <QtDebug>
@@ -52,6 +53,7 @@ constexpr auto Trust          = "trust";  // a group per trusted public key
 
 constexpr int kMaxBatchFiles = 10000;
 constexpr int kMaxActivity   = 1000;
+constexpr int kMaxSyncEvents = 200;
 
 // Kept beside the identity, one JSON object per line, oldest first.
 QString activityFile() {
@@ -137,6 +139,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     myFingerprint_ = fingerprint(identity_->publicKey());
     loadTrust();
     loadActivity();
+    loadSync();
 
     session_ = new Session;
     session_->moveToThread(&worker_);
@@ -157,6 +160,19 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
         peers_.setPeers(p);
     });
     connect(session_, &Session::logMessage, this, &AppController::appendLog);
+    SyncService* sync = session_->sync();
+    connect(sync, &SyncService::offersChanged, this, [this](const QString& key, const QVariantList& offers) {
+        if (offers.isEmpty()) syncOffers_.remove(key);
+        else syncOffers_.insert(key, offers);
+        emit syncChanged();
+    });
+    connect(sync, &SyncService::folderChanged, this, [this](const QString& id, const QVariantMap& status) {
+        syncStatus_.insert(id, status);
+        emit syncChanged();
+    });
+    connect(sync, &SyncService::event, this, &AppController::addSyncEvent);
+    connect(&peers_, &PeerListModel::changed, this, &AppController::syncChanged);  // who is online
+    connect(this, &AppController::trustChanged, this, &AppController::syncChanged);
     connect(session_, &Session::storageActivity, this,
             [this](const QString& devId, const QString& device, const QString& key, const QString& action,
                    const QString& path, const QString& detail) {
@@ -233,6 +249,11 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     pushSharedFolders();
     pushUploadLimit();
     onSession([s = session_, id = *identity_] { s->setIdentity(id); });
+    onSession([s = session_, key = keyToHex(identity_->publicKey()),
+               dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/sync")] {
+        s->configureSync(key, dir);
+    });
+    pushSync();
     pushAccessPolicy();
     if (!identityWarning.isEmpty()) appendLog(identityWarning);
 
@@ -1065,6 +1086,237 @@ void AppController::clearStorageActivity() {
     activity_.clear();
     QFile::remove(activityFile());
     emit storageActivityChanged();
+}
+
+// --- folder sync -----------------------------------------------------------------
+
+void AppController::loadSync() {
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("sync"));
+    for (const QString& id : settings.childGroups()) {
+        if (QByteArray::fromHex(id.toLatin1()).size() != 16) continue;
+        settings.beginGroup(id);
+        sync::FolderConfig c;
+        c.id     = id;
+        c.label  = settings.value("label").toString();
+        c.path   = settings.value("path").toString();
+        c.paused = settings.value("paused", false).toBool();
+        const QStringList receive    = settings.value("receive").toStringList();
+        const QStringList contribute = settings.value("contribute").toStringList();
+        for (const QString& key : receive) c.peers[key].receive = true;
+        for (const QString& key : contribute) c.peers[key].contribute = true;
+        settings.endGroup();
+        if (!c.path.isEmpty()) syncFolders_ << c;
+    }
+}
+
+void AppController::saveSync() const {
+    QSettings settings;
+    settings.remove(QStringLiteral("sync"));
+    settings.beginGroup(QStringLiteral("sync"));
+    for (const sync::FolderConfig& c : syncFolders_) {
+        settings.beginGroup(c.id);
+        settings.setValue("label", c.label);
+        settings.setValue("path", c.path);
+        settings.setValue("paused", c.paused);
+        QStringList receive, contribute;
+        for (auto it = c.peers.begin(); it != c.peers.end(); ++it) {
+            if (it->receive) receive << it.key();
+            if (it->contribute) contribute << it.key();
+        }
+        settings.setValue("receive", receive);
+        settings.setValue("contribute", contribute);
+        settings.endGroup();
+    }
+}
+
+void AppController::pushSync() {
+    onSession([s = session_, folders = syncFolders_] { s->setSyncFolders(folders); });
+    emit syncChanged();
+}
+
+QString AppController::deviceName(const QString& key) const {
+    if (const auto t = trusted_.constFind(key); t != trusted_.cend() && !t->name.isEmpty()) return t->name;
+    for (const PeerRecord& p : peers_.peers())
+        if (p.identityKey == key && !p.name.isEmpty()) return p.name;
+    return tr("Unknown device");
+}
+
+QVariantList AppController::syncFolders() const {
+    QSet<QString> online;
+    for (const PeerRecord& p : peers_.peers())
+        if (!p.identityKey.isEmpty() && p.stateCode == static_cast<int>(uconnect::PeerState::Connected))
+            online.insert(p.identityKey);
+    QVariantList out;
+    for (const sync::FolderConfig& c : syncFolders_) {
+        QVariantMap folder = syncStatus_.value(c.id);
+        folder.insert("id", c.id);
+        folder.insert("label", c.label);
+        folder.insert("path", QDir::toNativeSeparators(c.path));
+        folder.insert("paused", c.paused);
+        if (!folder.contains("state")) folder.insert("state", c.paused ? "paused" : "scanning");
+        // Every trusted device can be made a member; members no longer
+        // trusted are listed too, as they still hold grants here.
+        QStringList keys = trusted_.keys();
+        for (auto it = c.peers.begin(); it != c.peers.end(); ++it)
+            if (!keys.contains(it.key())) keys << it.key();
+        QVariantList members;
+        for (const QString& key : keys) {
+            const sync::Grant g = c.peers.value(key);
+            members << QVariantMap{{"key", key}, {"name", deviceName(key)}, {"fingerprint", fingerprintOfHex(key)},
+                                   {"receive", g.receive}, {"contribute", g.contribute},
+                                   {"trusted", trusted_.contains(key)}, {"online", online.contains(key)}};
+        }
+        folder.insert("members", members);
+        // Conflicts with device names for the keys.
+        QVariantList conflicts;
+        for (const QVariant& v : folder.value("conflicts").toList()) {
+            QVariantMap conflict = v.toMap();
+            conflict.insert("followingName", deviceName(conflict.value("following").toString()));
+            QVariantList candidates;
+            for (const QVariant& cv : conflict.value("candidates").toList()) {
+                QVariantMap candidate = cv.toMap();
+                candidate.insert("name", candidate.value("mine").toBool() ? tr("This device")
+                                                                          : deviceName(candidate.value("key").toString()));
+                candidates << candidate;
+            }
+            conflict.insert("candidates", candidates);
+            conflicts << conflict;
+        }
+        folder.insert("conflicts", conflicts);
+        out << folder;
+    }
+    return out;
+}
+
+QVariantList AppController::syncOffers() const {
+    QVariantList out;
+    for (auto it = syncOffers_.cbegin(); it != syncOffers_.cend(); ++it) {
+        for (const QVariant& v : *it) {
+            const QVariantMap offer = v.toMap();
+            const QString     id    = offer.value("id").toString();
+            const bool joined = std::any_of(syncFolders_.begin(), syncFolders_.end(),
+                                            [&](const sync::FolderConfig& c) { return c.id == id; });
+            out << QVariantMap{{"key", it.key()}, {"device", deviceName(it.key())}, {"id", id},
+                               {"label", offer.value("label")}, {"joined", joined}};
+        }
+    }
+    return out;
+}
+
+QString AppController::createSyncFolder(const QUrl& folder, const QString& label) {
+    const QString path = folder.toLocalFile();
+    if (path.isEmpty() || !QFileInfo(path).isDir()) return {};
+    sync::FolderConfig c;
+    c.id    = QString::fromLatin1(QUuid::createUuid().toRfc4122().toHex());
+    c.label = label.trimmed().isEmpty() ? QFileInfo(path).fileName() : label.trimmed().left(100);
+    c.path  = path;
+    syncFolders_ << c;
+    saveSync();
+    pushSync();
+    return c.id;
+}
+
+bool AppController::joinSyncFolder(const QString& key, const QString& id, const QString& label, const QUrl& folder) {
+    const QString path = folder.toLocalFile();
+    if (path.isEmpty() || !QFileInfo(path).isDir() || !trusted_.contains(key)) return false;
+    if (std::any_of(syncFolders_.begin(), syncFolders_.end(), [&](const sync::FolderConfig& c) { return c.id == id; }))
+        return false;
+    sync::FolderConfig c;
+    c.id    = id;
+    c.label = label.left(100);
+    c.path  = path;
+    c.peers.insert(key, {true, true});
+    syncFolders_ << c;
+    saveSync();
+    pushSync();
+    emit notify(tr("Joined %1. Files already in the folder are merged with it.").arg(c.label));
+    return true;
+}
+
+void AppController::leaveSyncFolder(const QString& id) {
+    const auto it = std::find_if(syncFolders_.begin(), syncFolders_.end(),
+                                 [&](const sync::FolderConfig& c) { return c.id == id; });
+    if (it == syncFolders_.end()) return;
+    const QString label = it->label;
+    syncFolders_.erase(it);
+    syncStatus_.remove(id);
+    saveSync();
+    pushSync();
+    emit notify(tr("Stopped syncing %1. Its files stay where they are.").arg(label));
+}
+
+void AppController::setSyncMember(const QString& id, const QString& key, bool receive, bool contribute) {
+    for (sync::FolderConfig& c : syncFolders_) {
+        if (c.id != id) continue;
+        if (!receive && !contribute) c.peers.remove(key);
+        else c.peers.insert(key, {receive, contribute});
+        saveSync();
+        pushSync();
+        return;
+    }
+}
+
+void AppController::setSyncPaused(const QString& id, bool paused) {
+    for (sync::FolderConfig& c : syncFolders_) {
+        if (c.id != id || c.paused == paused) continue;
+        c.paused = paused;
+        saveSync();
+        pushSync();
+        return;
+    }
+}
+
+void AppController::resolveSyncConflict(const QString& id, const QString& path, const QString& choice,
+                                        const QString& key) {
+    onSession([s = session_, id, path, choice, key] { s->sync()->resolve(id, path, choice, key); });
+}
+
+void AppController::rescanSyncFolder(const QString& id) {
+    onSession([s = session_, id] { s->sync()->rescan(id); });
+}
+
+void AppController::openSyncFolder(const QString& id) const {
+    for (const sync::FolderConfig& c : syncFolders_)
+        if (c.id == id) QDesktopServices::openUrl(QUrl::fromLocalFile(c.path));
+}
+
+void AppController::clearSyncEvents() {
+    syncEvents_.clear();
+    emit syncChanged();
+}
+
+void AppController::addSyncEvent(const QString& folderId, const QString& path, const QString& kind) {
+    QString label;
+    for (const sync::FolderConfig& c : syncFolders_)
+        if (c.id == folderId) label = c.label;
+    QString text;
+    if (kind == QLatin1String("conflict"))
+        text = tr("Your change to %1 conflicts with another device's. Choose which to keep.").arg(path);
+    else if (kind.startsWith(QLatin1String("following:")))
+        text = tr("Two other devices changed %1 differently; following %2, connected longest. You can switch.")
+                   .arg(path, deviceName(kind.section(QLatin1Char(':'), 1)));
+    else if (kind == QLatin1String("kept"))
+        text = tr("Other devices changed %1 differently; keeping the version you have. You can switch.").arg(path);
+    else if (kind == QLatin1String("waiting"))
+        text = tr("Other devices changed %1 differently; waiting for one of them to connect.").arg(path);
+    else if (kind == QLatin1String("blocked:changed"))
+        text = tr("%1 changed here while it was being synced; looking at it again.").arg(path);
+    else if (kind == QLatin1String("blocked:not_empty"))
+        text = tr("Did not delete the folder %1: it holds files that are not synced.").arg(path);
+    else if (kind == QLatin1String("blocked:in_the_way"))
+        text = tr("Could not create %1: something else is in the way.").arg(path);
+    else if (kind == QLatin1String("blocked:outside"))
+        text = tr("Refused %1: it would be outside the synced folder.").arg(path);
+    else
+        text = tr("Could not write %1.").arg(path);
+    syncEvents_.prepend(QVariantMap{{"time", QDateTime::currentDateTime().toString(Qt::ISODate)},
+                                    {"folderId", folderId}, {"folder", label}, {"path", path},
+                                    {"kind", kind.section(QLatin1Char(':'), 0, 0)}, {"text", text}});
+    while (syncEvents_.size() > kMaxSyncEvents) syncEvents_.removeLast();
+    if (kind == QLatin1String("conflict") || kind.startsWith(QLatin1String("following:")))
+        emit notify(tr("%1: %2").arg(label, text));
+    emit syncChanged();
 }
 
 void AppController::appendLog(const QString& line) {

@@ -26,6 +26,7 @@
 #include "core/Identity.hpp"
 #include "core/Permissions.hpp"
 #include "core/StorageService.hpp"
+#include "core/sync/SyncService.hpp"
 #include "uconnect/uconnect.hpp"
 
 class QTimer;
@@ -120,6 +121,11 @@ public:
     void storageWatch(const QString& devId, const QString& path, quint32 requestId);
     void storageUnwatch(quint32 requestId);
     StorageService* storage() const { return storage_; }
+    SyncService*    sync() const { return sync_; }
+    // This device's identity key and where sync keeps its state; before
+    // setSyncFolders().
+    void configureSync(const QString& keyHex, const QString& stateDir);
+    void setSyncFolders(const QVector<ucd::sync::FolderConfig>& folders);
 
 signals:
     void statusChanged(ucd::Session::Status status, const QString& detail);
@@ -144,6 +150,7 @@ private:
 
         // Reset with every new session: the proof is bound to it.
         std::optional<PublicKey> identity;
+        qint64                   connectedAt = -1;  // ms since epoch, while connected
         bool                     identityInvalid = false;
         QStringList              grantedToMe;
     };
@@ -189,6 +196,7 @@ private:
     QTimer* snapshotTimer_ = nullptr;
 
     StorageService* storage_ = nullptr;
+    SyncService*    sync_    = nullptr;
 };
 
 QString shortId(const QString& devId);

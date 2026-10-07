@@ -144,6 +144,7 @@ qt_add_qml_module(uconnect_desktop
         qml/PromptDialog.qml
         qml/StorageActivityWindow.qml
         qml/PreviewPopup.qml
+        qml/SyncWindow.qml
         qml/TransfersPopup.qml
         # controls
         qml/UButton.qml

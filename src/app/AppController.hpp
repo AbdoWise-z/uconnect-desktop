@@ -73,6 +73,15 @@ class AppController : public QObject {
     // What other devices did in this device's shared folders, newest first:
     // [{time, devId, device, fingerprint, action, path, detail}].
     Q_PROPERTY(QVariantList storageActivity READ storageActivity NOTIFY storageActivityChanged)
+    // --- folder sync ---
+    // [{id, label, path, paused, state, files, bytes, needFiles, needBytes,
+    //   conflicts, blocked, members: [{key, name, fingerprint, receive,
+    //   contribute, online}]}]
+    Q_PROPERTY(QVariantList syncFolders READ syncFolders NOTIFY syncChanged)
+    // Folders connected devices offer this one: [{key, device, id, label, joined}].
+    Q_PROPERTY(QVariantList syncOffers READ syncOffers NOTIFY syncChanged)
+    // Conflicts and problems, newest first: [{time, folderId, folder, path, text}].
+    Q_PROPERTY(QVariantList syncEvents READ syncEvents NOTIFY syncChanged)
 
 public:
     explicit AppController(const LaunchOptions& options, QObject* parent = nullptr);
@@ -113,6 +122,25 @@ public:
     // [{key, fingerprint, name, permissions, since}], by name.
     QVariantList trustedDevices() const;
     QVariantList storageActivity() const { return activity_; }
+    QVariantList syncFolders() const;
+    QVariantList syncOffers() const;
+    QVariantList syncEvents() const { return syncEvents_; }
+
+    // Sync. A new folder starts with no members; add them with
+    // setSyncMember(). Joining an offer makes the offering device a member
+    // that may send and receive.
+    Q_INVOKABLE QString createSyncFolder(const QUrl& folder, const QString& label);
+    Q_INVOKABLE bool    joinSyncFolder(const QString& key, const QString& id, const QString& label, const QUrl& folder);
+    // Stops syncing; the files stay.
+    Q_INVOKABLE void    leaveSyncFolder(const QString& id);
+    Q_INVOKABLE void    setSyncMember(const QString& id, const QString& key, bool receive, bool contribute);
+    Q_INVOKABLE void    setSyncPaused(const QString& id, bool paused);
+    // `choice`: "mine", "theirs" (with the holder's key) or "skip".
+    Q_INVOKABLE void    resolveSyncConflict(const QString& id, const QString& path, const QString& choice,
+                                            const QString& key);
+    Q_INVOKABLE void    rescanSyncFolder(const QString& id);
+    Q_INVOKABLE void    openSyncFolder(const QString& id) const;
+    Q_INVOKABLE void    clearSyncEvents();
     Q_INVOKABLE void clearStorageActivity();
 
     PeerListModel*     peers() { return &peers_; }
@@ -220,6 +248,7 @@ signals:
     void storagePreviewReady(quint32 batchId, const QString& url, const QString& error);
     void trustChanged();
     void storageActivityChanged();
+    void syncChanged();
 
 private:
     template <class F> void onSession(F&& f);
@@ -246,6 +275,11 @@ private:
     void saveTrusted(const QString& key);
     void appendLog(const QString& line);
     void addActivity(const QVariantMap& entry);
+    void loadSync();
+    void saveSync() const;
+    void pushSync();
+    void addSyncEvent(const QString& folderId, const QString& path, const QString& kind);
+    QString deviceName(const QString& key) const;
     void loadActivity();
 
     bool     firstRun_ = false;
@@ -332,6 +366,10 @@ private:
     QHash<quint32, quint32>     batchOfUpload_;  // upload id -> batch
 
     QVariantList        activity_;
+    QVector<sync::FolderConfig>   syncFolders_;
+    QHash<QString, QVariantMap>   syncStatus_;  // by folder id
+    QHash<QString, QVariantList>  syncOffers_;  // by peer key
+    QVariantList                  syncEvents_;
     std::deque<QString> log_;
     QString             serverReport_;
 

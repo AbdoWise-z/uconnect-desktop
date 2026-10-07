@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <exception>
 
+#include <QDateTime>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QMetaObject>
@@ -67,6 +68,22 @@ Session::Session(QObject* parent)
                 const QString key  = have && it->second.identity ? keyToHex(*it->second.identity) : QString();
                 emit storageActivity(hex(dev), name, key, action, path, detail);
             });
+    // Sync is only for peers that proved who they are and that this device trusts.
+    sync_ = new SyncService(
+        [this](const uconnect::DevId& dev, std::span<const uint8_t> bytes) {
+            return topic_ && topic_->send(dev, bytes);
+        },
+        [this](const uconnect::DevId& dev) {
+            const auto it = peers_.find(dev);
+            if (it == peers_.end() || !it->second.identity) return QString();
+            const QString key = keyToHex(*it->second.identity);
+            return policy_.trusted.contains(key) ? key : QString();
+        },
+        [this](const uconnect::DevId& dev) {
+            const auto it = peers_.find(dev);
+            return it == peers_.end() ? qint64(-1) : it->second.connectedAt;
+        },
+        this);
     pollTimer_->setInterval(kPollInterval);
     snapshotTimer_->setInterval(kSnapshotInterval);
     connect(pollTimer_, &QTimer::timeout, this, &Session::poll);
@@ -150,6 +167,7 @@ void Session::stop() {
     snapshotTimer_->stop();
     ++generation_;
     storage_->reset();
+    sync_->reset();
 
     if (node_) {
         try {
@@ -175,10 +193,21 @@ void Session::setIdentity(const Identity& identity) {
     identity_ = identity;
 }
 
+void Session::configureSync(const QString& keyHex, const QString& stateDir) {
+    sync_->setIdentity(keyHex, stateDir);
+}
+
+void Session::setSyncFolders(const QVector<ucd::sync::FolderConfig>& folders) {
+    sync_->setFolders(folders);
+}
+
 void Session::setAccessPolicy(const AccessPolicy& policy) {
     policy_ = policy;
     if (topic_)
-        for (const uconnect::DevId& dev : topic_->connected()) sendGrants(dev);
+        for (const uconnect::DevId& dev : topic_->connected()) {
+            sendGrants(dev);
+            sync_->peerUp(dev);  // trust may have changed
+        }
     emitPeers();
 }
 
@@ -460,6 +489,7 @@ void Session::onPeerState(const uconnect::DevId& dev, uconnect::PeerState state)
     log(tr("Peer %1 -> %2").arg(shortId(hex(dev)), QString::fromLatin1(uconnect::to_string(state))));
 
     if (state == uconnect::PeerState::Connected) {
+        p.connectedAt = QDateTime::currentMSecsSinceEpoch();
         p.gone.reset();
         p.identity.reset();
         p.identityInvalid = false;
@@ -469,6 +499,8 @@ void Session::onPeerState(const uconnect::DevId& dev, uconnect::PeerState state)
         sendGrants(dev);
     } else if (state == uconnect::PeerState::Closed || state == uconnect::PeerState::Failed) {
         storage_->peerGone(dev);
+        sync_->peerGone(dev);
+        p.connectedAt = -1;
         p.identity.reset();
         p.identityInvalid = false;
         p.grantedToMe.clear();
@@ -502,6 +534,7 @@ void Session::onData(const uconnect::DevId& dev, const std::vector<uint8_t>& dat
         if (t == QLatin1String("id")) return onIdentity(dev, *msg);
         if (t == QLatin1String("perm.granted")) return onGrants(dev, *msg);
     }
+    if (sync_->handleMessage(dev, data)) return;
     if (storage_->handleMessage(dev, data)) return;
     log(tr("Peer %1 sent %2 bytes of an unknown message kind")
             .arg(shortId(hex(dev)))
@@ -534,6 +567,7 @@ void Session::onIdentity(const uconnect::DevId& dev, const QJsonObject& message)
     if (const auto key = binding ? verifyProof(message, *binding) : std::nullopt) {
         p.identity = key;
         log(tr("Peer %1 proved identity %2").arg(shortId(hex(dev)), fingerprint(*key)));
+        sync_->peerUp(dev);
     } else {
         p.identityInvalid = true;
         log(tr("Peer %1 sent an identity proof that does not verify").arg(shortId(hex(dev))));

@@ -137,6 +137,12 @@ ApplicationWindow {
         checked: true
     }
     Action {
+        id: syncAction
+        text: qsTr("Synced Folders")
+        shortcut: "Ctrl+Shift+Y"
+        onTriggered: syncWindow.show()
+    }
+    Action {
         id: storageActivityAction
         text: qsTr("Storage Activity")
         onTriggered: {
@@ -207,6 +213,7 @@ ApplicationWindow {
             title: qsTr("View")
             UMenuItem { action: devicesPanelAction }
             UMenuItem { action: statusBarAction }
+            UMenuItem { action: syncAction }
             UMenuItem { action: storageActivityAction }
             UMenuSeparator {}
             UMenuItem { action: debugAction }
@@ -250,6 +257,10 @@ ApplicationWindow {
 
     StorageActivityWindow {
         id: activityWindow
+    }
+
+    SyncWindow {
+        id: syncWindow
     }
 
     Popup {
