@@ -116,6 +116,8 @@ public:
     // fs.rename, fs.delete or fs.mkdir, without "id".
     void storageOperation(const QString& devId, const QJsonObject& request, quint32 requestId);
     void storageCancel(quint32 requestId);
+    void storageWatch(const QString& devId, const QString& path, quint32 requestId);
+    void storageUnwatch(quint32 requestId);
     StorageService* storage() const { return storage_; }
 
 signals:

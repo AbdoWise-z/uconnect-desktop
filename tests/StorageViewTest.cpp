@@ -40,6 +40,7 @@ public:
     QString transferKind;  // "move" | "copy"
     QStringList transferred;
     QString transferredTo;
+    QMap<quint32, QString> watches;  // open watches: id -> path
 
     QObject* peers() { return &peers_; }
     QObject* transfers() { return &transfers_; }
@@ -83,6 +84,11 @@ public:
         for (int i = 0; i < paths.size(); ++i) ids << ++requestId;
         return ids;
     }
+    Q_INVOKABLE quint32 storageWatch(const QString&, const QString& path) {
+        watches.insert(++requestId, path);
+        return requestId;
+    }
+    Q_INVOKABLE void storageUnwatch(quint32 id) { watches.remove(id); }
     Q_INVOKABLE void cancelBatch(quint32 id) { canceledBatches << id; }
     Q_INVOKABLE void storageCancel(quint32) {}
     Q_INVOKABLE void copyText(const QString&) {}
@@ -92,6 +98,7 @@ signals:
     void storageUploaded(const QString& devId, const QString& remotePath);
     void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
     void storageOperationProgress(quint32 requestId, const QString& devId, qint64 done, qint64 total);
+    void storageFolderChanged(quint32 watchId, const QString& path);
     void storageBatchProgress(quint32 batchId, int filesDone, int filesKnown);
     void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);
 };
@@ -199,6 +206,7 @@ private slots:
         app_.transferKind.clear();
         app_.transferred.clear();
         app_.transferredTo.clear();
+        app_.watches.clear();
         grant(true);
         window_ = std::make_unique<QQuickWindow>();
         window_->resize(1000, 680);
@@ -307,6 +315,25 @@ private slots:
 
         QTest::mouseDClick(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(0));
         QCOMPARE(view_->property("path").toString(), QStringLiteral("/share/sub/docs"));
+    }
+
+    // The folder shown is watched; a change reloads it, keeping the selection.
+    void refreshesWhenTheFolderChangesKeepingTheSelection() {
+        show({entry("a.txt"), entry("b.txt"), entry("c.txt")});
+        QCOMPARE(app_.watches.values(), QStringList({"/share/sub"}));
+        click(1);
+        click(2, Qt::ControlModifier);
+
+        app_.listing = {entry("a.txt"), entry("new.txt"), entry("b.txt"), entry("c.txt")};
+        emit app_.storageFolderChanged(app_.watches.firstKey(), "/share/sub");
+        QTRY_COMPARE(list()->property("count").toInt(), 4);
+        QCOMPARE(selectedNames(), QStringList({"b.txt", "c.txt"}));
+        QCOMPARE(app_.watches.size(), 1);  // still the one watch
+
+        // Somewhere else: the old watch ends and the new folder is watched.
+        QVERIFY(QMetaObject::invokeMethod(view_, "navigate", Q_ARG(QVariant, QVariant("/share/other"))));
+        QTRY_COMPARE(app_.watches.values(), QStringList({"/share/other"}));
+        QVERIFY(selectedNames().isEmpty());
     }
 
     // Cut and paste moves; copy and paste copies; both into the open folder.

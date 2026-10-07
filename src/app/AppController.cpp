@@ -174,6 +174,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
                 if (!error.isEmpty()) emit notify(error);
                 emit storageOperationFinished(id, devId, path, error);
             });
+    connect(storage, &StorageService::folderChanged, this, &AppController::storageFolderChanged);
     connect(storage, &StorageService::operationProgress, this, [this](quint32 id, qint64 done, qint64 total) {
         emit storageOperationProgress(id, operationDevices_.value(id), done, total);
     });
@@ -472,6 +473,16 @@ quint32 AppController::storageDownload(const QString& devId, const QString& remo
         s->storageDownload(devId, remotePath, folder, id);
     });
     return id;
+}
+
+quint32 AppController::storageWatch(const QString& devId, const QString& path) {
+    const quint32 id = nextRequestId_++;
+    onSession([s = session_, devId, path, id] { s->storageWatch(devId, path, id); });
+    return id;
+}
+
+void AppController::storageUnwatch(quint32 watchId) {
+    onSession([s = session_, watchId] { s->storageUnwatch(watchId); });
 }
 
 void AppController::storageCancel(quint32 requestId) {

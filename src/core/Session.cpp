@@ -250,6 +250,15 @@ void Session::storageOperation(const QString& devId, const QJsonObject& request,
     storage_->operation(*dev, request, requestId);
 }
 
+void Session::storageWatch(const QString& devId, const QString& path, quint32 requestId) {
+    const auto dev = parseDevId(devId);
+    if (topic_ && dev) storage_->watch(*dev, path, requestId);
+}
+
+void Session::storageUnwatch(quint32 requestId) {
+    storage_->unwatch(requestId);
+}
+
 void Session::requestServerStats() {
     if (!node_) {
         emit serverReport(tr("Not running."));

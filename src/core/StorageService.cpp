@@ -45,6 +45,8 @@ constexpr auto   kStallTimeout       = 30s;
 constexpr auto   kCacheFor           = 10s;
 constexpr auto   kProgressEvery      = 100ms;
 constexpr auto   kJobBeatEvery       = 2s;
+constexpr auto   kWatchEvery         = 2s;
+constexpr size_t kMaxWatchesPerPeer  = 16;
 
 #ifdef Q_OS_WIN
 constexpr Qt::CaseSensitivity kPathCase = Qt::CaseInsensitive;
@@ -255,11 +257,14 @@ StorageService::StorageService(SendFn send, AuthorizeFn authorize, QObject* pare
       send_(std::move(send)),
       authorize_(std::move(authorize)),
       pumpTimer_(new QTimer(this)),
-      ticker_(new QTimer(this)) {
+      ticker_(new QTimer(this)),
+      watchTimer_(new QTimer(this)) {
     pumpTimer_->setSingleShot(true);
     connect(pumpTimer_, &QTimer::timeout, this, &StorageService::pump);
     ticker_->setInterval(1s);
     connect(ticker_, &QTimer::timeout, this, &StorageService::checkDeadlines);
+    watchTimer_->setInterval(kWatchEvery);
+    connect(watchTimer_, &QTimer::timeout, this, &StorageService::pollWatches);
 }
 
 struct StorageService::JobState {
@@ -277,6 +282,10 @@ StorageService::~StorageService() {
 void StorageService::setOffered(bool offered) {
     offered_ = offered;
     if (offered_) return;
+    for (const auto& [key, w] : watches_)
+        send_(key.first, encodeControl({{"t", "fs.changed"}, {"id", qint64(key.second)}, {"path", w.path}}));
+    watches_.clear();
+    watchTimer_->stop();
     std::erase_if(outgoing_, [&](const auto& kv) {
         if (kv.second.upload) return false;
         sendError(kv.second.dev, kv.second.id, QStringLiteral("not_offered"));
@@ -295,6 +304,7 @@ void StorageService::setSharedFolders(const QStringList& folders) {
     }
     folders_.clear();
     cachedPath_.clear();
+    QTimer::singleShot(0, this, &StorageService::pollWatches);  // the shares themselves changed
     for (const QString& path : folders) {
         const QFileInfo fi(path);
         const QString   canonical = realPath(path);
@@ -828,6 +838,61 @@ void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& r
                          {"path", parent + QLatin1Char('/') + QFileInfo(target).fileName()}});
 }
 
+size_t StorageService::watchSignature(const QString& virtualPath) const {
+    size_t h = qHash(virtualPath);
+    if (virtualPath == QLatin1String("/")) {
+        for (const SharedFolder& f : folders_) h = qHashMulti(h, f.name);
+        return h | 1;  // never 0
+    }
+    QString    code;
+    const auto resolved = resolve(virtualPath, &code);
+    if (!resolved || !QFileInfo(resolved->second).isDir()) return 0;
+    const QFileInfoList infos = QDir(resolved->second).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
+    for (const QFileInfo& fi : infos) {
+        // Uploads in progress are not listed, so their growth is no change.
+        const bool partial = std::any_of(incoming_.begin(), incoming_.end(), [&](const auto& kv) {
+            return kv.second.file && kv.second.file->fileName().compare(fi.absoluteFilePath(), kPathCase) == 0;
+        });
+        if (!partial) h = qHashMulti(h, fi.fileName(), fi.isDir(), fi.size(), fi.lastModified().toMSecsSinceEpoch());
+    }
+    return h | 1;
+}
+
+void StorageService::serveWatch(const uconnect::DevId& dev, const QJsonObject& req) {
+    const auto id = idOf(req);
+    if (!id || !offered_ || !authorize_(dev, perm::StorageObserve)) return;
+    const auto mine = std::count_if(watches_.begin(), watches_.end(), [&](const auto& kv) { return kv.first.first == dev; });
+    if (static_cast<size_t>(mine) >= kMaxWatchesPerPeer) return;
+    const QString path      = req.value("path").toString();
+    const size_t  signature = watchSignature(path);
+    if (signature == 0) return;
+    watches_[std::make_pair(dev, *id)] = Watch{path, signature};
+    if (!watchTimer_->isActive()) watchTimer_->start();
+}
+
+// Tells watchers about folders whose listing changed since the last look,
+// and about watches that no longer resolve or are no longer allowed (those
+// end here).
+void StorageService::pollWatches() {
+    std::map<QString, size_t> seen;  // each folder is read once per round
+    for (auto it = watches_.begin(); it != watches_.end();) {
+        const auto [dev, id] = it->first;
+        Watch& w = it->second;
+        if (!offered_ || !authorize_(dev, perm::StorageObserve)) {
+            it = watches_.erase(it);
+            continue;
+        }
+        auto sig = seen.find(w.path);
+        if (sig == seen.end()) sig = seen.emplace(w.path, watchSignature(w.path)).first;
+        if (sig->second != w.signature)
+            send_(dev, encodeControl({{"t", "fs.changed"}, {"id", qint64(id)}, {"path", w.path}}));
+        w.signature = sig->second;
+        if (sig->second == 0) it = watches_.erase(it);
+        else ++it;
+    }
+    if (watches_.empty()) watchTimer_->stop();
+}
+
 void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject& req, bool copy) {
     const auto id = idOf(req);
     if (!id) return;
@@ -911,6 +976,16 @@ void StorageService::operation(const uconnect::DevId& dev, QJsonObject request, 
     ops_[id] = PendingOp{dev, Clock::now() + kRequestTimeout};
     updateTicker();
     if (!send_(dev, encodeControl(request))) finishOperation(id, {}, tr("Could not reach the device."));
+}
+
+void StorageService::watch(const uconnect::DevId& dev, const QString& path, quint32 id) {
+    if (send_(dev, encodeControl({{"t", "fs.watch"}, {"id", qint64(id)}, {"path", path}})))
+        watching_[id] = Watching{dev, path};
+}
+
+void StorageService::unwatch(quint32 id) {
+    auto node = watching_.extract(id);
+    if (!node.empty()) send_(node.mapped().dev, encodeControl({{"t", "fs.unwatch"}, {"id", qint64(id)}}));
 }
 
 void StorageService::finishOperation(quint32 id, const QString& path, const QString& error) {
@@ -1123,6 +1198,15 @@ bool StorageService::handleMessage(const uconnect::DevId& dev, std::span<const u
     else if (t == QLatin1String("fs.rename")) serveRename(dev, *msg);
     else if (t == QLatin1String("fs.delete")) serveDelete(dev, *msg);
     else if (t == QLatin1String("fs.mkdir")) serveMkdir(dev, *msg);
+    else if (t == QLatin1String("fs.watch")) serveWatch(dev, *msg);
+    else if (t == QLatin1String("fs.unwatch")) {
+        if (const auto id = idOf(*msg)) watches_.erase(std::make_pair(dev, *id));
+    }
+    else if (t == QLatin1String("fs.changed")) {
+        const auto id = idOf(*msg);
+        if (const auto it = id ? watching_.find(*id) : watching_.end(); it != watching_.end() && it->second.dev == dev)
+            emit folderChanged(*id, it->second.path);
+    }
     else if (t == QLatin1String("fs.move")) serveTransfer(dev, *msg, false);
     else if (t == QLatin1String("fs.copy")) serveTransfer(dev, *msg, true);
     else if (t == QLatin1String("fs.progress")) {
@@ -1158,6 +1242,8 @@ void StorageService::peerGone(const uconnect::DevId& dev) {
     std::erase_if(outgoing_, [&](const auto& kv) { return kv.second.dev == dev; });
     std::erase_if(incoming_, [&](const auto& kv) { return kv.first.first == dev; });
     std::erase_if(replies_, [&](const Reply& r) { return r.dev == dev; });
+    std::erase_if(watches_, [&](const auto& kv) { return kv.first.first == dev; });
+    std::erase_if(watching_, [&](const auto& kv) { return kv.second.dev == dev; });
     std::erase_if(jobs_, [&](auto& kv) {
         if (kv.first.first != dev) return false;
         kv.second.state->cancel = true;
@@ -1187,6 +1273,9 @@ void StorageService::reset() {
     replies_.clear();
     for (auto& [key, job] : jobs_) job.state->cancel = true;
     jobs_.clear();
+    watches_.clear();
+    watching_.clear();
+    watchTimer_->stop();
     while (!uploads_.empty()) finishUpload(uploads_.begin()->first, {}, tr("Disconnected."));
     cachedPath_.clear();
     std::vector<quint32> lists, downloads;

@@ -24,6 +24,10 @@ Item {
     property bool loading: false
     property string error: ""
     property alias transfersOpen: transfers.open
+    property string shownPath: ""  // what the listing shows
+    // The device reports changes to the folder shown (live refresh).
+    property real watchId: -1
+    property string watchedPath: ""
 
     readonly property var peer: { App.peers.revision; return App.peers.get(devId) }
     function granted(permission) {
@@ -70,6 +74,19 @@ Item {
     }
     function canUploadTo(folder) {
         return connected && uploadGranted && folder !== "/" && !loading && error.length === 0
+    }
+
+    function watch(folder) {
+        if (folder === watchedPath && watchId >= 0) return
+        unwatch()
+        if (folder.length === 0) return
+        watchId = App.storageWatch(devId, folder)
+        watchedPath = folder
+    }
+    function unwatch() {
+        if (watchId >= 0) App.storageUnwatch(watchId)
+        watchId = -1
+        watchedPath = ""
     }
 
     // --- navigation -------------------------------------------------------------
@@ -327,15 +344,37 @@ Item {
         function onStorageListed(requestId, listedPath, list, err) {
             if (requestId !== view.pendingId) return
             view.loading = false
+            // A refresh of the same folder keeps the selection and the scroll position.
+            const same = listedPath === view.shownPath && err.length === 0
+            const kept = same ? view.selectedItems().map(i => i.name) : []
+            const currentName = same && view.current ? view.current.name : ""
+            const anchorName = same && view.anchorIndex >= 0 && view.anchorIndex < entries.count
+                               ? entries.get(view.anchorIndex).name : ""
+            const scrolledTo = fileList.contentY
             entries.clear()
             view.selectedCount = 0
             view.anchorIndex = -1
             if (err.length > 0) {
                 view.error = err
+                view.shownPath = ""
+                view.unwatch()
                 return
             }
-            for (const e of list) entries.append(Object.assign({ selected: false }, e))
-            fileList.currentIndex = entries.count > 0 ? 0 : -1
+            let current = 0
+            for (const e of list) {
+                const on = kept.indexOf(e.name) >= 0
+                entries.append(Object.assign({ selected: on }, e))
+                if (on) ++view.selectedCount
+                if (e.name === currentName) current = entries.count - 1
+                if (e.name === anchorName) view.anchorIndex = entries.count - 1
+            }
+            fileList.currentIndex = entries.count > 0 ? current : -1
+            if (same) fileList.contentY = Math.max(0, Math.min(scrolledTo, fileList.contentHeight - fileList.height))
+            view.shownPath = listedPath
+            view.watch(listedPath)
+        }
+        function onStorageFolderChanged(watchId, changedPath) {
+            if (watchId === view.watchId) reloadSoon.restart()
         }
         function onStorageUploaded(deviceId, remotePath) {
             if (deviceId === view.devId && view.parentPath(remotePath) === view.path) reloadSoon.restart()
@@ -369,7 +408,13 @@ Item {
     }
 
     Component.onCompleted: load()
-    onConnectedChanged: if (connected) load()
+    Component.onDestruction: unwatch()
+    onConnectedChanged: {
+        // The device forgets watches when it disconnects.
+        watchId = -1
+        watchedPath = ""
+        if (connected) load()
+    }
 
     Shortcut { sequence: "Alt+Left"; onActivated: view.goBack() }
     Shortcut { sequence: "Alt+Right"; onActivated: view.goForward() }

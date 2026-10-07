@@ -382,6 +382,48 @@ private slots:
         QVERIFY(QDir(share_ + "/sub/tree (1)").removeRecursively());
     }
 
+    void reportsChangesToWatchedFolders() {
+        QVERIFY(QDir().mkpath(share_ + "/watched"));
+        QSignalSpy changed(link_->requester.get(), &StorageService::folderChanged);
+        const quint32 id = nextId();
+        link_->requester->watch(kOfferer, "/share/watched", id);
+        QTest::qWait(2500);
+        QVERIFY(changed.isEmpty());  // nothing changed yet
+
+        write(share_ + "/watched/new.txt", "n");
+        QTRY_VERIFY_WITH_TIMEOUT(!changed.isEmpty(), 5000);
+        QCOMPARE(changed.first().at(0).toUInt(), id);
+        QCOMPARE(changed.first().at(1).toString(), QStringLiteral("/share/watched"));
+
+        // Without observe permission the watch ends.
+        changed.clear();
+        link_->granted.remove(perm::StorageObserve);
+        QTest::qWait(2500);
+        link_->granted.insert(perm::StorageObserve);
+        write(share_ + "/watched/later.txt", "l");
+        QTest::qWait(2500);
+        QVERIFY(changed.isEmpty());
+
+        // Unwatched: no more reports.
+        const quint32 again = nextId();
+        link_->requester->watch(kOfferer, "/share/watched", again);
+        QTest::qWait(100);
+        link_->requester->unwatch(again);
+        write(share_ + "/watched/after.txt", "a");
+        QTest::qWait(2500);
+        QVERIFY(changed.isEmpty());
+
+        // Outside the share, or through a link out of it: never watched.
+        if (haveEscapeLink_) {
+            link_->requester->watch(kOfferer, "/share/escape", nextId());
+            write(outside_ + "/poke.txt", "p");
+            QTest::qWait(2500);
+            QVERIFY(changed.isEmpty());
+            QFile::remove(outside_ + "/poke.txt");
+        }
+        QVERIFY(QDir(share_ + "/watched").removeRecursively());
+    }
+
     void replacesExistingFilesOnlyWithWrite() {
         write(share_ + "/sub/target.txt", "old");
         write(outside_ + "/target.txt", "new contents");

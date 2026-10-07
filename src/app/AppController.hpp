@@ -157,6 +157,10 @@ public:
     // Returns a batch id, as storageDownloadItems().
     Q_INVOKABLE quint32 storageOpen(const QString& devId, const QString& folder, const QString& name);
     Q_INVOKABLE void    cancelBatch(quint32 batchId);
+    // Reports changes to a folder's listing with storageFolderChanged() until
+    // storageUnwatch(). Ends quietly when the device disconnects.
+    Q_INVOKABLE quint32 storageWatch(const QString& devId, const QString& path);
+    Q_INVOKABLE void    storageUnwatch(quint32 watchId);
     Q_INVOKABLE void    storageCancel(quint32 requestId);
     Q_INVOKABLE void    showInFolder(const QString& localPath) const;
     Q_INVOKABLE QString localPath(const QUrl& url) const;
@@ -189,6 +193,7 @@ signals:
     void storageUploaded(const QString& devId, const QString& remotePath);
     void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
     void storageOperationProgress(quint32 requestId, const QString& devId, qint64 done, qint64 total);
+    void storageFolderChanged(quint32 watchId, const QString& path);
     void storageBatchProgress(quint32 batchId, int filesDone, int filesKnown);
     // `urls`: file URLs of the top-level items, as downloaded.
     void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);

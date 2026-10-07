@@ -20,6 +20,8 @@
 //     {"t":"fs.mkdir",  "id":u32, "path":"/Docs", "name":"New folder",
 //      "existing":bool}  existing: answer with a folder of that name if there
 //                         is one instead of adding "New folder (1)"
+//     {"t":"fs.watch", "id":u32, "path":"/Docs"}   tell me when this folder's
+//     {"t":"fs.unwatch", "id":u32}                  listing changes; no reply
 //     {"t":"fs.move", "id":u32, "path":"/Docs/a.txt", "to":"/Other/folder"}
 //     {"t":"fs.copy", "id":u32, "path":"/Docs/a.txt", "to":"/Other/folder"}
 //       files or folders, into `to`; a name already there gets a suffix
@@ -37,12 +39,14 @@
 //     kind 1  {"t":"fs.done", "id", "path"}   rename, delete or mkdir succeeded;
 //             path is the result (delete: what was removed; also "trashed";
 //             mkdir: also "existed" when an existing folder was reused)
+//     kind 1  {"t":"fs.changed", "id", "path"}  a watched folder changed (or
+//             stopped resolving); list it again
 //     kind 1  {"t":"fs.progress", "id", "done", "total"}  every few seconds
 //             while a copy (or a move between drives) runs; bytes
 //       code: not_offered | forbidden | not_found | denied | not_a_dir |
 //             not_a_file | busy | io | bad_request | exists | root | inside
 //
-// Permissions (see Permissions.hpp): fs.list needs storage.observe, fs.read
+// Permissions (see Permissions.hpp): fs.list and fs.watch need storage.observe, fs.read
 // needs storage.read, fs.write, fs.mkdir and fs.copy need storage.upload, and
 // fs.rename, fs.delete, fs.move and fs.write with "replace" need storage.write.
 // Uploads otherwise add files; name collisions get a suffix.
@@ -107,6 +111,10 @@ public:
                 quint32 id, bool replace = false);
     // fs.rename, fs.delete or fs.mkdir; `request` is the message without "id".
     void operation(const uconnect::DevId& dev, QJsonObject request, quint32 id);
+    // Asks the device to report changes to a folder's listing (folderChanged)
+    // until unwatch(). Ends quietly if the device drops it.
+    void watch(const uconnect::DevId& dev, const QString& path, quint32 id);
+    void unwatch(quint32 id);
     void cancel(quint32 id);
 
     // Deleted items go to the trash when possible; tests turn that off so
@@ -128,6 +136,7 @@ signals:
     void uploadProgress(quint32 id, qint64 sent, qint64 total);
     void uploadFinished(quint32 id, const QString& remotePath, const QString& error);
     void operationFinished(quint32 id, const QString& path, const QString& error);
+    void folderChanged(quint32 watchId, const QString& path);
     // A long fs.copy or fs.move; `total` is -1 until known.
     void operationProgress(quint32 id, qint64 done, qint64 total);
 
@@ -201,6 +210,17 @@ private:
         bool replace = false;
         Clock::time_point deadline;
     };
+    // A folder a peer is looking at. Polled rather than watched with the OS:
+    // on Windows a change notification holds the folder open, which would stop
+    // anyone renaming or deleting it or its parents.
+    struct Watch {
+        QString path;  // virtual
+        size_t  signature = 0;
+    };
+    struct Watching {  // requester side
+        uconnect::DevId dev{};
+        QString         path;
+    };
     struct JobState;  // shared with the thread running the job
     // A copy, or a move between drives, running off this thread.
     struct Job {
@@ -223,6 +243,10 @@ private:
     void serveMkdir(const uconnect::DevId& dev, const QJsonObject& req);
     void serveTransfer(const uconnect::DevId& dev, const QJsonObject& req, bool copy);
     void finishJob(const uconnect::DevId& dev, quint32 id, const QString& code);
+    void serveWatch(const uconnect::DevId& dev, const QJsonObject& req);
+    // A summary of a watched folder's listing; 0 if it does not resolve.
+    size_t watchSignature(const QString& virtualPath) const;
+    void pollWatches();
     std::optional<Entry> resolveEntry(const QString& path, QString* code) const;
     void onWriteData(const uconnect::DevId& dev, std::span<const uint8_t> message);
     void onWriteEnd(const uconnect::DevId& dev, const QJsonObject& msg);
@@ -275,7 +299,10 @@ private:
     bool                           useTrash_ = true;
     bool                           alwaysCopyMoves_ = false;
     std::map<std::pair<uconnect::DevId, quint32>, Job> jobs_;
+    std::map<std::pair<uconnect::DevId, quint32>, Watch> watches_;
+    std::map<quint32, Watching>    watching_;
     QTimer*                        ticker_ = nullptr;
+    QTimer*                        watchTimer_ = nullptr;
 };
 
 // A remote file name made safe to create locally: no separators, reserved
