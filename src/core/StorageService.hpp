@@ -143,6 +143,8 @@ private:
     };
     struct Download {
         uconnect::DevId        dev{};
+        QString                remotePath;
+        bool                   requested = false;  // false while queued locally
         QString                folder;
         QString                name;
         QString                partPath;
@@ -222,6 +224,9 @@ private:
     void finishList(quint32 id, const QString& error);
     void finishDownload(quint32 id, const QString& error);
     void finishOperation(quint32 id, const QString& path, const QString& error);
+    // Sends queued fs.read requests while fewer than the offerer's limit are
+    // in flight; it answers "busy" beyond that.
+    void startQueuedDownloads(const uconnect::DevId& dev);
     void checkDeadlines();
     void updateTicker();
 

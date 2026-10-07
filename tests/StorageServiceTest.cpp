@@ -427,6 +427,24 @@ private slots:
         QCOMPARE(contents(second.localPath), QByteArray("hello world"));
     }
 
+    // The offerer serves four downloads per peer at a time and refuses more as
+    // "busy"; the requester queues the rest instead of failing them.
+    void queuesDownloadsBeyondTheOfferersLimit() {
+        QSignalSpy finished(link_->requester.get(), &StorageService::downloadFinished);
+        QSet<quint32> ids;
+        for (int i = 0; i < 10; ++i) {
+            const quint32 id = nextId();
+            ids.insert(id);
+            link_->requester->download(kOfferer, i % 2 ? "/share/hello.txt" : "/share/big.bin", downloads_, id);
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(finished.count() == 10, 30000);
+        for (const auto& args : finished) {
+            QVERIFY(ids.contains(args.at(0).toUInt()));
+            QVERIFY2(args.at(2).toString().isEmpty(), qPrintable(args.at(2).toString()));
+            QVERIFY(QFile::remove(args.at(1).toString()));
+        }
+    }
+
     void cancelsMidTransfer() {
         const quint32 id = nextId();
         QSignalSpy    progress(link_->requester.get(), &StorageService::downloadProgress);

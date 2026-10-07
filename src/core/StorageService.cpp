@@ -403,6 +403,7 @@ void StorageService::pump() {
         else ++it;
     }
     // Start at most four uploads per peer; additional files wait locally.
+    std::vector<quint32> unreadable;
     for (auto& [id, u] : uploads_) {
         if (u.requested) continue;
         const auto active = std::count_if(uploads_.begin(), uploads_.end(), [&](const auto& kv) {
@@ -413,6 +414,14 @@ void StorageService::pump() {
             continue;
         }
         auto& o = outgoing_.at(std::make_tuple(u.dev, id, true));
+        if (!o.file) {
+            o.file = std::make_unique<QFile>(u.localPath);
+            if (!o.file->open(QIODevice::ReadOnly)) {
+                unreadable.push_back(id);
+                continue;
+            }
+            u.total = o.file->size();
+        }
         if (!send_(u.dev, encodeControl({{"t", "fs.write"}, {"id", qint64(id)}, {"path", u.folder},
                                          {"name", safeFileName(QFileInfo(u.localPath).fileName())}, {"size", u.total},
                                          {"replace", u.replace}})))
@@ -421,6 +430,7 @@ void StorageService::pump() {
         u.deadline = Clock::now() + kRequestTimeout;
         o.ready = false;
     }
+    for (quint32 id : unreadable) finishUpload(id, {}, tr("Could not read the local file."));
     qint64 budget     = kPumpBudget;
     bool   progressed = true;
     while (budget > 0 && progressed) {
@@ -479,9 +489,10 @@ void StorageService::pump() {
 
 void StorageService::upload(const uconnect::DevId& dev, const QString& localPath,
                             const QString& remoteFolder, quint32 id, bool replace) {
+    // The file is opened only when its turn comes: a drop of hundreds of files
+    // must not hold hundreds open (macOS allows 256 by default).
     const QFileInfo info(localPath);
-    auto file = std::make_unique<QFile>(localPath);
-    if (!info.isFile() || !file->open(QIODevice::ReadOnly)) {
+    if (!info.isFile() || !info.isReadable()) {
         emit uploadFinished(id, {}, tr("Select a readable file to upload. Folders are not supported."));
         return;
     }
@@ -490,13 +501,12 @@ void StorageService::upload(const uconnect::DevId& dev, const QString& localPath
     u.localPath = localPath;
     u.folder = remoteFolder;
     u.replace = replace;
-    u.total = file->size();
+    u.total = info.size();
     u.deadline = Clock::now() + kRequestTimeout;
     uploads_.emplace(id, std::move(u));
     Outgoing o;
     o.dev = dev;
     o.id = id;
-    o.file = std::move(file);
     o.upload = true;
     o.ready = false;
     outgoing_.emplace(std::make_tuple(dev, id, true), std::move(o));
@@ -785,14 +795,32 @@ void StorageService::list(const uconnect::DevId& dev, const QString& path, quint
 void StorageService::download(const uconnect::DevId& dev, const QString& remotePath,
                               const QString& folder, quint32 id) {
     Download d;
-    d.dev      = dev;
-    d.folder   = folder;
-    d.name     = safeFileName(remotePath.section(QLatin1Char('/'), -1));
-    d.deadline = Clock::now() + kRequestTimeout;
+    d.dev        = dev;
+    d.remotePath = remotePath;
+    d.folder     = folder;
+    d.name       = safeFileName(remotePath.section(QLatin1Char('/'), -1));
     downloads_.emplace(id, std::move(d));
     updateTicker();
-    if (!send_(dev, encodeControl({{"t", "fs.read"}, {"id", qint64(id)}, {"path", remotePath}})))
-        finishDownload(id, tr("Could not reach the device."));
+    startQueuedDownloads(dev);
+}
+
+void StorageService::startQueuedDownloads(const uconnect::DevId& dev) {
+    auto active = static_cast<size_t>(std::count_if(downloads_.begin(), downloads_.end(), [&](const auto& kv) {
+        return kv.second.dev == dev && kv.second.requested;
+    }));
+    std::vector<quint32> unreachable;
+    for (auto& [id, d] : downloads_) {
+        if (active >= kMaxOutgoingPerPeer) break;
+        if (d.dev != dev || d.requested) continue;
+        if (!send_(dev, encodeControl({{"t", "fs.read"}, {"id", qint64(id)}, {"path", d.remotePath}}))) {
+            unreachable.push_back(id);
+            continue;
+        }
+        d.requested = true;
+        d.deadline  = Clock::now() + kRequestTimeout;
+        ++active;
+    }
+    for (quint32 id : unreachable) finishDownload(id, tr("Could not reach the device."));
 }
 
 void StorageService::cancel(quint32 id) {
@@ -802,7 +830,7 @@ void StorageService::cancel(quint32 id) {
         finishUpload(id, {}, tr("Canceled"));
     }
     if (auto it = downloads_.find(id); it != downloads_.end()) {
-        send_(it->second.dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
+        if (it->second.requested) send_(it->second.dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
         finishDownload(id, tr("Canceled"));
     }
     lists_.erase(id);
@@ -905,6 +933,7 @@ void StorageService::onReadEnd(const uconnect::DevId& dev, const QJsonObject& ms
     updateTicker();
     emit downloadProgress(*id, received, received);
     emit downloadFinished(*id, finalPath, {});
+    startQueuedDownloads(dev);
 }
 
 void StorageService::onError(const uconnect::DevId& dev, const QJsonObject& msg) {
@@ -933,6 +962,7 @@ void StorageService::finishDownload(quint32 id, const QString& error) {
     }
     updateTicker();
     emit downloadFinished(id, {}, error);
+    startQueuedDownloads(d.dev);
 }
 
 // --- shared -------------------------------------------------------------------
@@ -1034,7 +1064,7 @@ void StorageService::checkDeadlines() {
     for (const auto& [id, p] : lists_)
         if (now > p.deadline) lists.push_back(id);
     for (const auto& [id, d] : downloads_)
-        if (now > d.deadline) downloads.push_back(id);
+        if (d.requested && now > d.deadline) downloads.push_back(id);
     for (quint32 id : lists) finishList(id, tr("No response from the device."));
     std::vector<quint32> ops;
     for (const auto& [id, op] : ops_)
