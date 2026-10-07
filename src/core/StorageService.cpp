@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -151,6 +152,7 @@ QString errorText(const QString& code) {
     if (code == QLatin1String("exists")) return StorageService::tr("Something with that name already exists there.");
     if (code == QLatin1String("root")) return StorageService::tr("A shared folder itself cannot be renamed, moved or deleted.");
     if (code == QLatin1String("inside")) return StorageService::tr("A folder cannot be moved or copied into itself.");
+    if (code == QLatin1String("corrupt")) return StorageService::tr("The file was damaged on the way; try again.");
     return StorageService::tr("The request failed.");
 }
 
@@ -223,6 +225,16 @@ bool copyTree(const QFileInfo& from, const QString& to, std::atomic<qint64>& don
     if (!QFile::copy(from.absoluteFilePath(), to)) return false;
     done += from.size();
     return true;
+}
+
+std::unique_ptr<QCryptographicHash> newHash() {
+    return std::make_unique<QCryptographicHash>(QCryptographicHash::Sha256);
+}
+
+// A digest sent by the other side, if any, matches ours.
+bool digestMatches(const QJsonObject& msg, const QCryptographicHash& hash) {
+    const QJsonValue sent = msg.value("sha256");
+    return sent.isUndefined() || sent.toString().compare(QString::fromLatin1(hash.result().toHex()), Qt::CaseInsensitive) == 0;
 }
 
 bool sameVolume(const QString& a, const QString& b) {
@@ -442,6 +454,7 @@ void StorageService::serveRead(const uconnect::DevId& dev, const QJsonObject& re
     o.dev  = dev;
     o.id   = *id;
     o.file = std::move(file);
+    o.hash = newHash();
     o.queue.push_back(encodeControl({{"t", "fs.read.r"}, {"id", qint64(*id)}, {"size", info.size()}}));
     outgoing_.emplace(key, std::move(o));
     if (!pumpTimer_->isActive()) pumpTimer_->start(0);
@@ -477,6 +490,7 @@ void StorageService::pump() {
                 continue;
             }
             u.total = o.file->size();
+            o.hash  = newHash();
         }
         if (!send_(u.dev, encodeControl({{"t", "fs.write"}, {"id", qint64(id)}, {"path", u.folder},
                                          {"name", safeFileName(QFileInfo(u.localPath).fileName())}, {"size", u.total},
@@ -497,6 +511,7 @@ void StorageService::pump() {
             if (o.queue.empty() && !o.done) {
                 const QByteArray chunk = o.file->read(kChunkSize);
                 if (!chunk.isEmpty()) {
+                    o.hash->addData(chunk);
                     o.queue.push_back(dataFrame(o.id, chunk, o.upload));
                     o.sent += chunk.size();
                 } else {
@@ -509,7 +524,8 @@ void StorageService::pump() {
                                                               {"error", errorText(QStringLiteral("io"))}})
                                              : encodeControl({{"t", o.upload ? "fs.write.end" : "fs.read.end"},
                                                               {"id", qint64(o.id)},
-                                                              {"sent", o.sent}}));
+                                                              {"sent", o.sent},
+                                                              {"sha256", QString::fromLatin1(o.hash->result().toHex())}}));
                 }
             }
             if (!send_(o.dev, o.queue.front())) {
@@ -605,6 +621,7 @@ void StorageService::serveWrite(const uconnect::DevId& dev, const QJsonObject& r
     in.total = total;
     in.replace = replace;
     in.deadline = Clock::now() + kStallTimeout;
+    in.hash = newHash();
     in.file = std::make_unique<QTemporaryFile>(QDir(in.folder).filePath(QStringLiteral(".uconnect-upload-XXXXXX.part")));
     if (!in.file->open()) return failIncoming(dev, *id, QStringLiteral("io"));
     incoming_.emplace(key, std::move(in));
@@ -642,6 +659,7 @@ void StorageService::onWriteData(const uconnect::DevId& dev, std::span<const uin
         return failIncoming(dev, id, QStringLiteral("bad_request"));
     if (in.file->write(reinterpret_cast<const char*>(bytes.data()), n) != n)
         return failIncoming(dev, id, QStringLiteral("io"));
+    in.hash->addData(QByteArrayView(reinterpret_cast<const char*>(bytes.data()), n));
     in.received += n;
     in.deadline = Clock::now() + kStallTimeout;
 }
@@ -655,6 +673,7 @@ void StorageService::onWriteEnd(const uconnect::DevId& dev, const QJsonObject& m
     Incoming& in = it->second;
     if (in.received != in.total || msg.value("sent").toInteger(-1) != in.received)
         return failIncoming(dev, *id, QStringLiteral("bad_request"));
+    if (!digestMatches(msg, *in.hash)) return failIncoming(dev, *id, QStringLiteral("corrupt"));
     // Re-resolve before saving: a changed share or link must not redirect a write.
     QString code;
     const auto resolved = resolve(in.virtualFolder, &code);
@@ -1095,6 +1114,7 @@ void StorageService::onReadStart(const uconnect::DevId& dev, const QJsonObject& 
         send_(dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(*id)}}));
         return finishDownload(*id, tr("Cannot write to the download folder."));
     }
+    d.hash         = newHash();
     d.total        = msg.value("size").toInteger(-1);
     d.deadline     = Clock::now() + kStallTimeout;
     d.lastProgress = Clock::now();
@@ -1115,6 +1135,7 @@ void StorageService::onReadData(const uconnect::DevId& dev, std::span<const uint
         send_(dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
         return finishDownload(id, tr("Could not write the file (is the disk full?)."));
     }
+    d.hash->addData(QByteArrayView(reinterpret_cast<const char*>(bytes.data()), n));
     d.received += n;
     const auto now = Clock::now();
     d.deadline     = now + kStallTimeout;
@@ -1133,6 +1154,7 @@ void StorageService::onReadEnd(const uconnect::DevId& dev, const QJsonObject& ms
     d.file->close();
     if (msg.value("sent").toInteger(-1) != d.received)
         return finishDownload(*id, tr("The transfer was incomplete."));
+    if (!digestMatches(msg, *d.hash)) return finishDownload(*id, errorText(QStringLiteral("corrupt")));
 
     const QString finalPath = uniquePath(d.folder, d.name);
     if (!QFile::rename(d.partPath, finalPath)) return finishDownload(*id, tr("Could not save the file."));

@@ -42,16 +42,18 @@ struct Link {
     int                             toRequester = 0;
     // What the offerer lets the requester do; everything unless a test narrows it.
     PermissionSet granted{perm::StorageObserve, perm::StorageRead, perm::StorageUpload};
+    // Lets a test damage messages on the way, as a faulty network might.
+    std::function<void(std::vector<uint8_t>&)> tamper;
 
     Link() {
         requester = std::make_unique<StorageService>(
             [this](const uconnect::DevId&, std::span<const uint8_t> bytes) {
-                return deliver(offerer.get(), kRequester, bytes, toOfferer);
+                return deliver(offerer.get(), kRequester, bytes, toOfferer, tamper);
             },
             [](const uconnect::DevId&, const QString&) { return false; });
         offerer = std::make_unique<StorageService>(
             [this](const uconnect::DevId&, std::span<const uint8_t> bytes) {
-                return deliver(requester.get(), kOfferer, bytes, toRequester);
+                return deliver(requester.get(), kOfferer, bytes, toRequester, tamper);
             },
             [this](const uconnect::DevId& dev, const QString& permission) {
                 return dev == kRequester && granted.contains(permission);
@@ -59,10 +61,12 @@ struct Link {
     }
     Link(const Link&) = delete;
 
-    static bool deliver(StorageService* to, uconnect::DevId from, std::span<const uint8_t> bytes, int& inFlight) {
+    static bool deliver(StorageService* to, uconnect::DevId from, std::span<const uint8_t> bytes, int& inFlight,
+                        const std::function<void(std::vector<uint8_t>&)>& tamper) {
         if (inFlight >= kWindow) return false;
         ++inFlight;
         std::vector<uint8_t> copy(bytes.begin(), bytes.end());
+        if (tamper) tamper(copy);
         QMetaObject::invokeMethod(to, [to, from, copy, &inFlight] {
             --inFlight;
             to->handleMessage(from, copy);
@@ -424,6 +428,39 @@ private slots:
         QVERIFY(QDir(share_ + "/watched").removeRecursively());
     }
 
+    // A file damaged on the way is caught by its SHA-256 and not kept.
+    void discardsFilesDamagedInTransit() {
+        auto flipFirstDataByte = [](uint8_t kind) {
+            return [kind, done = false](std::vector<uint8_t>& m) mutable {
+                if (done || m.size() < 6 || m[0] != kind) return;
+                m[5] ^= 0xFF;
+                done = true;
+            };
+        };
+        link_->tamper = flipFirstDataByte(2);  // a download frame
+        const auto down = download("/share/hello.txt");
+        QVERIFY(down.localPath.isEmpty());
+        QVERIFY2(down.error.contains("damaged"), qPrintable(down.error));
+        QVERIFY(!QFile::exists(downloads_ + "/hello.txt"));
+        QVERIFY(QDir(downloads_).entryList({"*.part"}, QDir::Files).isEmpty());
+
+        write(outside_ + "/fragile.txt", "fragile contents");
+        link_->tamper = flipFirstDataByte(3);  // an upload frame
+        const auto up = upload(outside_ + "/fragile.txt");
+        QVERIFY(up.localPath.isEmpty());
+        QVERIFY2(up.error.contains("damaged"), qPrintable(up.error));
+        QVERIFY(!QFile::exists(share_ + "/sub/fragile.txt"));
+        QVERIFY(QDir(share_ + "/sub").entryList({".uconnect-*"}, QDir::Files | QDir::Hidden).isEmpty());
+
+        // Intact, both still work.
+        link_->tamper = nullptr;
+        QVERIFY(download("/share/hello.txt").error.isEmpty());
+        const auto ok = upload(outside_ + "/fragile.txt");
+        QVERIFY2(ok.error.isEmpty(), qPrintable(ok.error));
+        QVERIFY(QFile::remove(uploadedPath(ok.localPath)));
+        QFile::remove(downloads_ + "/hello.txt");
+    }
+
     void replacesExistingFilesOnlyWithWrite() {
         write(share_ + "/sub/target.txt", "old");
         write(outside_ + "/target.txt", "new contents");
@@ -662,7 +699,7 @@ private slots:
         // For this test both peers grant access to each other.
         link_->requester.reset(new StorageService(
             [this](const uconnect::DevId&, std::span<const uint8_t> bytes) {
-                return Link::deliver(link_->offerer.get(), kRequester, bytes, link_->toOfferer);
+                return Link::deliver(link_->offerer.get(), kRequester, bytes, link_->toOfferer, link_->tamper);
             }, [](const uconnect::DevId&, const QString&) { return true; }));
         link_->requester->setOffered(true);
         link_->requester->setSharedFolders({share_});

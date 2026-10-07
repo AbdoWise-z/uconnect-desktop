@@ -13,7 +13,7 @@
 //      "replace":bool}   replace: overwrite a file of that name instead of
 //                         adding "file (1).txt"
 //       waits for fs.write.r, then sends kind 3 [u8 3][u32 id, big-endian][bytes]
-//     {"t":"fs.write.end", "id":u32, "sent":n}
+//     {"t":"fs.write.end", "id":u32, "sent":n, "sha256":"hex"}
 //     {"t":"fs.write.cancel", "id":u32}
 //     {"t":"fs.rename", "id":u32, "path":"/Docs/a.txt", "name":"b.txt"}
 //     {"t":"fs.delete", "id":u32, "path":"/Docs/a.txt"}   files or folders
@@ -31,7 +31,7 @@
 //              "entries":[{"name", "dir", "size", "mtime"}]}       mtime: ms since epoch
 //     kind 1  {"t":"fs.read.r", "id", "size"}       then the file as
 //     kind 2  [u8 2][u32 id, big-endian][bytes]      frames, in order, then
-//     kind 1  {"t":"fs.read.end", "id", "sent"}
+//     kind 1  {"t":"fs.read.end", "id", "sent", "sha256"}
 //     kind 1  {"t":"fs.err", "id", "code", "error"}
 //     kind 1  {"t":"fs.write.r", "id"}
 //     kind 1  {"t":"fs.write.done", "id", "path"}  after saving the file
@@ -44,7 +44,12 @@
 //     kind 1  {"t":"fs.progress", "id", "done", "total"}  every few seconds
 //             while a copy (or a move between drives) runs; bytes
 //       code: not_offered | forbidden | not_found | denied | not_a_dir |
-//             not_a_file | busy | io | bad_request | exists | root | inside
+//             not_a_file | busy | io | bad_request | exists | root | inside |
+//             corrupt
+//
+// "sha256" is the SHA-256 of the whole file, lowercase hex. The receiver
+// checks it when present and discards a file that does not match ("corrupt");
+// a sender that leaves it out is trusted on size alone.
 //
 // Permissions (see Permissions.hpp): fs.list and fs.watch need storage.observe, fs.read
 // needs storage.read, fs.write, fs.mkdir and fs.copy need storage.upload, and
@@ -82,6 +87,7 @@
 
 #include "uconnect/types.hpp"
 
+class QCryptographicHash;
 class QFile;
 class QTimer;
 class QTemporaryFile;
@@ -156,6 +162,7 @@ private:
         bool                             upload = false;
         bool                             ready = true;  // uploads wait for the receiver
         std::deque<std::vector<uint8_t>> queue;          // built, not yet accepted by send
+        std::unique_ptr<QCryptographicHash> hash;         // of what was read so far
     };
     struct PendingList {
         uconnect::DevId   dev{};
@@ -171,6 +178,7 @@ private:
         QString                name;
         QString                partPath;
         std::unique_ptr<QFile> file;
+        std::unique_ptr<QCryptographicHash> hash;
         qint64                 total    = -1;
         qint64                 received = 0;
         Clock::time_point      deadline;
@@ -205,6 +213,7 @@ private:
         QString name;
         QString virtualFolder;
         std::unique_ptr<QTemporaryFile> file;
+        std::unique_ptr<QCryptographicHash> hash;
         qint64 total = 0;
         qint64 received = 0;
         bool replace = false;
