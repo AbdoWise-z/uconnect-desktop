@@ -1,7 +1,20 @@
 # Plan: screen sharing and remote control
 
-Status: **draft, not started** (2026-10-08). This is the outline to execute
-later; the wire format goes into `docs/protocol.md` as each part lands.
+Status: **implementation in progress** (2026-10-08). Each phase is implemented,
+tested and committed before the next phase. Wire details land in `docs/protocol.md`.
+
+Execution notes:
+
+- Phase 0: Qt Multimedia installed; pinned FFmpeg shared SDK, optional build,
+  authenticated datagram routing and trusted-only screen/control grants added.
+  Foundation tests cover real direct UDP, UDP relay and TCP fallback, codec
+  round trip, and default-grant filtering. **Validated:** Windows Debug build
+  and all 7 CTest suites pass, including the three real network paths.
+- Hardware, macOS/Linux capture, and glass-to-glass latency require real
+  desktops; automated synthetic tests cannot establish those acceptance values.
+- The pinned BtbN build embeds source-built OpenH264. Its software encoder
+  does not carry Cisco's binary patent license. The Cisco binary fallback
+  must load separately; see `docs/third-party-screen.md`.
 
 ## Decisions taken
 

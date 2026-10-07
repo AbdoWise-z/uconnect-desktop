@@ -310,6 +310,13 @@ ApplicationWindow {
                 color: Theme.textSecondary
                 text: qsTr("Connects your devices over protected uConnect topics. Built with Qt and the uConnect library.")
             }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: Theme.textSecondary
+                font.pixelSize: Theme.smallFontSize
+                text: qsTr("Screen builds dynamically link FFmpeg under the LGPL. License and source details are included in third-party-screen.md and FFmpeg-LICENSE.txt beside the app.")
+            }
             UButton {
                 Layout.alignment: Qt.AlignRight
                 text: qsTr("Close")

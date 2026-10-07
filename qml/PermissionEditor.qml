@@ -10,6 +10,7 @@ ColumnLayout {
 
     property var granted: []      // permission ids
     property bool editable: true
+    property bool trustedDevice: true
 
     signal toggled(string permission, bool granted)
 
@@ -43,7 +44,7 @@ ColumnLayout {
                     UCheckBox {
                         Layout.preferredWidth: 130
                         text: entry.modelData.label
-                        enabled: editor.editable
+                        enabled: editor.editable && (editor.trustedDevice || !entry.modelData.trustedOnly)
                         checked: editor.granted.indexOf(entry.modelData.id) >= 0
                         onToggled: editor.toggled(entry.modelData.id, checked)
                     }

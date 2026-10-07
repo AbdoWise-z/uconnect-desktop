@@ -51,7 +51,10 @@ QString shortId(const QString& devId) {
 }
 
 Session::Session(QObject* parent)
-    : QObject(parent), pollTimer_(new QTimer(this)), snapshotTimer_(new QTimer(this)) {
+    : QObject(parent), pollTimer_(new QTimer(this)), snapshotTimer_(new QTimer(this)),
+      media_([this](const uconnect::DevId& dev, uint8_t kind, std::span<const uint8_t> bytes) {
+          emit mediaDatagram(hex(dev), kind, QByteArray(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+      }) {
     storage_ = new StorageService(
         [this](const uconnect::DevId& dev, std::span<const uint8_t> bytes) {
             return topic_ && topic_->send(dev, bytes);
@@ -126,6 +129,7 @@ void Session::start(const Options& options) {
         node_       = std::make_unique<uconnect::Node>(cfg);
         node_->run_in_background();
         topic_ = &node_->join(*creds);
+        media_.attach(topic_);
     } catch (const std::exception& e) {
         node_.reset();
         topic_ = nullptr;
@@ -151,6 +155,21 @@ void Session::start(const Options& options) {
             if (gen == generation_) onData(dev, copy);
         }, Qt::QueuedConnection);
     });
+    topic_->on_datagram([this, gen](uconnect::DevId dev, std::span<const uint8_t> bytes) {
+        if (mediaPending_.fetch_add(1) >= 512) { --mediaPending_; return; }
+        const QByteArray copy(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        QMetaObject::invokeMethod(this, [this, gen, dev, copy] {
+            --mediaPending_;
+            if (gen == generation_) media_.receive(dev,
+                {reinterpret_cast<const uint8_t*>(copy.constData()), size_t(copy.size())});
+        }, Qt::QueuedConnection);
+    });
+    topic_->on_datagram_path([this, gen](uconnect::DevId dev, uconnect::DatagramPath path) {
+        QMetaObject::invokeMethod(this, [this, gen, dev, path] {
+            if (gen == generation_ && media_.active(dev))
+                emit mediaPathChanged(hex(dev), QString::fromLatin1(uconnect::to_string(path)));
+        }, Qt::QueuedConnection);
+    });
 
     log(tr("Started; local TCP port %1, topic %2")
             .arg(node_->local_port())
@@ -166,6 +185,7 @@ void Session::stop() {
     pollTimer_->stop();
     snapshotTimer_->stop();
     ++generation_;
+    media_.attach(nullptr);
     storage_->reset();
     sync_->reset();
 
@@ -193,6 +213,16 @@ void Session::setIdentity(const Identity& identity) {
     identity_ = identity;
 }
 
+bool Session::openMedia(const uconnect::DevId& peer) {
+    const auto it = peers_.find(peer);
+    if (it == peers_.end() || !it->second.identity || !policy_.trusted.contains(keyToHex(*it->second.identity)))
+        return false;
+    return media_.open(peer);
+}
+
+void Session::closeMedia(const uconnect::DevId& peer) { media_.close(peer); }
+bool Session::sendMedia(const uconnect::DevId& peer, std::span<const uint8_t> bytes) { return media_.send(peer, bytes); }
+
 void Session::configureSync(const QString& keyHex, const QString& stateDir) {
     sync_->setIdentity(keyHex, stateDir);
 }
@@ -207,6 +237,9 @@ void Session::setAccessPolicy(const AccessPolicy& policy) {
         for (const uconnect::DevId& dev : topic_->connected()) {
             sendGrants(dev);
             sync_->peerUp(dev);  // trust may have changed
+            const auto it = peers_.find(dev);
+            if (it == peers_.end() || !it->second.identity || !policy_.trusted.contains(keyToHex(*it->second.identity)))
+                media_.close(dev);
         }
     emitPeers();
 }
@@ -500,6 +533,7 @@ void Session::onPeerState(const uconnect::DevId& dev, uconnect::PeerState state)
     } else if (state == uconnect::PeerState::Closed || state == uconnect::PeerState::Failed) {
         storage_->peerGone(dev);
         sync_->peerGone(dev);
+        media_.close(dev);
         p.connectedAt = -1;
         p.identity.reset();
         p.identityInvalid = false;
@@ -592,7 +626,7 @@ PermissionSet Session::permissionsFor(const uconnect::DevId& dev) const {
         const auto trusted = policy_.trusted.constFind(keyToHex(*it->second.identity));
         if (trusted != policy_.trusted.constEnd()) return trusted.value();
     }
-    return policy_.defaults;
+    return permissionsForUntrusted(policy_.defaults);
 }
 
 }  // namespace ucd

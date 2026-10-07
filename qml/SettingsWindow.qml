@@ -295,6 +295,7 @@ Window {
                 Layout.fillWidth: true
                 Layout.topMargin: 4
                 granted: draft.defaultPermissions
+                trustedDevice: false
                 onToggled: (permission, on) => dlg.setDefaultPermission(permission, on)
             }
             Banner {

@@ -21,6 +21,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 # --- uconnect ----------------------------------------------------------------
 include(FetchContent)
+include(cmake/ScreenDependencies.cmake)
 set(UCONNECT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(UCONNECT_BUILD_SERVER OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
@@ -88,6 +89,8 @@ add_library(uconnect_desktop_core STATIC
     src/core/Permissions.hpp
     src/core/Session.cpp
     src/core/Session.hpp
+    src/core/screen/DatagramChannel.cpp
+    src/core/screen/DatagramChannel.hpp
     src/core/StorageService.cpp
     src/core/StorageService.hpp
     src/core/sync/SyncFolder.cpp
@@ -103,6 +106,10 @@ add_library(uconnect_desktop_core STATIC
 )
 target_include_directories(uconnect_desktop_core PUBLIC src)
 target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Core Qt6::Network uconnect PRIVATE monocypher)
+if (UCD_SCREEN_AVAILABLE)
+    target_compile_definitions(uconnect_desktop_core PUBLIC UCD_HAS_SCREEN)
+    target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Multimedia ucd_ffmpeg_shared)
+endif ()
 if (NOT MSVC)
     target_compile_options(uconnect_desktop_core PRIVATE -Wall -Wextra)
 endif ()
@@ -165,6 +172,7 @@ qt_add_qml_module(uconnect_desktop
 target_link_libraries(uconnect_desktop PRIVATE
     uconnect_desktop_core
     Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+ucd_deploy_screen(uconnect_desktop)
 
 if (UCD_DEBUG_UI)
     target_sources(uconnect_desktop PRIVATE
@@ -251,6 +259,10 @@ if (UCD_BUILD_TESTS)
     endfunction()
 
     ucd_add_test(IdentityTest)
+    ucd_add_test(ScreenFoundationTest)
+    add_subdirectory(${uconnect_SOURCE_DIR}/server ${uconnect_BINARY_DIR}/server)
+    target_link_libraries(ScreenFoundationTest PRIVATE uconnect_rendezvous)
+    ucd_deploy_screen(ScreenFoundationTest)
     ucd_add_test(StorageServiceTest)
     ucd_add_test(SyncLogicTest)
     ucd_add_test(SyncServiceTest)

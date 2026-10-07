@@ -22,7 +22,7 @@ build_dir="$project_dir/build/macos"
 cmake -S "$project_dir" -B "$build_dir" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$qt_prefix" \
     -DUCD_DEBUG_UI=ON -DUCD_BUILD_TESTS=ON
-cmake --build "$build_dir" --target uconnect_desktop IdentityTest StorageServiceTest StorageViewTest SettingsTest --parallel
+cmake --build "$build_dir" --parallel
 ctest --test-dir "$build_dir" --output-on-failure
 
 arch="$(uname -m)"

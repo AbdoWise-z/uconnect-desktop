@@ -27,9 +27,13 @@ const std::vector<PermissionInfo>& permissionTable() {
         {perm::CameraView, "camera", tr("View"),
          tr("Watch this device's camera."), false},
         {perm::ScreenView, "screen", tr("View"),
-         tr("Watch this device's screen."), false},
+         tr("Watch this device's screen."), false, true},
+        {perm::ScreenDirect, "screen", tr("Without asking"),
+         tr("View the screen without a consent prompt. Trusted devices only."), false, true},
         {perm::ControlInput, "control", tr("Control"),
-         tr("Use this device's mouse and keyboard."), false},
+         tr("Use this device's mouse and keyboard."), false, true},
+        {perm::ControlDirect, "control", tr("Without asking"),
+         tr("Control mouse and keyboard without a consent prompt. Trusted devices only."), false, true},
     };
     return table;
 }
@@ -37,6 +41,18 @@ const std::vector<PermissionInfo>& permissionTable() {
 bool isKnownPermission(const QString& id) {
     const auto& t = permissionTable();
     return std::any_of(t.begin(), t.end(), [&](const PermissionInfo& p) { return p.id == id; });
+}
+
+bool isTrustedOnlyPermission(const QString& id) {
+    const auto& table = permissionTable();
+    return std::any_of(table.begin(), table.end(), [&](const PermissionInfo& p) { return p.id == id && p.trustedOnly; });
+}
+
+PermissionSet permissionsForUntrusted(const PermissionSet& permissions) {
+    PermissionSet out;
+    for (const auto& permission : permissions)
+        if (isKnownPermission(permission) && !isTrustedOnlyPermission(permission)) out.insert(permission);
+    return out;
 }
 
 QVariantList permissionsForQml() {
@@ -48,6 +64,7 @@ QVariantList permissionsForQml() {
             {"label", p.label},
             {"description", p.description},
             {"available", p.available},
+            {"trustedOnly", p.trustedOnly},
         });
     }
     return out;

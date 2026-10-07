@@ -27,6 +27,9 @@
 #include "core/Permissions.hpp"
 #include "core/StorageService.hpp"
 #include "core/sync/SyncService.hpp"
+#include "core/screen/DatagramChannel.hpp"
+#include <atomic>
+#include <QByteArray>
 #include "uconnect/uconnect.hpp"
 
 class QTimer;
@@ -107,6 +110,9 @@ public:
     void refreshNow();
     void requestServerStats();
     void requestTopicListing();
+    bool openMedia(const uconnect::DevId& peer);
+    void closeMedia(const uconnect::DevId& peer);
+    bool sendMedia(const uconnect::DevId& peer, std::span<const uint8_t> bytes);
 
     // Storage: this device's shared folders, and requests to other devices'.
     void setSharedFolders(const QStringList& folders, const QStringList& readOnly = {});
@@ -128,6 +134,8 @@ public:
     void setSyncFolders(const QVector<ucd::sync::FolderConfig>& folders);
 
 signals:
+    void mediaDatagram(const QString& devId, quint8 kind, const QByteArray& bytes);
+    void mediaPathChanged(const QString& devId, const QString& path);
     void statusChanged(ucd::Session::Status status, const QString& detail);
     void peersChanged(const QVector<ucd::PeerRecord>& peers);
     void snapshotChanged(const ucd::NodeSnapshot& snapshot);
@@ -197,6 +205,8 @@ private:
 
     StorageService* storage_ = nullptr;
     SyncService*    sync_    = nullptr;
+    screen::DatagramChannel media_;
+    std::atomic_uint mediaPending_{0};  // bound loop-to-worker queues under overload
 };
 
 QString shortId(const QString& devId);

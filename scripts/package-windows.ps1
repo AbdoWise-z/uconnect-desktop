@@ -26,10 +26,16 @@ Copy-Item -LiteralPath $executable -Destination (Join-Path $packagePath 'uConnec
 Get-ChildItem -LiteralPath $buildPath -Filter '*.dll' -File |
     Where-Object Name -NotMatch '^Qt6Test' |
     Copy-Item -Destination $packagePath
-foreach ($directory in @('generic', 'iconengines', 'imageformats', 'networkinformation', 'platforms', 'qml', 'tls')) {
+foreach ($directory in @('generic', 'iconengines', 'imageformats', 'networkinformation', 'platforms', 'qml', 'tls', 'multimedia')) {
     $sourcePath = Join-Path $buildPath $directory
     if (Test-Path -LiteralPath $sourcePath) {
         Copy-Item -LiteralPath $sourcePath -Destination $packagePath -Recurse
+    }
+}
+foreach ($notice in @('third-party-screen.md', 'FFmpeg-LICENSE.txt')) {
+    $sourcePath = Join-Path $buildPath $notice
+    if (Test-Path -LiteralPath $sourcePath) {
+        Copy-Item -LiteralPath $sourcePath -Destination $packagePath
     }
 }
 @'

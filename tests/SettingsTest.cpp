@@ -140,6 +140,20 @@ private slots:
         QCOMPARE(restarted.readOnlyFolders(), QStringList{a});
     }
 
+    void screenGrantsCannotBecomeDefaults() {
+        controller_->applySettings({{"defaultPermissions", QStringList{
+            "screen.view", "screen.direct", "control.input", "control.direct", "storage.observe"}}});
+        QCOMPARE(controller_->defaultPermissions(), QStringList{"storage.observe"});
+        const QString key(64, QLatin1Char('b'));
+        controller_->trustDevice(key, "Screen peer");
+        controller_->setDevicePermission(key, "screen.direct", true);
+        const auto devices = controller_->trustedDevices();
+        QCOMPARE(devices.size(), 1);
+        QVERIFY(devices.first().toMap().value("permissions").toStringList().contains("screen.direct"));
+        controller_->applySettings({{"defaultPermissions", QStringList{"control.direct"}}});
+        QVERIFY(controller_->defaultPermissions().isEmpty());
+    }
+
     void appliesTheUploadLimit() {
         QObject* settingsDraft = draft();
         QVERIFY(settingsDraft);

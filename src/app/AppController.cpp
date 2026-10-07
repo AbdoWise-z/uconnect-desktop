@@ -93,12 +93,12 @@ QString joinRemote(const QString& folder, const QString& name) {
     return folder.endsWith(QLatin1Char('/')) ? folder + name : folder + QLatin1Char('/') + name;
 }
 
-QStringList knownOnly(const QStringList& permissions) {
+QStringList knownOnly(const QStringList& permissions, bool trusted = true) {
     QStringList out;
     for (QString p : permissions) {
         // "storage.download" was folded into "storage.read"; saved grants keep working.
         if (p == QLatin1String("storage.download")) p = perm::StorageRead;
-        if (isKnownPermission(p) && !out.contains(p)) out << p;
+        if (isKnownPermission(p) && (trusted || !isTrustedOnlyPermission(p)) && !out.contains(p)) out << p;
     }
     out.sort();
     return out;
@@ -376,7 +376,7 @@ void AppController::applySettings(const QVariantMap& values) {
 
     bool trustTouched = false;
     if (values.contains(QStringLiteral("defaultPermissions"))) {
-        const QStringList perms = knownOnly(values.value(QStringLiteral("defaultPermissions")).toStringList());
+        const QStringList perms = knownOnly(values.value(QStringLiteral("defaultPermissions")).toStringList(), false);
         if (perms != defaultPermissions_) {
             defaultPermissions_ = perms;
             settings.setValue(Key::DefaultPerms, perms);
@@ -1009,7 +1009,7 @@ void AppController::setDevicePermission(const QString& key, const QString& permi
 
 void AppController::loadTrust() {
     QSettings settings;
-    defaultPermissions_ = knownOnly(settings.value(Key::DefaultPerms).toStringList());
+    defaultPermissions_ = knownOnly(settings.value(Key::DefaultPerms).toStringList(), false);
     settings.beginGroup(Key::Trust);
     for (const QString& key : settings.childGroups()) {
         if (!keyFromHex(key)) continue;

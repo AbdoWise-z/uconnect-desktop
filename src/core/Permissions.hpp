@@ -18,7 +18,9 @@ inline const QString StorageWrite    = QStringLiteral("storage.write");
 inline const QString StorageUpload   = QStringLiteral("storage.upload");
 inline const QString CameraView      = QStringLiteral("camera.view");
 inline const QString ScreenView      = QStringLiteral("screen.view");
+inline const QString ScreenDirect    = QStringLiteral("screen.direct");
 inline const QString ControlInput    = QStringLiteral("control.input");
+inline const QString ControlDirect   = QStringLiteral("control.direct");
 }  // namespace perm
 
 struct PermissionInfo {
@@ -27,14 +29,17 @@ struct PermissionInfo {
     QString label;        // short, shown next to a checkbox
     QString description;  // one sentence: what the other device can do
     bool    available;    // false while the action itself does not exist yet
+    bool    trustedOnly = false;
 };
 
 const std::vector<PermissionInfo>& permissionTable();
 bool                               isKnownPermission(const QString& id);
+bool                               isTrustedOnlyPermission(const QString& id);
 
 // The table for QML: a list of maps with the fields above.
 QVariantList permissionsForQml();
 
 using PermissionSet = QSet<QString>;
+PermissionSet permissionsForUntrusted(const PermissionSet& permissions);
 
 }  // namespace ucd
