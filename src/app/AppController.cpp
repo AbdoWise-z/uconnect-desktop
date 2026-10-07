@@ -45,8 +45,11 @@ constexpr auto Trust          = "trust";  // a group per trusted public key
 
 QStringList knownOnly(const QStringList& permissions) {
     QStringList out;
-    for (const QString& p : permissions)
+    for (QString p : permissions) {
+        // "storage.download" was folded into "storage.read"; saved grants keep working.
+        if (p == QLatin1String("storage.download")) p = perm::StorageRead;
         if (isKnownPermission(p) && !out.contains(p)) out << p;
+    }
     out.sort();
     return out;
 }

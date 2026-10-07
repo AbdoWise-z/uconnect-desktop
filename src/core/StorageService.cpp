@@ -322,7 +322,7 @@ void StorageService::serveRead(const uconnect::DevId& dev, const QJsonObject& re
     const auto id = idOf(req);
     if (!id) return;
     if (!offered_) return sendError(dev, *id, QStringLiteral("not_offered"));
-    if (!authorize_(dev, perm::StorageDownload)) return sendError(dev, *id, QStringLiteral("forbidden"));
+    if (!authorize_(dev, perm::StorageRead)) return sendError(dev, *id, QStringLiteral("forbidden"));
 
     QString    code;
     const auto resolved = resolve(req.value("path").toString(), &code);
@@ -372,7 +372,7 @@ void StorageService::pump() {
         }
         auto& o = outgoing_.at(std::make_tuple(u.dev, id, true));
         if (!send_(u.dev, encodeControl({{"t", "fs.write"}, {"id", qint64(id)}, {"path", u.folder},
-                                         {"name", QFileInfo(u.localPath).fileName()}, {"size", u.total}})))
+                                         {"name", safeFileName(QFileInfo(u.localPath).fileName())}, {"size", u.total}})))
             continue;
         u.requested = true;
         u.deadline = Clock::now() + kRequestTimeout;

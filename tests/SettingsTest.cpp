@@ -128,6 +128,23 @@ private slots:
         QCOMPARE(restarted.defaultPermissions(), QStringList{QStringLiteral("storage.upload")});
     }
 
+    // Download was folded into Read; grants saved before that keep their effect.
+    void migratesSavedDownloadPermissionToRead() {
+        const QString key = QString(64, QLatin1Char('a'));
+        {
+            QSettings settings;
+            settings.setValue("permissions/defaults", QStringList{"storage.download", "storage.observe"});
+            settings.setValue(QStringLiteral("trust/%1/name").arg(key), "Old device");
+            settings.setValue(QStringLiteral("trust/%1/permissions").arg(key), QStringList{"storage.download"});
+            settings.sync();
+        }
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QCOMPARE(restarted.defaultPermissions(), (QStringList{"storage.observe", "storage.read"}));
+        const QVariantList trusted = restarted.trustedDevices();
+        QCOMPARE(trusted.size(), 1);
+        QCOMPARE(trusted.first().toMap().value("permissions").toStringList(), QStringList{"storage.read"});
+    }
+
     void emptyFolderListRemovesSavedFolders() {
         const QString folder = QDir(temp_.path()).filePath("Shader folder");
         QVERIFY(addFolder(folder));

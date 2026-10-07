@@ -28,7 +28,7 @@
 //             not_a_file | busy | io | bad_request
 //
 // Permissions (see Permissions.hpp): fs.list needs storage.observe, fs.read
-// needs storage.download, fs.write needs storage.upload. Uploads add files;
+// needs storage.read, fs.write needs storage.upload. Uploads add files;
 // name collisions get a suffix, and existing files are never overwritten.
 //
 // Paths are virtual. "/" lists the shared folders by name, and "/<name>/..."

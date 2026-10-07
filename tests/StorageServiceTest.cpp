@@ -41,7 +41,7 @@ struct Link {
     int                             toOfferer   = 0;
     int                             toRequester = 0;
     // What the offerer lets the requester do; everything unless a test narrows it.
-    PermissionSet granted{perm::StorageObserve, perm::StorageDownload, perm::StorageUpload};
+    PermissionSet granted{perm::StorageObserve, perm::StorageRead, perm::StorageUpload};
 
     Link() {
         requester = std::make_unique<StorageService>(
@@ -260,13 +260,13 @@ private slots:
         QVERIFY(!list("/").error.isEmpty());
         QVERIFY(!download("/share/hello.txt").error.isEmpty());
 
-        // Observe lets it browse, but downloading needs its own permission.
+        // Observe lets it browse, but reading files needs its own permission.
         link_->granted = {perm::StorageObserve};
         QVERIFY(list("/share").error.isEmpty());
         QVERIFY(!download("/share/hello.txt").error.isEmpty());
 
-        // And the reverse: downloading a known path without browsing rights.
-        link_->granted = {perm::StorageDownload};
+        // And the reverse: reading a known path without browsing rights.
+        link_->granted = {perm::StorageRead};
         QVERIFY(!list("/share").error.isEmpty());
         const auto d = download("/share/hello.txt");
         QVERIFY2(d.error.isEmpty(), qPrintable(d.error));
@@ -334,7 +334,7 @@ private slots:
     }
 
     void enforcesUploadPermissionsAndSharedFolders() {
-        link_->granted = {perm::StorageObserve, perm::StorageDownload, perm::StorageWrite};
+        link_->granted = {perm::StorageObserve, perm::StorageRead, perm::StorageWrite};
         QVERIFY(!upload(share_ + "/hello.txt").error.isEmpty());
         link_->granted.insert(perm::StorageUpload);
         link_->offerer->setOffered(false);

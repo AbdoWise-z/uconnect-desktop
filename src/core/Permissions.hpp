@@ -14,7 +14,6 @@ namespace ucd {
 namespace perm {
 inline const QString StorageObserve  = QStringLiteral("storage.observe");
 inline const QString StorageRead     = QStringLiteral("storage.read");
-inline const QString StorageDownload = QStringLiteral("storage.download");
 inline const QString StorageWrite    = QStringLiteral("storage.write");
 inline const QString StorageUpload   = QStringLiteral("storage.upload");
 inline const QString CameraView      = QStringLiteral("camera.view");
