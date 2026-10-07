@@ -9,6 +9,7 @@
 // (e.g. the Flutter app) can parse it without sharing code with this one.
 // Kind 2 carries raw bytes for a service; its framing belongs to that service.
 // Kind 3 carries storage upload bytes, independently of kind 2 downloads.
+// Kind 4 carries blocks of synced folders.
 // docs/protocol.md specifies all of it.
 
 #include <cstdint>
@@ -26,6 +27,7 @@ enum class MessageKind : uint8_t {
     Control = 1,
     Data    = 2,
     StorageUploadData = 3,  // separate from downloads, whose request ids can overlap
+    SyncData = 4,           // blocks of synced files
 };
 
 std::vector<uint8_t>       encodeControl(const QJsonObject& message);

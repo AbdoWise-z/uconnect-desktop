@@ -207,6 +207,7 @@ private slots:
         f.applyScan(scan, f.seq);
         QVERIFY(f.local["c.txt"].skipped && !f.local["c.txt"].deleted);
         // A peer's newer version of a skipped file is not applied.
+        f.skip = IgnoreRules(QStringLiteral("c.txt"));
         f.applyRemote(kBob, 1, true, {file("c.txt", "bob", {{"A", 1}, {"B", 1}})});
         QCOMPARE(f.decide("c.txt", neverConnected).kind, Decision::None);
     }

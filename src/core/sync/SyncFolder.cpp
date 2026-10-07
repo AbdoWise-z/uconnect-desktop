@@ -35,8 +35,8 @@ QVector<FileEntry> SyncFolder::changedSince(quint64 since) const {
 
 int SyncFolder::applyScan(const ScanResult& result, quint64 seqAtStart) {
     if (!result.ok) return 0;
-    ignore = IgnoreRules(result.ignoreText);
-    skip   = IgnoreRules(result.skipText);
+    // The rules this scan went by; the caller may hold newer ones.
+    const IgnoreRules scanIgnore(result.ignoreText), scanSkip(result.skipText);
     const quint64 before = seq;
 
     QSet<QString> seen;
@@ -63,7 +63,7 @@ int SyncFolder::applyScan(const ScanResult& result, quint64 seqAtStart) {
     for (const QString& path : paths) {
         const FileEntry& l = local[path];
         if (l.deleted || seen.contains(path) || l.seq > seqAtStart || result.unstable.contains(path)) continue;
-        if (skip.matches(path, l.dir) && !ignore.matches(path, l.dir)) {
+        if (scanSkip.matches(path, l.dir) && !scanIgnore.matches(path, l.dir)) {
             if (!l.skipped) {
                 FileEntry e = l;
                 e.skipped   = true;

@@ -76,7 +76,7 @@ public:
     };
     QHash<QString, Remote> remotes;  // by identity key
 
-    IgnoreRules ignore;  // .syncignore and .syncskip, as of the last scan
+    IgnoreRules ignore;  // .syncignore and .syncskip, as the owner last read them
     IgnoreRules skip;
     // Resolutions waiting for their content: path -> what the entry becomes.
     QHash<QString, FileEntry> forced;
