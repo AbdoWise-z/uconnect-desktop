@@ -405,6 +405,12 @@ private slots:
         QCOMPARE(preview->property("text").toString(), QStringLiteral("hello preview"));
         QTest::keyClick(window_.get(), Qt::Key_Space);
         QVERIFY(!preview->property("opened").toBool());
+
+        // Going to another folder closes it.
+        QTest::keyClick(window_.get(), Qt::Key_Space);
+        QVERIFY(preview->property("opened").toBool());
+        QVERIFY(QMetaObject::invokeMethod(view_, "navigate", Q_ARG(QVariant, QVariant("/share"))));
+        QVERIFY(!preview->property("opened").toBool());
     }
 
     // In a read-only share nothing that changes it is offered or accepted.

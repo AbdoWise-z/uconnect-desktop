@@ -183,6 +183,8 @@ Item {
         rebuild(snapshot())
     }
     onFilterTextChanged: if (shownPath.length > 0) rebuild(snapshot())
+    // A preview belongs to the folder it was opened in.
+    onPathChanged: if (preview.opened) preview.close()
 
     // --- preview --------------------------------------------------------------------
     function canPreview(e) {

@@ -305,7 +305,7 @@ private:
     void sendReliably(const uconnect::DevId& dev, const QJsonObject& message);
     void finishUpload(quint32 id, const QString& remotePath, const QString& error);
     void sendError(const uconnect::DevId& dev, quint32 id, const QString& code);
-    QJsonArray listing(const QString& absolutePath, const SharedFolder& folder);
+    QJsonArray listing(const QString& absolutePath, const SharedFolder& folder, bool firstPage);
     // Maps a virtual path to a real one inside a shared folder. nullopt with
     // `code` set when it does not resolve or would escape the folder.
     std::optional<std::pair<const SharedFolder*, QString>> resolve(const QString& path, QString* code) const;
@@ -341,6 +341,7 @@ private:
     QTimer*                   pumpTimer_ = nullptr;
 
     // One-entry cache, so paging through a large directory reads it once.
+    // Only later pages use it.
     QString           cachedPath_;
     QJsonArray        cachedEntries_;
     Clock::time_point cachedAt_;

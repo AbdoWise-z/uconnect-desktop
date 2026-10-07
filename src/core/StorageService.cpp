@@ -398,9 +398,11 @@ StorageService::resolve(const QString& path, QString* code) const {
     return std::make_pair(&*folder, real);
 }
 
-QJsonArray StorageService::listing(const QString& absolutePath, const SharedFolder& folder) {
+QJsonArray StorageService::listing(const QString& absolutePath, const SharedFolder& folder, bool firstPage) {
+    // Later pages come from the read that served the first, so a listing is
+    // one consistent snapshot; a first page always reads the folder afresh.
     const auto now = Clock::now();
-    if (cachedPath_ == absolutePath && now - cachedAt_ < kCacheFor) return cachedEntries_;
+    if (!firstPage && cachedPath_ == absolutePath && now - cachedAt_ < kCacheFor) return cachedEntries_;
 
     QJsonArray out;
     const QFileInfoList infos = QDir(absolutePath).entryInfoList(
@@ -448,7 +450,7 @@ void StorageService::serveList(const uconnect::DevId& dev, const QJsonObject& re
         const QFileInfo info(resolved->second);
         if (!info.isDir()) return sendError(dev, *id, QStringLiteral("not_a_dir"));
         if (!info.isReadable()) return sendError(dev, *id, QStringLiteral("denied"));
-        all      = listing(resolved->second, *resolved->first);
+        all      = listing(resolved->second, *resolved->first, offset == 0);
         readOnly = resolved->first->readOnly;
     }
 
@@ -978,8 +980,10 @@ void StorageService::pollWatches() {
         }
         auto sig = seen.find(w.path);
         if (sig == seen.end()) sig = seen.emplace(w.path, watchSignature(w.path)).first;
-        if (sig->second != w.signature)
+        if (sig->second != w.signature) {
+            cachedPath_.clear();
             send_(dev, encodeControl({{"t", "fs.changed"}, {"id", qint64(id)}, {"path", w.path}}));
+        }
         w.signature = sig->second;
         if (sig->second == 0) it = watches_.erase(it);
         else ++it;

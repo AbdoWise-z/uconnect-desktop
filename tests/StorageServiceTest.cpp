@@ -391,6 +391,15 @@ private slots:
         QVERIFY(QDir(share_ + "/sub/tree (1)").removeRecursively());
     }
 
+    // Listing again shows what changed on the device in the meantime, at once.
+    void listsChangesMadeOnTheDeviceAtOnce() {
+        QVERIFY(QDir().mkpath(share_ + "/fresh"));
+        QCOMPARE(names(list("/share/fresh").entries), QStringList());
+        write(share_ + "/fresh/new.txt", "n");
+        QCOMPARE(names(list("/share/fresh").entries), QStringList{"new.txt"});
+        QVERIFY(QDir(share_ + "/fresh").removeRecursively());
+    }
+
     void reportsChangesToWatchedFolders() {
         QVERIFY(QDir().mkpath(share_ + "/watched"));
         QSignalSpy changed(link_->requester.get(), &StorageService::folderChanged);
