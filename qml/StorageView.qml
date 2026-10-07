@@ -25,6 +25,11 @@ Item {
     property string error: ""
     property alias transfersOpen: transfers.open
     property string shownPath: ""  // what the listing shows
+    property var listing: []  // the folder as listed; `entries` is it sorted and filtered
+    property string sortKey: "name"  // "name" | "size" | "mtime"
+    property bool sortAscending: true
+    property string filterText: ""
+    readonly property real previewLimit: 50 * 1024 * 1024
     property bool folderReadOnly: false  // the device keeps this share read-only
     // The device reports changes to the folder shown (live refresh).
     property real watchId: -1
@@ -99,6 +104,7 @@ Item {
     }
     function navigate(p) {
         if (p !== path) {
+            filterText = ""
             backStack = backStack.concat([path])
             forwardStack = []
             path = p
@@ -127,6 +133,66 @@ Item {
         if (!e) return
         if (e.dir) navigate(childPath(e.name))
         else if (canRead) App.storageOpen(devId, path, e.name)
+    }
+
+    // --- sorting and filtering ---------------------------------------------------
+    // Folders first, then by the chosen column; names break ties.
+    function arranged(list) {
+        const dir = sortAscending ? 1 : -1
+        const needle = filterText.trim().toLowerCase()
+        return list.filter(e => needle.length === 0 || e.name.toLowerCase().indexOf(needle) >= 0)
+                   .sort((a, b) => {
+                       if (a.dir !== b.dir) return a.dir ? -1 : 1
+                       let c = sortKey === "size" ? a.size - b.size
+                             : sortKey === "mtime" ? a.mtime - b.mtime : 0
+                       if (c === 0) c = a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+                       return c * dir
+                   })
+    }
+    // What to keep across a rebuild of the same folder: selection, current
+    // row, anchor and scroll position, by name.
+    function snapshot() {
+        return {
+            selected: selectedItems().map(i => i.name),
+            current: current ? current.name : "",
+            anchor: anchorIndex >= 0 && anchorIndex < entries.count ? entries.get(anchorIndex).name : "",
+            y: fileList.contentY
+        }
+    }
+    function rebuild(keep) {
+        entries.clear()
+        selectedCount = 0
+        anchorIndex = -1
+        let currentRow = 0
+        for (const e of arranged(listing)) {
+            const on = keep !== null && keep.selected.indexOf(e.name) >= 0
+            entries.append(Object.assign({ selected: on, readOnly: false }, e))
+            if (on) ++selectedCount
+            if (keep !== null && e.name === keep.current) currentRow = entries.count - 1
+            if (keep !== null && e.name === keep.anchor) anchorIndex = entries.count - 1
+        }
+        fileList.currentIndex = entries.count > 0 ? currentRow : -1
+        if (keep !== null) fileList.contentY = Math.max(0, Math.min(keep.y, fileList.contentHeight - fileList.height))
+    }
+    function sortBy(key) {
+        if (sortKey === key) sortAscending = !sortAscending
+        else {
+            sortKey = key
+            sortAscending = key === "name"  // newest and largest first
+        }
+        rebuild(snapshot())
+    }
+    onFilterTextChanged: if (shownPath.length > 0) rebuild(snapshot())
+
+    // --- preview --------------------------------------------------------------------
+    function canPreview(e) {
+        return e !== null && !e.dir && canRead && e.size <= previewLimit
+    }
+    function previewCurrent() {
+        const e = current
+        if (preview.opened) return preview.close()
+        if (e === null || e.dir || !canRead) return
+        preview.show(e.name, e.size > previewLimit ? -1 : App.storagePreview(devId, path, e.name))
     }
 
     // --- selection --------------------------------------------------------------
@@ -169,6 +235,9 @@ Item {
     }
     function selectedPaths() {
         return selectedIndexes().map(i => childPath(entries.get(i).name))
+    }
+    function entryAt(i) {  // for tests
+        return i >= 0 && i < entries.count ? entries.get(i).name : ""
     }
     function entryNamed(name) {
         for (let i = 0; i < entries.count; ++i)
@@ -347,31 +416,17 @@ Item {
             view.loading = false
             view.folderReadOnly = readOnly === true
             // A refresh of the same folder keeps the selection and the scroll position.
-            const same = listedPath === view.shownPath && err.length === 0
-            const kept = same ? view.selectedItems().map(i => i.name) : []
-            const currentName = same && view.current ? view.current.name : ""
-            const anchorName = same && view.anchorIndex >= 0 && view.anchorIndex < entries.count
-                               ? entries.get(view.anchorIndex).name : ""
-            const scrolledTo = fileList.contentY
-            entries.clear()
-            view.selectedCount = 0
-            view.anchorIndex = -1
+            const keep = listedPath === view.shownPath && err.length === 0 ? view.snapshot() : null
             if (err.length > 0) {
+                view.listing = []
+                view.rebuild(null)
                 view.error = err
                 view.shownPath = ""
                 view.unwatch()
                 return
             }
-            let current = 0
-            for (const e of list) {
-                const on = kept.indexOf(e.name) >= 0
-                entries.append(Object.assign({ selected: on, readOnly: false }, e))
-                if (on) ++view.selectedCount
-                if (e.name === currentName) current = entries.count - 1
-                if (e.name === anchorName) view.anchorIndex = entries.count - 1
-            }
-            fileList.currentIndex = entries.count > 0 ? current : -1
-            if (same) fileList.contentY = Math.max(0, Math.min(scrolledTo, fileList.contentHeight - fileList.height))
+            view.listing = list
+            view.rebuild(keep)
             view.shownPath = listedPath
             view.watch(listedPath)
         }
@@ -426,14 +481,26 @@ Item {
     Shortcut { sequence: StandardKey.SelectAll; enabled: fileList.activeFocus; onActivated: view.selectAll() }
     Shortcut { sequence: "Delete"; enabled: fileList.activeFocus; onActivated: view.deleteSelection() }
     Shortcut { sequence: "Escape"; enabled: fileList.activeFocus; onActivated: view.clearSelection() }
+    Shortcut { sequences: [StandardKey.Find]; onActivated: filterField.forceActiveFocus() }
+    Shortcut { sequence: "Space"; enabled: fileList.activeFocus || preview.opened; onActivated: view.previewCurrent() }
     Shortcut { sequences: [StandardKey.Cut]; enabled: fileList.activeFocus; onActivated: view.cutSelection() }
     Shortcut { sequences: [StandardKey.Copy]; enabled: fileList.activeFocus; onActivated: view.copySelection() }
     Shortcut { sequences: [StandardKey.Paste]; enabled: fileList.activeFocus; onActivated: view.paste() }
 
+    // A column title; clicking sorts by it, again reverses.
     component HeaderCell: Text {
-        color: Theme.textSecondary
+        id: cell
+        property string key
+        property string label
+        text: label + (view.sortKey === key ? (view.sortAscending ? "  ▲" : "  ▼") : "")
+        color: view.sortKey === key ? Theme.text : Theme.textSecondary
         font.pixelSize: Theme.smallFontSize
         elide: Text.ElideRight
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: view.sortBy(cell.key)
+        }
     }
     component Separator: Rectangle {
         implicitWidth: 1
@@ -504,6 +571,20 @@ Item {
                     tip: qsTr("Refresh (F5)")
                     onClicked: view.load()
                 }
+                UTextField {
+                    id: filterField
+                    implicitWidth: 170
+                    implicitHeight: 26
+                    placeholderText: qsTr("Filter (Ctrl+F)")
+                    text: view.filterText
+                    enabled: view.connected
+                    onTextEdited: view.filterText = text
+                    Keys.onEscapePressed: {
+                        view.filterText = ""
+                        fileList.forceActiveFocus()
+                    }
+                    Keys.onDownPressed: fileList.forceActiveFocus()
+                }
                 Separator {}
                 UToolButton {
                     text: qsTr("Download")
@@ -566,9 +647,9 @@ Item {
             Layout.leftMargin: 36
             Layout.rightMargin: 16
             spacing: 12
-            HeaderCell { Layout.fillWidth: true; text: qsTr("Name") }
-            HeaderCell { Layout.preferredWidth: 90; horizontalAlignment: Text.AlignRight; text: qsTr("Size") }
-            HeaderCell { Layout.preferredWidth: 140; text: qsTr("Modified") }
+            HeaderCell { Layout.fillWidth: true; key: "name"; label: qsTr("Name") }
+            HeaderCell { Layout.preferredWidth: 90; horizontalAlignment: Text.AlignRight; key: "size"; label: qsTr("Size") }
+            HeaderCell { Layout.preferredWidth: 140; key: "mtime"; label: qsTr("Modified") }
         }
         Rectangle {
             Layout.fillWidth: true
@@ -929,7 +1010,8 @@ Item {
                 wrapMode: Text.WordWrap
                 color: Theme.textSecondary
                 textFormat: Text.PlainText
-                text: view.path === "/"
+                text: view.listing.length > 0 ? qsTr("Nothing here matches “%1”.").arg(view.filterText.trim())
+                      : view.path === "/"
                       ? qsTr("%1 is not sharing any folders.").arg(view.deviceName)
                       : qsTr("This folder is empty.")
             }
@@ -982,6 +1064,16 @@ Item {
                 }
             }
 
+            PreviewPopup {
+                id: preview
+                devId: view.devId
+                anchors.centerIn: parent
+                width: Math.min(parent.width - 48, 900)
+                height: Math.min(parent.height - 48, 640)
+                z: 20
+                onOpenRequested: name => App.storageOpen(view.devId, view.path, name)
+            }
+
             TransfersPopup {
                 id: transfers
                 objectName: "storageTransfers"
@@ -1010,6 +1102,8 @@ Item {
                         + (view.opProgress.length > 0 ? " " + view.opProgress : "")
                       : view.selectedCount > 0
                       ? qsTr("%1 of %2 selected").arg(view.selectedCount).arg(entries.count)
+                      : entries.count !== view.listing.length
+                      ? qsTr("%1 of %2 items shown").arg(entries.count).arg(view.listing.length)
                       : entries.count === 1 ? qsTr("1 item") : qsTr("%1 items").arg(entries.count)
                 color: Theme.textSecondary
                 font.pixelSize: Theme.smallFontSize
@@ -1049,6 +1143,12 @@ Item {
             hint: "Enter"
             enabled: view.current !== null && (view.current.dir || view.canRead)
             onTriggered: view.activate(fileList.currentIndex)
+        }
+        UMenuItem {
+            text: qsTr("Preview")
+            hint: "Space"
+            enabled: view.canPreview(view.current)
+            onTriggered: view.previewCurrent()
         }
         UMenuItem {
             text: view.selectedCount > 1 ? qsTr("Download %1 Items").arg(view.selectedCount) : qsTr("Download")

@@ -13,6 +13,7 @@
 #include <QMetaObject>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QStringDecoder>
 #include <QStandardPaths>
 #include <QSysInfo>
 #include <QtDebug>
@@ -585,6 +586,29 @@ quint32 AppController::prepareDragOut(const QString& devId, const QString& folde
     return batch;
 }
 
+quint32 AppController::storagePreview(const QString& devId, const QString& folder, const QString& name) {
+    const QString staging = newStagingFolder(openStagingRoot(), nextRequestId_);
+    const quint32 batch = startBatch(devId, folder, {QVariantMap{{"name", name}, {"dir", false}}}, staging, true);
+    if (batches_.contains(batch)) {
+        batches_[batch].staging = staging;
+        batches_[batch].preview = true;
+    }
+    return batch;
+}
+
+QVariantMap AppController::previewText(const QUrl& url) const {
+    constexpr qint64 kLimit = 256 * 1024;
+    QFile file(url.toLocalFile());
+    if (!file.open(QIODevice::ReadOnly)) return {{"binary", true}};
+    const QByteArray bytes = file.read(kLimit);
+    const bool truncated = file.size() > kLimit;
+    if (bytes.left(8192).contains('\0')) return {{"binary", true}};
+    QStringDecoder utf8(QStringDecoder::Utf8);
+    QString text = utf8.decode(truncated ? bytes.left(bytes.size() - 4) : bytes);  // a cut may split a character
+    if (utf8.hasError()) return {{"binary", true}};
+    return {{"text", text}, {"truncated", truncated}, {"binary", false}};
+}
+
 quint32 AppController::storageOpen(const QString& devId, const QString& folder, const QString& name) {
     // A folder of its own per open, so the file keeps its name.
     const QString staging = newStagingFolder(openStagingRoot(), nextRequestId_);
@@ -709,6 +733,11 @@ void AppController::finishBatchIfDone(quint32 batchId) {
     for (const QString& path : batch.topLevel)
         if (!path.isEmpty() && QFileInfo::exists(path)) urls << QUrl::fromLocalFile(path).toString();
     if (batch.canceled && !batch.staging.isEmpty()) QDir(batch.staging).removeRecursively();
+
+    if (batch.preview && !batch.canceled)
+        emit storagePreviewReady(batchId, urls.value(0), batch.failed == 0 && !urls.isEmpty() ? QString()
+                                                         : batch.firstError.isEmpty() ? tr("Could not fetch the file.")
+                                                                                      : batch.firstError);
 
     if (batch.open && !batch.canceled) {
         // A copy: changes made to it stay on this device.

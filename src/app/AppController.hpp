@@ -168,6 +168,10 @@ public:
     // Fetches a file to a temporary folder and opens it with its default app.
     // Returns a batch id, as storageDownloadItems().
     Q_INVOKABLE quint32 storageOpen(const QString& devId, const QString& folder, const QString& name);
+    // Fetches a file for a quick look; storagePreviewReady() tells where.
+    Q_INVOKABLE quint32 storagePreview(const QString& devId, const QString& folder, const QString& name);
+    // The start of a fetched file as text: {text, truncated, binary}.
+    Q_INVOKABLE QVariantMap previewText(const QUrl& file) const;
     Q_INVOKABLE void    cancelBatch(quint32 batchId);
     // Reports changes to a folder's listing with storageFolderChanged() until
     // storageUnwatch(). Ends quietly when the device disconnects.
@@ -213,6 +217,7 @@ signals:
     void storageBatchProgress(quint32 batchId, int filesDone, int filesKnown);
     // `urls`: file URLs of the top-level items, as downloaded.
     void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);
+    void storagePreviewReady(quint32 batchId, const QString& url, const QString& error);
     void trustChanged();
     void storageActivityChanged();
 
@@ -293,6 +298,7 @@ private:
         bool           quiet      = false;
         bool           canceled   = false;
         bool           open       = false;  // open the file when it arrives
+        bool           preview    = false;  // report it with storagePreviewReady()
     };
     struct BatchList {
         quint32 batch = 0;

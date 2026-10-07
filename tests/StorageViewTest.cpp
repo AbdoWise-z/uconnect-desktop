@@ -38,6 +38,7 @@ public:
     QList<quint32> canceledBatches;
     QVariantList downloadedItems;
     QString opened;
+    QString previewed;
     QString transferKind;  // "move" | "copy"
     QStringList transferred;
     QString transferredTo;
@@ -90,6 +91,13 @@ public:
         return requestId;
     }
     Q_INVOKABLE void storageUnwatch(quint32 id) { watches.remove(id); }
+    Q_INVOKABLE quint32 storagePreview(const QString&, const QString& folder, const QString& name) {
+        previewed = folder + "/" + name;
+        return ++requestId;
+    }
+    Q_INVOKABLE QVariantMap previewText(const QUrl&) const {
+        return {{"text", "hello preview"}, {"truncated", false}, {"binary", false}};
+    }
     Q_INVOKABLE void cancelBatch(quint32 id) { canceledBatches << id; }
     Q_INVOKABLE void storageCancel(quint32) {}
     Q_INVOKABLE void copyText(const QString&) {}
@@ -103,6 +111,7 @@ signals:
     void storageFolderChanged(quint32 watchId, const QString& path);
     void storageBatchProgress(quint32 batchId, int filesDone, int filesKnown);
     void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);
+    void storagePreviewReady(quint32 batchId, const QString& url, const QString& error);
 };
 
 class StorageViewTest : public QObject {
@@ -206,6 +215,7 @@ private slots:
         app_.canceledBatches.clear();
         app_.downloadedItems.clear();
         app_.opened.clear();
+        app_.previewed.clear();
         app_.transferKind.clear();
         app_.transferred.clear();
         app_.transferredTo.clear();
@@ -337,6 +347,64 @@ private slots:
 
         QTest::mouseDClick(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(0));
         QCOMPARE(view_->property("path").toString(), QStringLiteral("/share/sub/docs"));
+    }
+
+    // Column headers sort (folders stay first); the filter narrows by name.
+    void sortsByColumnAndFilters() {
+        QVariantMap big = entry("big.bin"), small = entry("small.txt"), old = entry("Old.md");
+        big["size"] = 900.0;
+        small["size"] = 5.0;
+        old["mtime"] = 10.0;
+        big["mtime"] = 30.0;
+        small["mtime"] = 20.0;
+        show({small, entry("zeta", true), big, old, entry("alpha", true)});
+        auto names = [this] {
+            QStringList out;
+            QQuickItem* l = list();
+            for (int i = 0; i < l->property("count").toInt(); ++i) {
+                QVariant v;
+                QMetaObject::invokeMethod(view_, "entryAt", Q_RETURN_ARG(QVariant, v), Q_ARG(QVariant, i));
+                out << v.toString();
+            }
+            return out;
+        };
+        QCOMPARE(names(), (QStringList{"alpha", "zeta", "big.bin", "Old.md", "small.txt"}));
+        click(4);  // small.txt stays selected through re-sorting
+        QVERIFY(QMetaObject::invokeMethod(view_, "sortBy", Q_ARG(QVariant, QVariant("size"))));
+        QCOMPARE(names(), (QStringList{"zeta", "alpha", "big.bin", "Old.md", "small.txt"}));  // largest first
+        QVERIFY(QMetaObject::invokeMethod(view_, "sortBy", Q_ARG(QVariant, QVariant("size"))));
+        QCOMPARE(names(), (QStringList{"alpha", "zeta", "small.txt", "Old.md", "big.bin"}));
+        QVERIFY(QMetaObject::invokeMethod(view_, "sortBy", Q_ARG(QVariant, QVariant("mtime"))));
+        QCOMPARE(names(), (QStringList{"zeta", "alpha", "big.bin", "small.txt", "Old.md"}));  // newest first
+        QCOMPARE(selectedNames(), QStringList{"small.txt"});
+
+        QVERIFY(view_->setProperty("filterText", "AL"));
+        QCOMPARE(names(), (QStringList{"alpha", "small.txt"}));
+        QCOMPARE(selectedNames(), QStringList{"small.txt"});
+        QVERIFY(view_->setProperty("filterText", ""));
+        QCOMPARE(names().size(), 5);
+        QVERIFY(QMetaObject::invokeMethod(view_, "navigate", Q_ARG(QVariant, QVariant("/share/sub/zeta"))));
+        QCOMPARE(view_->property("filterText").toString(), QString());  // a new folder starts unfiltered
+    }
+
+    // Space previews the current file; text arrives through the app.
+    void spacePreviewsTheCurrentFile() {
+        grant(true, {ucd::perm::StorageRead});
+        show({entry("notes.txt")});
+        click(0);
+        QTest::keyClick(window_.get(), Qt::Key_Space);
+        QCOMPARE(app_.previewed, QStringLiteral("/share/sub/notes.txt"));
+        QObject* preview = nullptr;
+        for (QObject* child : view_->findChildren<QObject*>())
+            if (child->metaObject()->indexOfSignal("openRequested(QString)") >= 0) preview = child;
+        QVERIFY(preview);
+        QVERIFY(preview->property("opened").toBool());
+        QCOMPARE(preview->property("state_").toString(), QStringLiteral("fetching"));
+        emit app_.storagePreviewReady(app_.requestId, "file:///C:/tmp/notes.txt", {});
+        QCOMPARE(preview->property("state_").toString(), QStringLiteral("text"));
+        QCOMPARE(preview->property("text").toString(), QStringLiteral("hello preview"));
+        QTest::keyClick(window_.get(), Qt::Key_Space);
+        QVERIFY(!preview->property("opened").toBool());
     }
 
     // In a read-only share nothing that changes it is offered or accepted.
@@ -472,20 +540,20 @@ private slots:
     // Dragging a selection out first fetches it; letting go too early cancels.
     void dragOutFetchesTheSelectionAndCancelsWhenReleasedEarly() {
         grant(true, {ucd::perm::StorageRead});
-        show({entry("a.txt"), entry("folder", true), entry("c.txt")});
-        click(0);
-        click(1, Qt::ControlModifier);
+        show({entry("folder", true), entry("a.txt"), entry("c.txt")});  // folders list first
+        click(1);
+        click(0, Qt::ControlModifier);
         QTest::mousePress(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(1));
         QTest::mouseMove(window_.get(), rowPoint(1) + QPoint(20, 20));
         QTest::mouseMove(window_.get(), rowPoint(1) + QPoint(30, 30));
         QCOMPARE(app_.dragItems.size(), 2);
-        QCOMPARE(app_.dragItems.at(0).toMap().value("name").toString(), QStringLiteral("a.txt"));
-        QCOMPARE(app_.dragItems.at(1).toMap().value("dir").toBool(), true);
+        QCOMPARE(app_.dragItems.at(0).toMap().value("dir").toBool(), true);
+        QCOMPARE(app_.dragItems.at(1).toMap().value("name").toString(), QStringLiteral("a.txt"));
         QCOMPARE(view_->property("dragState").toString(), QStringLiteral("preparing"));
         QTest::mouseRelease(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(1) + QPoint(30, 30));
         QCOMPARE(app_.canceledBatches.size(), 1);
         QCOMPARE(view_->property("dragState").toString(), QString());
-        QCOMPARE(selectedNames(), (QStringList{"a.txt", "folder"}));  // a drag keeps the selection
+        QCOMPARE(selectedNames(), (QStringList{"folder", "a.txt"}));  // a drag keeps the selection
     }
 
     void transfersPopupOpensMinimizesAndMaximizes() {

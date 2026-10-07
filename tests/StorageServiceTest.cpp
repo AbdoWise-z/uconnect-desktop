@@ -46,6 +46,8 @@ struct Link {
     PermissionSet granted{perm::StorageObserve, perm::StorageRead, perm::StorageUpload};
     // Lets a test damage messages on the way, as a faulty network might.
     std::function<void(std::vector<uint8_t>&)> tamper;
+    // Lets a test cut the line: messages to the requester are accepted and lost.
+    bool cutToRequester = false;
 
     Link() {
         requester = std::make_unique<StorageService>(
@@ -55,6 +57,7 @@ struct Link {
             [](const uconnect::DevId&, const QString&) { return false; });
         offerer = std::make_unique<StorageService>(
             [this](const uconnect::DevId&, std::span<const uint8_t> bytes) {
+                if (cutToRequester) return true;
                 return deliver(requester.get(), kOfferer, bytes, toRequester, tamper);
             },
             [this](const uconnect::DevId& dev, const QString& permission) {
@@ -470,23 +473,24 @@ private slots:
             ".part";
         QFile::remove(part);
         qint64 sentData = 0;
-        link_->tamper = [&sentData](std::vector<uint8_t>& m) {
-            if (!m.empty() && m[0] == 2) sentData += static_cast<qint64>(m.size()) - 5;
+        int    frames   = 0;
+        link_->tamper = [&](std::vector<uint8_t>& m) {
+            if (m.empty() || m[0] != 2) return;
+            sentData += static_cast<qint64>(m.size()) - 5;
+            if (++frames == 5) link_->cutToRequester = true;  // this frame arrives; nothing after it
         };
 
-        // Drop the connection part-way through.
+        // The line goes dead part-way through, then the device is gone.
         const quint32 id = nextId();
         QSignalSpy progress(link_->requester.get(), &StorageService::downloadProgress);
         QSignalSpy finished(link_->requester.get(), &StorageService::downloadFinished);
-        auto drop = connect(link_->requester.get(), &StorageService::downloadProgress, this,
-                            [this](quint32, qint64 received) {
-                                if (received <= 1024 * 1024) return;
-                                link_->requester->peerGone(kOfferer);
-                                link_->offerer->peerGone(kRequester);
-                            });
         link_->requester->download(kOfferer, "/share/big.bin", downloads_, id);
-        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 10000);
-        disconnect(drop);
+        QTRY_VERIFY_WITH_TIMEOUT(link_->cutToRequester, 10000);
+        QTest::qWait(100);  // let what got through arrive
+        link_->requester->peerGone(kOfferer);
+        link_->offerer->peerGone(kRequester);
+        link_->cutToRequester = false;
+        QCOMPARE(finished.size(), 1);
         QVERIFY(!finished.first().at(2).toString().isEmpty());
         const qint64 kept = QFileInfo(part).size();
         QVERIFY2(kept > 1024 * 1024 && kept < big_.size(), qPrintable(QString::number(kept)));
