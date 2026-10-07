@@ -52,6 +52,7 @@ void TransferListModel::add(quint32 id, const QString& devId, const QString& rem
     rows_.push_back({id, devId, remotePath, localPath, 0, -1, QStringLiteral("active"), {}, upload});
     endInsertRows();
     emit activeCountChanged();
+    bump();
 }
 
 void TransferListModel::progress(quint32 id, qint64 received, qint64 total) {
@@ -60,6 +61,7 @@ void TransferListModel::progress(quint32 id, qint64 received, qint64 total) {
     rows_[row].received = received;
     rows_[row].total    = total;
     emit dataChanged(index(row), index(row), {ReceivedRole, TotalRole});
+    bump();
 }
 
 void TransferListModel::finish(quint32 id, const QString& localPath, const QString& error, bool canceled) {
@@ -74,6 +76,7 @@ void TransferListModel::finish(quint32 id, const QString& localPath, const QStri
                                     : QStringLiteral("failed");
     emit dataChanged(index(row), index(row));
     emit activeCountChanged();
+    bump();
 }
 
 QString TransferListModel::fileName(quint32 id) const {
@@ -92,13 +95,45 @@ int TransferListModel::activeCount() const {
     }));
 }
 
-void TransferListModel::clearFinished() {
+void TransferListModel::clearFinished(const QString& devId) {
+    bool removed = false;
     for (int row = static_cast<int>(rows_.size()) - 1; row >= 0; --row) {
-        if (rows_.at(row).state == QLatin1String("active")) continue;
+        const Transfer& t = rows_.at(row);
+        if (t.state == QLatin1String("active") || (!devId.isEmpty() && t.devId != devId)) continue;
         beginRemoveRows({}, row, row);
         rows_.removeAt(row);
         endRemoveRows();
+        removed = true;
     }
+    if (removed) bump();
+}
+
+QVariantMap TransferListModel::summary(const QString& devId) const {
+    int    count = 0, active = 0, failed = 0;
+    qint64 done = 0, total = 0;
+    bool   totalKnown = true;
+    for (const Transfer& t : rows_) {
+        if (t.devId != devId) continue;
+        ++count;
+        if (t.state == QLatin1String("failed")) ++failed;
+        if (t.state != QLatin1String("active")) continue;
+        ++active;
+        done += t.received;
+        if (t.total < 0) totalKnown = false;
+        else total += t.total;
+    }
+    return {
+        {"count", count},
+        {"active", active},
+        {"failed", failed},
+        {"done", double(done)},
+        {"total", totalKnown ? double(total) : -1.0},
+    };
+}
+
+void TransferListModel::bump() {
+    ++revision_;
+    emit revisionChanged();
 }
 
 }  // namespace ucd

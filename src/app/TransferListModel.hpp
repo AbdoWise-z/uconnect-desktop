@@ -3,6 +3,7 @@
 
 #include <QAbstractListModel>
 #include <QString>
+#include <QVariantMap>
 #include <QVector>
 
 namespace ucd {
@@ -10,6 +11,9 @@ namespace ucd {
 class TransferListModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int activeCount READ activeCount NOTIFY activeCountChanged)
+    // Bumped by every change, progress included; bindings that call summary()
+    // read it so they re-evaluate.
+    Q_PROPERTY(int revision READ revision NOTIFY revisionChanged)
 public:
     enum Role {
         IdRole = Qt::UserRole + 1,
@@ -39,11 +43,16 @@ public:
     QString devId(quint32 id) const;
 
     int activeCount() const;
-    // Removes finished, failed and canceled rows.
-    Q_INVOKABLE void clearFinished();
+    int revision() const { return revision_; }
+    // Totals for one device's transfers: count, active, failed, and the bytes
+    // done and expected across the active ones (total -1 while any is unknown).
+    Q_INVOKABLE QVariantMap summary(const QString& devId) const;
+    // Removes finished, failed and canceled rows; only one device's if given.
+    Q_INVOKABLE void clearFinished(const QString& devId = {});
 
 signals:
     void activeCountChanged();
+    void revisionChanged();
 
 private:
     struct Transfer {
@@ -59,7 +68,10 @@ private:
     };
     int rowOf(quint32 id) const;
 
+    void bump();
+
     QVector<Transfer> rows_;
+    int               revision_ = 0;
 };
 
 }  // namespace ucd

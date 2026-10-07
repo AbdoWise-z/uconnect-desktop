@@ -140,6 +140,14 @@ public:
     Q_INVOKABLE quint32 storageRename(const QString& devId, const QString& path, const QString& newName);
     Q_INVOKABLE int     storageDelete(const QString& devId, const QStringList& paths);
     Q_INVOKABLE quint32 storageMakeFolder(const QString& devId, const QString& folder, const QString& name);
+    // Downloads files and whole folders (recursively) into the download folder.
+    // `items` are {name, dir} entries of `folder` on that device. Returns a
+    // batch id; storageBatchFinished() reports the outcome.
+    Q_INVOKABLE quint32 storageDownloadItems(const QString& devId, const QString& folder, const QVariantList& items);
+    // As storageDownloadItems(), into a private staging folder, so the items
+    // can then be dragged out of the app as ordinary local files.
+    Q_INVOKABLE quint32 prepareDragOut(const QString& devId, const QString& folder, const QVariantList& items);
+    Q_INVOKABLE void    cancelBatch(quint32 batchId);
     Q_INVOKABLE void    storageCancel(quint32 requestId);
     Q_INVOKABLE void    showInFolder(const QString& localPath) const;
     Q_INVOKABLE QString localPath(const QUrl& url) const;
@@ -171,6 +179,9 @@ signals:
                        const QString& error);
     void storageUploaded(const QString& devId, const QString& remotePath);
     void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
+    void storageBatchProgress(quint32 batchId, int filesDone, int filesKnown);
+    // `urls`: file URLs of the top-level items, as downloaded.
+    void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);
     void trustChanged();
 
 private:
@@ -178,6 +189,13 @@ private:
     void setServices(uint32_t services);
     void pushHello();
     quint32 startOperation(const QString& devId, const QJsonObject& request);
+    quint32 startBatch(const QString& devId, const QString& folder, const QVariantList& items,
+                       const QString& localFolder, bool quiet);
+    void    listForBatch(quint32 batchId, const QString& remoteDir, const QString& localDir);
+    void    downloadForBatch(quint32 batchId, const QString& remotePath, const QString& localDir, int topSlot);
+    void    onBatchList(quint32 listId, const QVariantList& entries, const QString& error);
+    void    onBatchDownload(quint32 downloadId, const QString& localPath, const QString& error, bool canceled);
+    void    finishBatchIfDone(quint32 batchId);
     void pushSharedFolders();
     void pushAccessPolicy();
     void loadTrust();
@@ -215,6 +233,30 @@ private:
     quint32           nextRequestId_ = 1;
     QSet<quint32>     canceled_;
     QHash<quint32, QString> operationDevices_;  // request id -> device
+
+    // A multi-item or folder download: lists folders as it goes and downloads
+    // every file found, keeping the folder structure.
+    struct DownloadBatch {
+        QString        devId;
+        QStringList    topLevel;  // local paths of the items asked for
+        QList<quint32> downloads;
+        QString        staging;   // set for drag-out batches
+        int            pending    = 0;  // lists and downloads not yet finished
+        int            filesKnown = 0;
+        int            filesDone  = 0;
+        int            failed     = 0;
+        bool           quiet      = false;
+        bool           canceled   = false;
+    };
+    struct BatchList {
+        quint32 batch = 0;
+        QString remoteDir;
+        QString localDir;
+    };
+    QHash<quint32, DownloadBatch> batches_;
+    QHash<quint32, BatchList>     batchLists_;        // list request id ->
+    QHash<quint32, quint32>       batchOfDownload_;   // download id -> batch
+    QHash<quint32, int>           topSlotOfDownload_;
 
     std::deque<QString> log_;
     QString             serverReport_;

@@ -128,6 +128,8 @@ qt_add_qml_module(uconnect_desktop
         qml/StorageView.qml
         qml/PermissionEditor.qml
         qml/TrustDialog.qml
+        qml/PromptDialog.qml
+        qml/TransfersPopup.qml
         # controls
         qml/UButton.qml
         qml/UToolButton.qml

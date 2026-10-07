@@ -3,7 +3,9 @@
 #include <algorithm>
 
 #include <QClipboard>
+#include <QDateTime>
 #include <QDesktopServices>
+#include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QMetaObject>
@@ -42,6 +44,33 @@ constexpr auto DownloadFolder = "storage/downloadFolder";
 constexpr auto DefaultPerms   = "permissions/defaults";
 constexpr auto Trust          = "trust";  // a group per trusted public key
 }  // namespace Key
+
+constexpr int kMaxBatchFiles = 10000;
+
+// Where drag-out batches are fetched to before they are dragged out.
+QString dragStagingRoot() {
+    return QStandardPaths::writableLocation(QStandardPaths::TempLocation) + QStringLiteral("/uconnect-drag");
+}
+
+// Drop targets may still be copying from a staging folder after the drag
+// ends, so they are cleared on a later start instead.
+void removeOldDragStaging() {
+    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-1);
+    const QFileInfoList stale = QDir(dragStagingRoot()).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo& dir : stale)
+        if (dir.lastModified() < cutoff) QDir(dir.absoluteFilePath()).removeRecursively();
+}
+
+QString uniqueLocalPath(const QString& folder, const QString& name) {
+    const QDir dir(folder);
+    QString candidate = dir.filePath(name);
+    for (int n = 1; QFileInfo::exists(candidate); ++n) candidate = dir.filePath(QStringLiteral("%1 (%2)").arg(name).arg(n));
+    return candidate;
+}
+
+QString joinRemote(const QString& folder, const QString& name) {
+    return folder.endsWith(QLatin1Char('/')) ? folder + name : folder + QLatin1Char('/') + name;
+}
 
 QStringList knownOnly(const QStringList& permissions) {
     QStringList out;
@@ -109,7 +138,11 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     });
 
     StorageService* storage = session_->storage();
-    connect(storage, &StorageService::listFinished, this, &AppController::storageListed);
+    connect(storage, &StorageService::listFinished, this,
+            [this](quint32 id, const QString& path, const QVariantList& entries, const QString& error) {
+                if (batchLists_.contains(id)) onBatchList(id, entries, error);
+                else emit storageListed(id, path, entries, error);
+            });
     connect(storage, &StorageService::downloadProgress, this, [this](quint32 id, qint64 received, qint64 total) {
         transfers_.progress(id, received, total);
     });
@@ -117,6 +150,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
             [this](quint32 id, const QString& localPath, const QString& error) {
                 const bool canceled = canceled_.remove(id);
                 transfers_.finish(id, localPath, error, canceled);
+                if (batchOfDownload_.contains(id)) return onBatchDownload(id, localPath, error, canceled);
                 if (error.isEmpty())
                     emit notify(tr("Downloaded %1").arg(QFileInfo(localPath).fileName()));
                 else if (!canceled)
@@ -143,6 +177,8 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
                     emit notify(tr("Upload of %1 failed: %2").arg(transfers_.fileName(id), error));
                 }
             });
+
+    removeOldDragStaging();
 
     worker_.setObjectName(QStringLiteral("uconnect-session"));
     worker_.start();
@@ -424,6 +460,141 @@ quint32 AppController::storageDownload(const QString& devId, const QString& remo
 void AppController::storageCancel(quint32 requestId) {
     canceled_.insert(requestId);
     onSession([s = session_, requestId] { s->storageCancel(requestId); });
+}
+
+// --- batch downloads ---------------------------------------------------------------
+
+quint32 AppController::storageDownloadItems(const QString& devId, const QString& folder, const QVariantList& items) {
+    return startBatch(devId, folder, items, downloadFolder_, false);
+}
+
+quint32 AppController::prepareDragOut(const QString& devId, const QString& folder, const QVariantList& items) {
+    const QString staging = QStringLiteral("%1/%2-%3").arg(dragStagingRoot())
+                                .arg(QDateTime::currentMSecsSinceEpoch()).arg(nextRequestId_);
+    const quint32 batch = startBatch(devId, folder, items, staging, true);
+    if (batches_.contains(batch)) batches_[batch].staging = staging;
+    return batch;
+}
+
+void AppController::cancelBatch(quint32 batchId) {
+    if (!batches_.contains(batchId)) return;
+    batches_[batchId].canceled = true;
+    for (quint32 id : batches_[batchId].downloads)
+        if (batchOfDownload_.contains(id)) storageCancel(id);
+    finishBatchIfDone(batchId);
+}
+
+quint32 AppController::startBatch(const QString& devId, const QString& folder, const QVariantList& items,
+                                  const QString& localFolder, bool quiet) {
+    const quint32 batch = nextRequestId_++;
+    batches_[batch].devId = devId;
+    batches_[batch].quiet = quiet;
+    QDir().mkpath(localFolder);
+    for (const QVariant& value : items) {
+        const QVariantMap item = value.toMap();
+        const QString     name = item.value("name").toString();
+        if (name.isEmpty() || name.contains(QLatin1Char('/'))) continue;
+        const int slot = static_cast<int>(batches_[batch].topLevel.size());
+        batches_[batch].topLevel << QString();
+        if (item.value("dir").toBool()) {
+            // A whole folder: never merged into one that is already there.
+            const QString local = uniqueLocalPath(localFolder, safeFileName(name));
+            QDir().mkpath(local);
+            batches_[batch].topLevel[slot] = local;
+            listForBatch(batch, joinRemote(folder, name), local);
+        } else {
+            downloadForBatch(batch, joinRemote(folder, name), localFolder, slot);
+        }
+    }
+    finishBatchIfDone(batch);
+    return batch;
+}
+
+void AppController::listForBatch(quint32 batchId, const QString& remoteDir, const QString& localDir) {
+    const quint32 id = nextRequestId_++;
+    batchLists_.insert(id, {batchId, remoteDir, localDir});
+    ++batches_[batchId].pending;
+    onSession([s = session_, devId = batches_[batchId].devId, remoteDir, id] { s->storageList(devId, remoteDir, id); });
+}
+
+void AppController::downloadForBatch(quint32 batchId, const QString& remotePath, const QString& localDir,
+                                     int topSlot) {
+    DownloadBatch& batch = batches_[batchId];
+    if (batch.filesKnown >= kMaxBatchFiles) {
+        ++batch.failed;
+        return;
+    }
+    const quint32 id = nextRequestId_++;
+    ++batch.pending;
+    ++batch.filesKnown;
+    batch.downloads << id;
+    batchOfDownload_.insert(id, batchId);
+    if (topSlot >= 0) topSlotOfDownload_.insert(id, topSlot);
+    transfers_.add(id, batch.devId, remotePath);
+    onSession([s = session_, devId = batch.devId, remotePath, localDir, id] {
+        s->storageDownload(devId, remotePath, localDir, id);
+    });
+    emit storageBatchProgress(batchId, batch.filesDone, batch.filesKnown);
+}
+
+void AppController::onBatchList(quint32 listId, const QVariantList& entries, const QString& error) {
+    const BatchList list = batchLists_.take(listId);
+    if (!batches_.contains(list.batch)) return;
+    --batches_[list.batch].pending;
+    if (!error.isEmpty()) {
+        ++batches_[list.batch].failed;
+    } else if (!batches_[list.batch].canceled) {
+        for (const QVariant& value : entries) {
+            const QVariantMap entry = value.toMap();
+            const QString     name  = entry.value("name").toString();
+            if (name.isEmpty() || name.contains(QLatin1Char('/'))) continue;
+            const QString remote = joinRemote(list.remoteDir, name);
+            if (entry.value("dir").toBool()) {
+                const QString local = QDir(list.localDir).filePath(safeFileName(name));
+                QDir().mkpath(local);
+                listForBatch(list.batch, remote, local);
+            } else {
+                downloadForBatch(list.batch, remote, list.localDir, -1);
+            }
+        }
+    }
+    finishBatchIfDone(list.batch);
+}
+
+void AppController::onBatchDownload(quint32 downloadId, const QString& localPath, const QString& error,
+                                    bool canceled) {
+    const quint32 batchId = batchOfDownload_.take(downloadId);
+    const int     slot    = topSlotOfDownload_.value(downloadId, -1);  // -1: inside a folder
+    topSlotOfDownload_.remove(downloadId);
+    if (!batches_.contains(batchId)) return;
+    DownloadBatch& batch = batches_[batchId];
+    --batch.pending;
+    ++batch.filesDone;
+    if (!error.isEmpty() && !canceled) ++batch.failed;
+    if (error.isEmpty() && slot >= 0 && slot < batch.topLevel.size()) batch.topLevel[slot] = localPath;
+    emit storageBatchProgress(batchId, batch.filesDone, batch.filesKnown);
+    finishBatchIfDone(batchId);
+}
+
+void AppController::finishBatchIfDone(quint32 batchId) {
+    const auto it = batches_.find(batchId);
+    if (it == batches_.end() || it->pending > 0) return;
+    const DownloadBatch batch = *it;
+    batches_.erase(it);
+
+    QStringList urls;
+    for (const QString& path : batch.topLevel)
+        if (!path.isEmpty() && QFileInfo::exists(path)) urls << QUrl::fromLocalFile(path).toString();
+    if (batch.canceled && !batch.staging.isEmpty()) QDir(batch.staging).removeRecursively();
+
+    if (!batch.quiet && !batch.canceled) {
+        const int ok = batch.filesDone - batch.failed;
+        if (batch.failed == 0)
+            emit notify(ok == 1 ? tr("Downloaded 1 file") : tr("Downloaded %1 files").arg(ok));
+        else
+            emit notify(tr("Downloaded %1 of %2 files; %3 failed").arg(ok).arg(batch.filesKnown).arg(batch.failed));
+    }
+    emit storageBatchFinished(batchId, batch.failed, batch.canceled, urls);
 }
 
 quint32 AppController::startOperation(const QString& devId, const QJsonObject& request) {

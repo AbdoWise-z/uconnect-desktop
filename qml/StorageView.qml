@@ -4,7 +4,11 @@ import QtQuick.Layouts
 import QtQuick.Dialogs
 import UConnect
 
-// Browses another device's shared folders and transfers files in both directions.
+// Browses another device's shared folders and transfers files in both
+// directions. Selection works like a file manager: click, Ctrl/Shift+click,
+// the checkbox that appears on hover, or sweeping across rows with the mouse.
+// Dragging selected items out of the window downloads them to wherever they
+// are dropped; dropping local files in uploads them.
 Item {
     id: view
 
@@ -18,15 +22,33 @@ Item {
     property real pendingId: -1
     property bool loading: false
     property string error: ""
-    property bool transfersOpen: false
+    property alias transfersOpen: transfers.open
+
     readonly property var peer: { App.peers.revision; return App.peers.get(devId) }
-    readonly property bool uploadGranted: peer.grantedToMe !== undefined
-                                          && peer.grantedToMe.indexOf("storage.upload") >= 0
-    readonly property bool canUpload: connected && uploadGranted && path !== "/" && !loading && error.length === 0
+    function granted(permission) {
+        return peer.grantedToMe !== undefined && peer.grantedToMe.indexOf(permission) >= 0
+    }
+    readonly property bool canRead: granted("storage.read")
+    readonly property bool canWrite: granted("storage.write")
+    readonly property bool uploadGranted: granted("storage.upload")
+    readonly property bool canUpload: canUploadTo(path)
+
+    property int selectedCount: 0
+    property int anchorIndex: -1
+    property int hoveredIndex: -1
+    property int dropIndex: -1  // folder row under an incoming drop
+
+    // Drag-out: the selection is fetched first, then dragged as local files.
+    property real dragBatch: -1
+    property string dragState: ""  // "" | "preparing" | "ready" | "dragging"
+    property var dragUrls: []
+    property string dragProgress: ""
+    property point dragCursor
 
     readonly property var current: fileList.currentIndex >= 0 && fileList.currentIndex < entries.count
                                    ? entries.get(fileList.currentIndex) : null
 
+    // --- paths ------------------------------------------------------------------
     function childPath(name) {
         return path === "/" ? "/" + name : path + "/" + name
     }
@@ -37,7 +59,11 @@ Item {
     function normalize(text) {
         return "/" + text.split("/").filter(s => s.length > 0).join("/")
     }
+    function canUploadTo(folder) {
+        return connected && uploadGranted && folder !== "/" && !loading && error.length === 0
+    }
 
+    // --- navigation -------------------------------------------------------------
     function load() {
         if (!connected) return
         loading = true
@@ -73,19 +99,142 @@ Item {
         const e = entries.get(index)
         if (!e) return
         if (e.dir) navigate(childPath(e.name))
-        else download(index)
+        else if (canRead) {
+            App.storageDownloadItems(devId, path, [{ name: e.name, dir: false }])
+            transfersOpen = true
+        }
     }
-    function download(index) {
-        const e = entries.get(index)
-        if (!e || e.dir) return
-        App.storageDownload(devId, childPath(e.name))
+
+    // --- selection --------------------------------------------------------------
+    function isSelected(i) {
+        return i >= 0 && i < entries.count && entries.get(i).selected
+    }
+    function setSelected(i, on) {
+        if (i < 0 || i >= entries.count || entries.get(i).selected === on) return
+        entries.setProperty(i, "selected", on)
+        selectedCount += on ? 1 : -1
+    }
+    function clearSelection() {
+        for (let i = 0; i < entries.count; ++i)
+            if (entries.get(i).selected) entries.setProperty(i, "selected", false)
+        selectedCount = 0
+    }
+    function selectOnly(i) {
+        clearSelection()
+        setSelected(i, true)
+        anchorIndex = i
+        fileList.currentIndex = i
+    }
+    function selectAll() {
+        for (let i = 0; i < entries.count; ++i) setSelected(i, true)
+    }
+    function selectedIndexes() {
+        const out = []
+        for (let i = 0; i < entries.count; ++i)
+            if (entries.get(i).selected) out.push(i)
+        return out
+    }
+    // Exactly `base` plus the rows between `from` and `to`.
+    function selectRange(base, from, to) {
+        const low = Math.min(from, to), high = Math.max(from, to)
+        for (let i = 0; i < entries.count; ++i)
+            setSelected(i, (i >= low && i <= high) || base.indexOf(i) >= 0)
+    }
+    function selectedItems() {
+        return selectedIndexes().map(i => ({ name: entries.get(i).name, dir: entries.get(i).dir }))
+    }
+    function selectedPaths() {
+        return selectedIndexes().map(i => childPath(entries.get(i).name))
+    }
+    function entryNamed(name) {
+        for (let i = 0; i < entries.count; ++i)
+            if (entries.get(i).name === name) return entries.get(i)
+        return null
+    }
+
+    // --- transfers and changes ----------------------------------------------------
+    function downloadSelection() {
+        const items = selectedItems()
+        if (!canRead || items.length === 0) return
+        App.storageDownloadItems(devId, path, items)
         transfersOpen = true
     }
-    function upload(files) {
-        if (!canUpload) return false
-        const added = App.storageUpload(devId, path, files)
+    function fileNameOf(url) {
+        return decodeURIComponent(url.toString().split("/").pop())
+    }
+    // Uploads into `folder` (this one by default). Files that would clash with
+    // ones shown here can replace them if this device may write; otherwise
+    // they are added with a numbered name.
+    function upload(files, folder) {
+        const target = folder !== undefined ? folder : path
+        if (!canUploadTo(target)) return false
+        if (target === path && canWrite) {
+            const clashes = files.filter(url => entryNamed(fileNameOf(url)) !== null)
+            if (clashes.length > 0) {
+                prompt.pending = { files: files, folder: target }
+                prompt.ask(qsTr("Replace existing files?"),
+                           clashes.length === 1
+                           ? qsTr("“%1” already exists in %2.").arg(fileNameOf(clashes[0])).arg(target)
+                           : qsTr("%1 of these files already exist in %2.").arg(clashes.length).arg(target),
+                           [{ id: "keep", label: qsTr("Keep Both") },
+                            { id: "replace", label: qsTr("Replace"), primary: true }])
+                return true
+            }
+        }
+        return sendUpload(files, target, false)
+    }
+    function sendUpload(files, folder, replace) {
+        const added = App.storageUpload(devId, folder, files, replace)
         if (added > 0) transfersOpen = true
         return added > 0
+    }
+    function renameCurrent() {
+        const items = selectedItems()
+        if (!canWrite || items.length !== 1 || path === "/") return
+        prompt.pending = { rename: items[0].name }
+        prompt.ask(qsTr("Rename"), "", [{ id: "rename", label: qsTr("Rename"), primary: true }], items[0].name)
+    }
+    function deleteSelection() {
+        const paths = selectedPaths()
+        if (!canWrite || paths.length === 0 || path === "/") return
+        prompt.pending = { remove: paths }
+        prompt.ask(paths.length === 1 ? qsTr("Delete “%1”?").arg(selectedItems()[0].name)
+                                      : qsTr("Delete %1 items?").arg(paths.length),
+                   qsTr("They are moved to the Recycle Bin on %1 when it has one; otherwise they are deleted.")
+                       .arg(deviceName),
+                   [{ id: "delete", label: qsTr("Delete"), primary: true }])
+    }
+    function newFolder() {
+        if (!canUploadTo(path)) return
+        prompt.pending = { mkdir: true }
+        prompt.ask(qsTr("New Folder"), "", [{ id: "mkdir", label: qsTr("Create"), primary: true }],
+                   qsTr("New folder"))
+    }
+
+    // --- drag-out -------------------------------------------------------------------
+    function startDragOut() {
+        const items = selectedItems()
+        if (!canRead || items.length === 0) return false
+        dragUrls = []
+        dragProgress = ""
+        dragState = "preparing"
+        dragBatch = App.prepareDragOut(devId, path, items)
+        return true
+    }
+    function cancelDragOut() {
+        if (dragState === "preparing" || dragState === "ready") App.cancelBatch(dragBatch)
+        resetDrag()
+    }
+    function resetDrag() {
+        dragState = ""
+        dragBatch = -1
+        dragUrls = []
+        dragProgress = ""
+    }
+    // Must run inside a mouse event: platforms start a drag only from one.
+    function beginOsDrag() {
+        dragState = "dragging"
+        dragSource.Drag.active = true
     }
 
     FileDialog {
@@ -96,25 +245,67 @@ Item {
         onAccepted: view.upload(selectedFiles)
     }
 
+    PromptDialog {
+        id: prompt
+        property var pending: ({})
+        onChosen: (choiceId, value) => {
+            if (choiceId === "replace" || choiceId === "keep")
+                view.sendUpload(pending.files, pending.folder, choiceId === "replace")
+            else if (choiceId === "rename" && value !== pending.rename)
+                App.storageRename(view.devId, view.childPath(pending.rename), value)
+            else if (choiceId === "delete")
+                App.storageDelete(view.devId, pending.remove)
+            else if (choiceId === "mkdir")
+                App.storageMakeFolder(view.devId, view.path, value)
+            pending = {}
+        }
+    }
+
     ListModel {
         id: entries
     }
 
+    // Several changes finishing together refresh the listing once.
+    Timer {
+        id: reloadSoon
+        interval: 150
+        onTriggered: view.load()
+    }
+
     Connections {
         target: App
+        ignoreUnknownSignals: true
         function onStorageListed(requestId, listedPath, list, err) {
             if (requestId !== view.pendingId) return
             view.loading = false
             entries.clear()
+            view.selectedCount = 0
+            view.anchorIndex = -1
             if (err.length > 0) {
                 view.error = err
                 return
             }
-            for (const e of list) entries.append(e)
+            for (const e of list) entries.append(Object.assign({ selected: false }, e))
             fileList.currentIndex = entries.count > 0 ? 0 : -1
         }
         function onStorageUploaded(deviceId, remotePath) {
-            if (deviceId === view.devId && view.parentPath(remotePath) === view.path) view.load()
+            if (deviceId === view.devId && view.parentPath(remotePath) === view.path) reloadSoon.restart()
+        }
+        function onStorageOperationFinished(requestId, deviceId, changedPath, err) {
+            if (deviceId === view.devId) reloadSoon.restart()
+        }
+        function onStorageBatchProgress(batchId, filesDone, filesKnown) {
+            if (batchId === view.dragBatch)
+                view.dragProgress = qsTr("%1 of %2 files").arg(filesDone).arg(filesKnown)
+        }
+        function onStorageBatchFinished(batchId, failed, canceled, urls) {
+            if (batchId !== view.dragBatch) return
+            if (canceled || urls.length === 0) {
+                view.resetDrag()
+                return
+            }
+            view.dragUrls = urls
+            view.dragState = "ready"
         }
     }
 
@@ -125,18 +316,42 @@ Item {
     Shortcut { sequence: "Alt+Right"; onActivated: view.goForward() }
     Shortcut { sequence: "Alt+Up"; onActivated: view.goUp() }
     Shortcut { sequence: "F5"; onActivated: view.load() }
+    Shortcut { sequence: "F2"; onActivated: view.renameCurrent() }
+    Shortcut { sequence: StandardKey.SelectAll; enabled: fileList.activeFocus; onActivated: view.selectAll() }
+    Shortcut { sequence: "Delete"; enabled: fileList.activeFocus; onActivated: view.deleteSelection() }
+    Shortcut { sequence: "Escape"; enabled: fileList.activeFocus; onActivated: view.clearSelection() }
 
     component HeaderCell: Text {
         color: Theme.textSecondary
         font.pixelSize: Theme.smallFontSize
         elide: Text.ElideRight
     }
+    component Separator: Rectangle {
+        implicitWidth: 1
+        implicitHeight: 18
+        color: Theme.border
+    }
+
+    // The item a drag-out is started from; it carries the fetched files.
+    Item {
+        id: dragSource
+        Drag.dragType: Drag.Automatic
+        Drag.supportedActions: Qt.CopyAction
+        Drag.proposedAction: Qt.CopyAction
+        Drag.mimeData: ({ "text/uri-list": view.dragUrls.join("\r\n") })
+        Drag.onDragFinished: dropAction => {
+            view.resetDrag()
+            // The platform drag consumed the release; drop the stale press.
+            pointer.enabled = false
+            pointer.enabled = true
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        // --- navigation bar ------------------------------------------------
+        // --- toolbar -----------------------------------------------------------
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 38
@@ -180,15 +395,13 @@ Item {
                     tip: qsTr("Refresh (F5)")
                     onClicked: view.load()
                 }
-                Rectangle {
-                    implicitWidth: 1
-                    implicitHeight: 18
-                    color: Theme.border
-                }
+                Separator {}
                 UToolButton {
                     text: qsTr("Download")
-                    enabled: view.connected && view.current !== null && !view.current.dir
-                    onClicked: view.download(fileList.currentIndex)
+                    enabled: view.connected && view.canRead && view.selectedCount > 0
+                    tip: !view.canRead ? qsTr("This device has not granted Read permission.")
+                         : qsTr("Download the selected items, folders included")
+                    onClicked: view.downloadSelection()
                 }
                 UToolButton {
                     text: qsTr("Upload")
@@ -199,10 +412,33 @@ Item {
                     onClicked: uploadDialog.open()
                 }
                 UToolButton {
+                    text: qsTr("New Folder")
+                    enabled: view.canUpload
+                    tip: !view.uploadGranted ? qsTr("This device has not granted upload permission.")
+                         : qsTr("Create a folder here")
+                    onClicked: view.newFolder()
+                }
+                UToolButton {
+                    text: qsTr("Rename")
+                    enabled: view.connected && view.canWrite && view.selectedCount === 1 && view.path !== "/"
+                    tip: !view.canWrite ? qsTr("This device has not granted Write permission.") : qsTr("Rename (F2)")
+                    onClicked: view.renameCurrent()
+                }
+                UToolButton {
+                    text: qsTr("Delete")
+                    enabled: view.connected && view.canWrite && view.selectedCount > 0 && view.path !== "/"
+                    tip: !view.canWrite ? qsTr("This device has not granted Write permission.") : qsTr("Delete (Del)")
+                    onClicked: view.deleteSelection()
+                }
+                Separator {}
+                UToolButton {
                     text: qsTr("Transfers")
                     checkable: true
                     checked: view.transfersOpen
-                    onClicked: view.transfersOpen = !view.transfersOpen
+                    onClicked: {
+                        view.transfersOpen = !view.transfersOpen
+                        if (view.transfersOpen) transfers.minimized = false
+                    }
                 }
             }
             Rectangle {
@@ -213,11 +449,11 @@ Item {
             }
         }
 
-        // --- column headers ------------------------------------------------
+        // --- column headers ----------------------------------------------------
         RowLayout {
             Layout.fillWidth: true
             Layout.preferredHeight: 26
-            Layout.leftMargin: 12
+            Layout.leftMargin: 36
             Layout.rightMargin: 16
             spacing: 12
             HeaderCell { Layout.fillWidth: true; text: qsTr("Name") }
@@ -230,37 +466,58 @@ Item {
             color: Theme.border
         }
 
-        // --- listing ---------------------------------------------------------
+        // --- listing -----------------------------------------------------------
         Item {
+            id: listArea
             Layout.fillWidth: true
             Layout.fillHeight: true
 
             DropArea {
                 id: fileDrop
                 anchors.fill: parent
-                onEntered: drag => {
-                    drag.accepted = drag.hasUrls
+                function rowAt(y) {
+                    const i = fileList.indexAt(20, y - fileList.y + fileList.contentY)
+                    return i >= 0 && entries.get(i).dir ? i : -1
                 }
+                onEntered: drag => {
+                    // Our own drag-out passing over the list is not an upload.
+                    drag.accepted = drag.hasUrls && drag.source !== dragSource
+                }
+                onPositionChanged: drag => view.dropIndex = rowAt(drag.y)
+                onExited: view.dropIndex = -1
                 onDropped: drop => {
-                    if (view.upload(drop.urls)) drop.accept(Qt.CopyAction)
+                    const row = rowAt(drop.y)
+                    view.dropIndex = -1
+                    const folder = row >= 0 ? view.childPath(entries.get(row).name) : view.path
+                    if (drop.source !== dragSource && view.upload(drop.urls, folder)) drop.accept(Qt.CopyAction)
                     else drop.accepted = false
                 }
             }
 
             ListView {
                 id: fileList
+                objectName: "storageFileList"
                 anchors.fill: parent
                 anchors.margins: 4
                 clip: true
                 focus: true
+                interactive: false  // the mouse selects; the wheel and scrollbar scroll
                 model: entries
                 boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: ScrollBar { id: scrollBar }
                 Keys.onReturnPressed: view.activate(currentIndex)
                 Keys.onEnterPressed: view.activate(currentIndex)
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_Backspace) {
                         view.goUp()
+                        event.accepted = true
+                    } else if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down) && entries.count > 0) {
+                        const next = Math.max(0, Math.min(entries.count - 1,
+                                                          currentIndex + (event.key === Qt.Key_Up ? -1 : 1)))
+                        if (event.modifiers & Qt.ShiftModifier) view.selectRange([], view.anchorIndex < 0 ? next : view.anchorIndex, next)
+                        else view.selectOnly(next)
+                        currentIndex = next
+                        positionViewAtIndex(next, ListView.Contain)
                         event.accepted = true
                     }
                 }
@@ -272,19 +529,40 @@ Item {
                     required property bool dir
                     required property real size
                     required property real mtime
+                    required property bool selected
 
+                    readonly property bool hovered: index === view.hoveredIndex
                     width: ListView.view.width
                     height: 26
                     radius: Theme.radius
-                    color: ListView.isCurrentItem ? Theme.selection
-                           : rowArea.containsMouse ? Theme.hover : "transparent"
+                    color: selected ? Theme.selection : hovered ? Theme.hover : "transparent"
+                    border.width: index === view.dropIndex ? 2 : 0
+                    border.color: Theme.accent
 
                     RowLayout {
                         anchors.fill: parent
-                        anchors.leftMargin: 8
+                        anchors.leftMargin: 6
                         anchors.rightMargin: 12
-                        spacing: 12
+                        spacing: 10
 
+                        // The selection checkbox appears on hover, and stays
+                        // while anything is selected.
+                        Rectangle {
+                            implicitWidth: 14
+                            implicitHeight: 14
+                            radius: 3
+                            opacity: row.selected || row.hovered || view.selectedCount > 0 ? 1 : 0
+                            color: row.selected ? Theme.accent : "transparent"
+                            border.width: row.selected ? 0 : 1
+                            border.color: Theme.inputBorder
+                            Text {
+                                anchors.centerIn: parent
+                                visible: row.selected
+                                text: "✓"
+                                color: "#FFFFFF"
+                                font.pixelSize: 11
+                            }
+                        }
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
@@ -336,19 +614,157 @@ Item {
                             color: Theme.textSecondary
                         }
                     }
+                }
+            }
 
-                    MouseArea {
-                        id: rowArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        acceptedButtons: Qt.LeftButton | Qt.RightButton
-                        onClicked: mouse => {
-                            fileList.currentIndex = row.index
-                            fileList.forceActiveFocus()
-                            if (mouse.button === Qt.RightButton) entryMenu.popup()
-                        }
-                        onDoubleClicked: view.activate(row.index)
+            // One pointer handler for the whole list: hover, selection gestures,
+            // drag-out, double-click and the context menu.
+            MouseArea {
+                id: pointer
+                anchors.fill: fileList
+                anchors.rightMargin: scrollBar.visible ? scrollBar.width : 0  // leave the scrollbar draggable
+                hoverEnabled: true
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                preventStealing: true
+
+                readonly property int checkboxWidth: 28
+                property int pressIndex: -1
+                property point pressPoint
+                property string gesture: ""  // "" | "sweep" | "maybeDrag" | "dragOut"
+                property var sweepBase: []
+                property int sweepAnchor: -1
+                property real lastY: 0
+
+                function rowAt(y) {
+                    return fileList.indexAt(20, y + fileList.contentY)
+                }
+                // The row under y, or the nearest one when outside the list.
+                function rowNear(y) {
+                    if (entries.count === 0) return -1
+                    const clamped = Math.max(0, Math.min(height - 1, y))
+                    const i = rowAt(clamped)
+                    return i >= 0 ? i : (clamped < height / 2 ? 0 : entries.count - 1)
+                }
+                function sweepTo(y) {
+                    const i = rowNear(y)
+                    if (i < 0) return
+                    if (sweepAnchor < 0) sweepAnchor = i
+                    view.selectRange(sweepBase, sweepAnchor, i)
+                    view.anchorIndex = sweepAnchor
+                    fileList.currentIndex = i
+                }
+
+                onExited: view.hoveredIndex = -1
+                onPressed: mouse => {
+                    fileList.forceActiveFocus()
+                    const i = rowAt(mouse.y)
+                    pressIndex = i
+                    pressPoint = Qt.point(mouse.x, mouse.y)
+                    gesture = ""
+                    if (mouse.button === Qt.RightButton) {
+                        if (i >= 0 && !view.isSelected(i)) view.selectOnly(i)
+                        contextMenu.popup()
+                        return
                     }
+                    const ctrl = (mouse.modifiers & Qt.ControlModifier) !== 0
+                    if (i >= 0 && mouse.x < checkboxWidth) {
+                        view.setSelected(i, !view.isSelected(i))
+                        view.anchorIndex = i
+                        fileList.currentIndex = i
+                        return
+                    }
+                    if ((mouse.modifiers & Qt.ShiftModifier) && view.anchorIndex >= 0 && i >= 0) {
+                        view.selectRange(ctrl ? view.selectedIndexes() : [], view.anchorIndex, i)
+                        fileList.currentIndex = i
+                        return
+                    }
+                    if (ctrl && i >= 0 && view.isSelected(i)) {
+                        view.setSelected(i, false)
+                        return
+                    }
+                    if (!ctrl && i >= 0 && view.isSelected(i)) {
+                        gesture = "maybeDrag"  // a click selects it alone; a drag takes the selection out
+                        return
+                    }
+                    gesture = "sweep"
+                    sweepBase = ctrl ? view.selectedIndexes() : []
+                    if (!ctrl) view.clearSelection()
+                    sweepAnchor = i
+                    if (i >= 0) sweepTo(mouse.y)
+                }
+                onPositionChanged: mouse => {
+                    lastY = mouse.y
+                    if (!pressed) {
+                        view.hoveredIndex = rowAt(mouse.y)
+                        return
+                    }
+                    if (gesture === "maybeDrag"
+                            && Math.abs(mouse.x - pressPoint.x) + Math.abs(mouse.y - pressPoint.y) > 8) {
+                        gesture = view.startDragOut() ? "dragOut" : ""
+                    }
+                    if (gesture === "dragOut") {
+                        view.dragCursor = Qt.point(mouse.x, mouse.y)
+                        if (view.dragState === "ready") view.beginOsDrag()
+                    } else if (gesture === "sweep") {
+                        sweepTo(mouse.y)
+                        if (mouse.y < 0 || mouse.y > height) autoScroll.start()
+                        else autoScroll.stop()
+                    }
+                }
+                onReleased: mouse => {
+                    autoScroll.stop()
+                    if (gesture === "maybeDrag" && pressIndex >= 0) view.selectOnly(pressIndex)
+                    else if (gesture === "dragOut" && view.dragState !== "dragging") view.cancelDragOut()
+                    gesture = ""
+                }
+                onCanceled: {
+                    autoScroll.stop()
+                    if (gesture === "dragOut" && view.dragState !== "dragging") view.cancelDragOut()
+                    gesture = ""
+                }
+                onDoubleClicked: mouse => {
+                    const i = rowAt(mouse.y)
+                    if (mouse.button === Qt.LeftButton && i >= 0 && mouse.x >= checkboxWidth) view.activate(i)
+                }
+                onWheel: wheel => {
+                    const most = Math.max(0, fileList.contentHeight - fileList.height)
+                    fileList.contentY = Math.max(0, Math.min(most, fileList.contentY - wheel.angleDelta.y / 120 * 78))
+                }
+
+                // Sweeping past the top or bottom edge scrolls the list.
+                Timer {
+                    id: autoScroll
+                    interval: 30
+                    repeat: true
+                    onTriggered: {
+                        const step = pointer.lastY < 0 ? -20 : 20
+                        fileList.contentY = Math.max(0, Math.min(fileList.contentHeight - fileList.height,
+                                                                 fileList.contentY + step))
+                        pointer.sweepTo(pointer.lastY)
+                    }
+                }
+            }
+
+            // Where a drag-out is while its files are being fetched.
+            Rectangle {
+                visible: view.dragState === "preparing" || view.dragState === "ready"
+                x: Math.min(listArea.width - width - 8, fileList.x + view.dragCursor.x + 14)
+                y: Math.min(listArea.height - height - 8, fileList.y + view.dragCursor.y + 14)
+                width: dragLabel.implicitWidth + 20
+                height: dragLabel.implicitHeight + 12
+                radius: Theme.radius
+                color: Theme.popup
+                border.color: view.dragState === "ready" ? Theme.accent : Theme.popupBorder
+                Text {
+                    id: dragLabel
+                    anchors.centerIn: parent
+                    color: Theme.text
+                    font.pixelSize: Theme.smallFontSize
+                    text: view.dragState === "ready"
+                          ? qsTr("Ready — drag to where the files should go")
+                          : qsTr("Fetching %1 — keep holding%2")
+                                .arg(view.selectedCount === 1 ? qsTr("1 item") : qsTr("%1 items").arg(view.selectedCount))
+                                .arg(view.dragProgress.length > 0 ? " (" + view.dragProgress + ")" : "")
                 }
             }
 
@@ -384,7 +800,7 @@ Item {
             Rectangle {
                 anchors.fill: parent
                 anchors.margins: 8
-                visible: fileDrop.containsDrag
+                visible: fileDrop.containsDrag && view.dropIndex < 0
                 color: Theme.panel
                 opacity: 0.96
                 radius: Theme.radius
@@ -411,182 +827,103 @@ Item {
                         color: Theme.textSecondary
                         text: !view.connected ? qsTr("Connect to this device first.")
                               : !view.uploadGranted ? qsTr("Ask this device to grant upload permission.")
-                              : view.path === "/" ? qsTr("Open a shared folder first.")
+                              : view.path === "/" ? qsTr("Drop onto one of the shared folders.")
                               : !view.canUpload ? qsTr("Wait for the folder to load, or retry the listing.")
-                              : qsTr("Upload to %1. Existing files are kept; duplicate names get a numbered suffix.").arg(view.path)
+                              : qsTr("Upload to %1, or drop onto a folder to upload into it.").arg(view.path)
                     }
                 }
             }
+
+            TransfersPopup {
+                id: transfers
+                objectName: "storageTransfers"
+                devId: view.devId
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 12
+                z: 10
+            }
         }
 
-        Text {
-            Layout.fillWidth: true
-            Layout.leftMargin: 12
-            Layout.rightMargin: 12
-            Layout.topMargin: 6
-            Layout.bottomMargin: 6
-            text: view.path === "/" ? qsTr("Open a shared folder to upload files.")
-                  : view.uploadGranted ? qsTr("Drop local files here or use Upload. Folders are not supported.")
-                  : qsTr("This device has not granted upload permission.")
-            color: Theme.textSecondary
-            font.pixelSize: Theme.smallFontSize
-            wrapMode: Text.WordWrap
-        }
-
-        // --- transfers -------------------------------------------------------
+        // --- status line -----------------------------------------------------------
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: 1
-            visible: view.transfersOpen
             color: Theme.divider
         }
-        Rectangle {
+        RowLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: 180
-            visible: view.transfersOpen
-            color: Theme.panel
-
-            ColumnLayout {
-                anchors.fill: parent
-                spacing: 0
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 30
-                    Layout.leftMargin: 12
-                    Layout.rightMargin: 8
-                    spacing: 10
-                    Text {
-                        text: qsTr("Transfers")
-                        color: Theme.text
-                        font.bold: true
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        elide: Text.ElideMiddle
-                        textFormat: Text.PlainText
-                        text: qsTr("Downloads saved to %1").arg(App.downloadFolder)
-                        color: Theme.textSecondary
-                        font.pixelSize: Theme.smallFontSize
-                    }
-                    ULink {
-                        text: qsTr("Open Folder")
-                        font.pixelSize: Theme.smallFontSize
-                        onClicked: App.showInFolder(App.downloadFolder)
-                    }
-                    ULink {
-                        text: qsTr("Clear Finished")
-                        font.pixelSize: Theme.smallFontSize
-                        onClicked: App.transfers.clearFinished()
-                    }
-                }
-
-                ListView {
-                    id: transferList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    model: App.transfers
-                    ScrollBar.vertical: ScrollBar {}
-
-                    delegate: Item {
-                        id: transfer
-                        required property real transferId
-                        required property string devId
-                        required property string fileName
-                        required property string localPath
-                        required property real received
-                        required property real total
-                        required property string transferState
-                        required property string error
-                        required property string direction
-
-                        readonly property bool mine: devId === view.devId
-                        width: ListView.view.width
-                        height: mine ? 36 : 0
-                        visible: mine
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            spacing: 12
-
-                            Text {
-                                Layout.preferredWidth: 62
-                                text: transfer.direction === "upload" ? qsTr("Upload") : qsTr("Download")
-                                color: Theme.textSecondary
-                                font.pixelSize: Theme.smallFontSize
-                            }
-
-                            Text {
-                                Layout.preferredWidth: Math.min(200, view.width * 0.25)
-                                text: transfer.fileName
-                                textFormat: Text.PlainText
-                                elide: Text.ElideMiddle
-                                color: Theme.text
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: 4
-                                radius: 2
-                                color: Theme.border
-                                visible: transfer.transferState === "active"
-                                Rectangle {
-                                    height: parent.height
-                                    radius: 2
-                                    color: Theme.accent
-                                    width: transfer.total > 0 ? parent.width * Math.min(1, transfer.received / transfer.total) : 0
-                                }
-                            }
-                            Text {
-                                Layout.fillWidth: transfer.transferState !== "active"
-                                Layout.preferredWidth: transfer.transferState === "active" ? 150 : -1
-                                elide: Text.ElideRight
-                                textFormat: Text.PlainText
-                                font.pixelSize: Theme.smallFontSize
-                                color: transfer.transferState === "failed" ? Theme.error
-                                       : transfer.transferState === "done" ? Theme.success : Theme.textSecondary
-                                text: {
-                                    switch (transfer.transferState) {
-                                    case "active":
-                                        return transfer.total >= 0
-                                               ? qsTr("%1 of %2").arg(Theme.formatBytes(transfer.received)).arg(Theme.formatBytes(transfer.total))
-                                               : qsTr("Waiting...")
-                                    case "done": return qsTr("Done · %1").arg(Theme.formatBytes(transfer.received))
-                                    case "canceled": return qsTr("Canceled")
-                                    }
-                                    return transfer.error
-                                }
-                            }
-                            ULink {
-                                visible: transfer.transferState === "active"
-                                text: qsTr("Cancel")
-                                font.pixelSize: Theme.smallFontSize
-                                onClicked: App.storageCancel(transfer.transferId)
-                            }
-                            ULink {
-                                visible: transfer.transferState === "done" && transfer.direction === "download"
-                                text: qsTr("Show in Folder")
-                                font.pixelSize: Theme.smallFontSize
-                                onClicked: App.showInFolder(transfer.localPath)
-                            }
-                        }
-                    }
-                }
+            Layout.preferredHeight: 26
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            Text {
+                text: view.selectedCount > 0
+                      ? qsTr("%1 of %2 selected").arg(view.selectedCount).arg(entries.count)
+                      : entries.count === 1 ? qsTr("1 item") : qsTr("%1 items").arg(entries.count)
+                color: Theme.textSecondary
+                font.pixelSize: Theme.smallFontSize
+            }
+            Item { Layout.fillWidth: true }
+            Text {
+                text: view.path === "/" ? qsTr("Open a shared folder to upload files.")
+                      : view.uploadGranted && view.canRead ? qsTr("Drop files here to upload · drag items out to download")
+                      : view.uploadGranted ? qsTr("Drop files here to upload")
+                      : view.canRead ? qsTr("Drag items out to download")
+                      : qsTr("This device has not granted you file access.")
+                color: Theme.textSecondary
+                font.pixelSize: Theme.smallFontSize
+                elide: Text.ElideLeft
             }
         }
     }
 
     UMenu {
-        id: entryMenu
+        id: contextMenu
         UMenuItem {
             text: view.current && view.current.dir ? qsTr("Open") : qsTr("Download")
+            enabled: view.current !== null && (view.current.dir || view.canRead)
             onTriggered: view.activate(fileList.currentIndex)
         }
         UMenuItem {
+            text: view.selectedCount > 1 ? qsTr("Download %1 Items").arg(view.selectedCount) : qsTr("Download")
+            visible: view.selectedCount > 1 || (view.current !== null && view.current.dir)
+            enabled: view.canRead && view.selectedCount > 0
+            onTriggered: view.downloadSelection()
+        }
+        UMenuSeparator {}
+        UMenuItem {
+            text: qsTr("Rename...")
+            hint: "F2"
+            enabled: view.canWrite && view.selectedCount === 1 && view.path !== "/"
+            onTriggered: view.renameCurrent()
+        }
+        UMenuItem {
+            text: qsTr("Delete...")
+            hint: "Del"
+            enabled: view.canWrite && view.selectedCount > 0 && view.path !== "/"
+            onTriggered: view.deleteSelection()
+        }
+        UMenuSeparator {}
+        UMenuItem {
+            text: qsTr("New Folder...")
+            enabled: view.canUpload
+            onTriggered: view.newFolder()
+        }
+        UMenuItem {
+            text: qsTr("Upload Files...")
+            enabled: view.canUpload
+            onTriggered: uploadDialog.open()
+        }
+        UMenuSeparator {}
+        UMenuItem {
+            text: qsTr("Select All")
+            hint: "Ctrl+A"
+            onTriggered: view.selectAll()
+        }
+        UMenuItem {
             text: qsTr("Copy Path")
-            onTriggered: if (view.current) App.copyText(view.childPath(view.current.name))
+            enabled: view.current !== null
+            onTriggered: App.copyText(view.childPath(view.current.name))
         }
     }
 }

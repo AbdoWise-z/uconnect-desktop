@@ -14,6 +14,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtTest>
+#include <QVariantList>
 
 #include "app/PeerListModel.hpp"
 #include "app/TransferListModel.hpp"
@@ -29,7 +30,12 @@ public:
     ucd::TransferListModel transfers_;
     QList<QUrl> uploaded;
     QString destination;
+    bool replaced = false;
     quint32 requestId = 0;
+    QVariantList listing;  // what every storageList() returns
+    QVariantList dragItems;
+    QList<quint32> canceledBatches;
+    QVariantList downloadedItems;
 
     QObject* peers() { return &peers_; }
     QObject* transfers() { return &transfers_; }
@@ -37,18 +43,34 @@ public:
 
     Q_INVOKABLE quint32 storageList(const QString&, const QString& path) {
         const quint32 id = ++requestId;
-        QTimer::singleShot(0, this, [this, id, path] { emit storageListed(id, path, {}, {}); });
+        QTimer::singleShot(0, this, [this, id, path] { emit storageListed(id, path, listing, {}); });
         return id;
     }
-    Q_INVOKABLE int storageUpload(const QString&, const QString& folder, const QList<QUrl>& files) {
+    Q_INVOKABLE int storageUpload(const QString&, const QString& folder, const QList<QUrl>& files,
+                                  bool replace = false) {
         uploaded = files;
         destination = folder;
+        replaced = replace;
         return static_cast<int>(files.size());
     }
+    Q_INVOKABLE quint32 storageDownloadItems(const QString&, const QString&, const QVariantList& items) {
+        downloadedItems = items;
+        return ++requestId;
+    }
+    Q_INVOKABLE quint32 prepareDragOut(const QString&, const QString&, const QVariantList& items) {
+        dragItems = items;
+        return ++requestId;
+    }
+    Q_INVOKABLE void cancelBatch(quint32 id) { canceledBatches << id; }
+    Q_INVOKABLE void storageCancel(quint32) {}
+    Q_INVOKABLE void copyText(const QString&) {}
     Q_INVOKABLE void showInFolder(const QString&) {}
 signals:
     void storageListed(quint32 requestId, const QString& path, const QVariantList& entries, const QString& error);
     void storageUploaded(const QString& devId, const QString& remotePath);
+    void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
+    void storageBatchProgress(quint32 batchId, int filesDone, int filesKnown);
+    void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);
 };
 
 class StorageViewTest : public QObject {
@@ -59,12 +81,55 @@ class StorageViewTest : public QObject {
     std::unique_ptr<QQuickWindow> window_;
     QQuickItem* view_ = nullptr;
 
-    void grant(bool upload) {
+    void grant(bool upload, const QStringList& more = {}) {
         ucd::PeerRecord peer;
         peer.devId = QStringLiteral("test-device");
         peer.name = QStringLiteral("Test device");
         if (upload) peer.grantedToMe = {ucd::perm::StorageUpload};
+        peer.grantedToMe += more;
         app_.peers_.setPeers({peer});
+    }
+
+    static QVariantMap entry(const QString& name, bool dir = false) {
+        return {{"name", name}, {"dir", dir}, {"size", 10.0}, {"mtime", 0.0}};
+    }
+
+    // Lists the given entries in the open folder and waits for them.
+    void show(const QVariantList& entries) {
+        app_.listing = entries;
+        QVERIFY(QMetaObject::invokeMethod(view_, "load"));
+        QTRY_VERIFY(!view_->property("loading").toBool());
+    }
+
+    QQuickItem* list() const { return view_->findChild<QQuickItem*>("storageFileList"); }
+
+    // A point on row `i`, `x` pixels from the list's left edge.
+    QPoint rowPoint(int i, qreal x = 300) const {
+        return list()->mapToScene(QPointF(x, 13 + 26 * i)).toPoint();
+    }
+
+    void click(int i, Qt::KeyboardModifiers modifiers = Qt::NoModifier, qreal x = 300) {
+        QTest::mouseClick(window_.get(), Qt::LeftButton, modifiers, rowPoint(i, x));
+    }
+
+    QStringList selectedNames() const {
+        QVariant result;
+        QMetaObject::invokeMethod(view_, "selectedItems", Q_RETURN_ARG(QVariant, result));
+        QStringList names;
+        for (const QVariant& item : result.toList()) names << item.toMap().value("name").toString();
+        return names;
+    }
+
+    bool dropAt(const QList<QUrl>& urls, const QPoint& at) {
+        QMimeData mime;
+        mime.setUrls(urls);
+        QDragEnterEvent enter(at, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window_.get(), &enter);
+        QDragMoveEvent move(at, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window_.get(), &move);
+        QDropEvent event(QPointF(at), Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window_.get(), &event);
+        return event.isAccepted() && event.dropAction() == Qt::CopyAction;
     }
 
     bool drop(const QList<QUrl>& urls) {
@@ -102,6 +167,11 @@ private slots:
     void init() {
         app_.uploaded.clear();
         app_.destination.clear();
+        app_.replaced = false;
+        app_.listing.clear();
+        app_.dragItems.clear();
+        app_.canceledBatches.clear();
+        app_.downloadedItems.clear();
         grant(true);
         window_ = std::make_unique<QQuickWindow>();
         window_->resize(1000, 680);
@@ -154,13 +224,124 @@ private slots:
         QVERIFY(app_.uploaded.isEmpty());
     }
 
+    void selectsWithClicksModifiersAndCheckboxes() {
+        show({entry("a.txt"), entry("b.txt"), entry("c.txt"), entry("d.txt")});
+        click(1);
+        QCOMPARE(selectedNames(), QStringList{"b.txt"});
+        click(3, Qt::ShiftModifier);  // a range from the one clicked last
+        QCOMPARE(selectedNames(), (QStringList{"b.txt", "c.txt", "d.txt"}));
+        click(3, Qt::ControlModifier);  // Ctrl+click deselects a selected one
+        QCOMPARE(selectedNames(), (QStringList{"b.txt", "c.txt"}));
+        click(3, Qt::ControlModifier);  // and adds an unselected one
+        QCOMPARE(selectedNames(), (QStringList{"b.txt", "c.txt", "d.txt"}));
+        click(0, Qt::NoModifier, 10);  // the checkbox adds without clearing
+        QCOMPARE(selectedNames(), (QStringList{"a.txt", "b.txt", "c.txt", "d.txt"}));
+        click(0, Qt::NoModifier, 10);
+        QCOMPARE(selectedNames(), (QStringList{"b.txt", "c.txt", "d.txt"}));
+        QCOMPARE(view_->property("selectedCount").toInt(), 3);
+        click(2);  // a plain click on a selected one keeps just that one
+        QCOMPARE(selectedNames(), QStringList{"c.txt"});
+    }
+
+    // Pressing on an unselected row and moving over others selects them all.
+    void selectsBySweepingAcrossRows() {
+        show({entry("a.txt"), entry("b.txt"), entry("c.txt"), entry("d.txt")});
+        QTest::mousePress(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(0));
+        for (int y = 0; y <= 52; y += 13) QTest::mouseMove(window_.get(), rowPoint(0) + QPoint(0, y));
+        QTest::mouseRelease(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(2));
+        QCOMPARE(selectedNames(), (QStringList{"a.txt", "b.txt", "c.txt"}));
+
+        // Sweeping back up shrinks the range to what is under the pointer.
+        QTest::mousePress(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(3));
+        QTest::mouseMove(window_.get(), rowPoint(2));
+        QTest::mouseRelease(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(2));
+        QCOMPARE(selectedNames(), (QStringList{"c.txt", "d.txt"}));
+    }
+
+    void dropsOntoAFolderRowUploadIntoIt() {
+        show({entry("photos", true), entry("notes.txt")});
+        const QList<QUrl> files{QUrl::fromLocalFile("C:/tmp/a.jpg")};
+        QVERIFY(dropAt(files, rowPoint(0)));
+        QCOMPARE(app_.destination, QStringLiteral("/share/sub/photos"));
+        QVERIFY(dropAt(files, rowPoint(1)));  // a file row: the folder shown
+        QCOMPARE(app_.destination, QStringLiteral("/share/sub"));
+    }
+
+    // With Write, a clash asks whether to replace; without, it keeps both.
+    void asksBeforeReplacingWhenItMayWrite() {
+        const QList<QUrl> files{QUrl::fromLocalFile("C:/tmp/notes.txt")};
+        show({entry("notes.txt")});
+        QVERIFY(dropAt(files, rowPoint(5)));
+        QCOMPARE(app_.uploaded, files);
+        QVERIFY(!app_.replaced);
+
+        app_.uploaded.clear();
+        grant(true, {ucd::perm::StorageWrite});
+        show({entry("notes.txt")});
+        QVERIFY(dropAt(files, rowPoint(5)));
+        QVERIFY(app_.uploaded.isEmpty());  // waiting for the answer
+        QObject* prompt = nullptr;
+        for (QObject* child : view_->findChildren<QObject*>())
+            if (child->metaObject()->indexOfSignal("chosen(QString,QString)") >= 0) prompt = child;
+        QVERIFY(prompt);
+        QVERIFY(prompt->property("visible").toBool());
+        QVERIFY(QMetaObject::invokeMethod(prompt, "choose", Q_ARG(QVariant, QVariant("replace"))));
+        QCOMPARE(app_.uploaded, files);
+        QVERIFY(app_.replaced);
+    }
+
+    // Dragging a selection out first fetches it; letting go too early cancels.
+    void dragOutFetchesTheSelectionAndCancelsWhenReleasedEarly() {
+        grant(true, {ucd::perm::StorageRead});
+        show({entry("a.txt"), entry("folder", true), entry("c.txt")});
+        click(0);
+        click(1, Qt::ControlModifier);
+        QTest::mousePress(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(1));
+        QTest::mouseMove(window_.get(), rowPoint(1) + QPoint(20, 20));
+        QTest::mouseMove(window_.get(), rowPoint(1) + QPoint(30, 30));
+        QCOMPARE(app_.dragItems.size(), 2);
+        QCOMPARE(app_.dragItems.at(0).toMap().value("name").toString(), QStringLiteral("a.txt"));
+        QCOMPARE(app_.dragItems.at(1).toMap().value("dir").toBool(), true);
+        QCOMPARE(view_->property("dragState").toString(), QStringLiteral("preparing"));
+        QTest::mouseRelease(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(1) + QPoint(30, 30));
+        QCOMPARE(app_.canceledBatches.size(), 1);
+        QCOMPARE(view_->property("dragState").toString(), QString());
+        QCOMPARE(selectedNames(), (QStringList{"a.txt", "folder"}));  // a drag keeps the selection
+    }
+
+    void transfersPopupOpensMinimizesAndMaximizes() {
+        auto* popup = view_->findChild<QQuickItem*>("storageTransfers");
+        QVERIFY(popup);
+        view_->setProperty("transfersOpen", false);
+        app_.transfers_.add(200, "other-device", "/x/elsewhere.bin");
+        QVERIFY(!popup->isVisible());  // not this device's
+        app_.transfers_.add(201, "test-device", "/share/sub/movie.mkv");
+        app_.transfers_.progress(201, 50, 200);
+        QTRY_VERIFY(popup->isVisible());
+        QCOMPARE(view_->property("transfersOpen").toBool(), true);
+        const qreal normal = popup->height();
+        popup->setProperty("maximized", true);
+        QTRY_VERIFY(popup->height() > normal);
+        popup->setProperty("minimized", true);
+        QTRY_VERIFY(popup->height() < normal);
+        QVERIFY(popup->isVisible());
+        const QImage image = window_->grabWindow();
+        QVERIFY(image.save(QCoreApplication::applicationDirPath() + "/storage-popup-minimized.png"));
+        popup->setProperty("minimized", false);
+        popup->setProperty("maximized", false);
+        QVERIFY(window_->grabWindow().save(QCoreApplication::applicationDirPath() + "/storage-popup.png"));
+        app_.transfers_.finish(201, "C:/tmp/movie.mkv", {}, false);
+        app_.transfers_.finish(200, "C:/tmp/elsewhere.bin", {}, false);
+        app_.transfers_.clearFinished();
+    }
+
     void refreshesOnlyTheUploadedFolder() {
         const quint32 before = app_.requestId;
         emit app_.storageUploaded("other-device", "/share/sub/file.txt");
         emit app_.storageUploaded("test-device", "/share/other/file.txt");
         QCOMPARE(app_.requestId, before);
         emit app_.storageUploaded("test-device", "/share/sub/file.txt");
-        QCOMPARE(app_.requestId, before + 1);
+        QTRY_COMPARE(app_.requestId, before + 1);
     }
 
     void displaysBothTransferDirections() {
