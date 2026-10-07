@@ -29,6 +29,8 @@ public:
         ErrorRole,
         DirectionRole,  // "upload" | "download"
         CanRetryRole,
+        SpeedRole,  // bytes per second, smoothed; 0 until known
+        EtaRole,    // seconds left; -1 until known
     };
     Q_ENUM(Role)
 
@@ -61,8 +63,9 @@ public:
 
     int activeCount() const;
     int revision() const { return revision_; }
-    // Totals for one device's transfers: count, active, failed, and the bytes
-    // done and expected across the active ones (total -1 while any is unknown).
+    // Totals for one device's transfers: count, active, failed, the bytes
+    // done and expected across the active ones (total -1 while any is
+    // unknown), their combined speed, and the time left (eta, -1 if unknown).
     Q_INVOKABLE QVariantMap summary(const QString& devId) const;
     // Removes finished, failed and canceled rows; only one device's if given.
     Q_INVOKABLE void clearFinished(const QString& devId = {});
@@ -84,7 +87,12 @@ private:
         bool upload = false;
         QString folder;
         bool replace = false;
+        // For the speed: where the transfer was at the last sample.
+        qint64 sampledBytes = -1;
+        qint64 sampledAt    = 0;  // ms
+        double speed        = 0;  // bytes per second
     };
+    static double etaOf(const Transfer& t);
     int rowOf(quint32 id) const;
 
     void bump();

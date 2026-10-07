@@ -31,7 +31,10 @@ Item {
     function statusText() {
         if (summary.active > 0) {
             const percent = summary.total > 0 ? " · " + Math.round(fraction * 100) + "%" : ""
-            return (summary.active === 1 ? qsTr("1 transfer") : qsTr("%1 transfers").arg(summary.active)) + percent
+            const speed = summary.speed > 0 ? " · " + qsTr("%1/s").arg(Theme.formatBytes(summary.speed)) : ""
+            const left = Theme.formatDuration(summary.eta)
+            return (summary.active === 1 ? qsTr("1 transfer") : qsTr("%1 transfers").arg(summary.active))
+                   + percent + speed + (left.length > 0 ? " · " + qsTr("%1 left").arg(left) : "")
         }
         if (summary.failed > 0) return qsTr("%1 failed").arg(summary.failed)
         return summary.count > 0 ? qsTr("All done") : qsTr("No transfers")
@@ -228,6 +231,8 @@ Item {
                     required property string error
                     required property string direction
                     required property bool canRetry
+                    required property real speed
+                    required property real eta
 
                     readonly property bool mine: devId === popup.devId
                     readonly property bool active: transferState === "active"
@@ -268,11 +273,15 @@ Item {
                                            : transfer.transferState === "done" ? Theme.success : Theme.textSecondary
                                     text: {
                                         switch (transfer.transferState) {
-                                        case "active":
-                                            return transfer.total >= 0
-                                                   ? qsTr("%1 of %2").arg(Theme.formatBytes(transfer.received))
-                                                                     .arg(Theme.formatBytes(transfer.total))
-                                                   : qsTr("Waiting...")
+                                        case "active": {
+                                            if (transfer.total < 0) return qsTr("Waiting...")
+                                            let text = qsTr("%1 of %2").arg(Theme.formatBytes(transfer.received))
+                                                                       .arg(Theme.formatBytes(transfer.total))
+                                            if (transfer.speed > 0) text += " · " + qsTr("%1/s").arg(Theme.formatBytes(transfer.speed))
+                                            const left = Theme.formatDuration(transfer.eta)
+                                            if (left.length > 0) text += " · " + qsTr("%1 left").arg(left)
+                                            return text
+                                        }
                                         case "done":
                                             return transfer.direction === "upload" ? qsTr("Uploaded") : qsTr("Done")
                                         case "canceled": return qsTr("Canceled")

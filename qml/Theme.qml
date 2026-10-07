@@ -119,4 +119,13 @@ QtObject {
         }
         return (i === 0 ? n : n.toFixed(1)) + " " + units[i]
     }
+    // A rough time left: "45 s", "3 min", "2 h 10 min"; "" when unknown.
+    function formatDuration(seconds) {
+        if (seconds === undefined || seconds < 0 || !isFinite(seconds)) return ""
+        if (seconds < 60) return qsTr("%1 s").arg(Math.max(1, Math.round(seconds)))
+        if (seconds < 3600) return qsTr("%1 min").arg(Math.round(seconds / 60))
+        const h = Math.floor(seconds / 3600)
+        const m = Math.round((seconds % 3600) / 60)
+        return m > 0 ? qsTr("%1 h %2 min").arg(h).arg(m) : qsTr("%1 h").arg(h)
+    }
 }

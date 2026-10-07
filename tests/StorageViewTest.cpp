@@ -303,6 +303,25 @@ private slots:
     }
 
     // With Write, a clash asks whether to replace; without, it keeps both.
+    // Speed and time left come from how fast progress arrives.
+    void transfersShowSpeedAndTimeLeft() {
+        ucd::TransferListModel& transfers = app_.transfers_;
+        transfers.add(9001, "test-device", "/share/sub/big.bin", {}, false, "C:/tmp");
+        const QModelIndex row = transfers.index(transfers.rowCount() - 1);
+        transfers.progress(9001, 1000, 1000000);
+        QCOMPARE(row.data(ucd::TransferListModel::EtaRole).toDouble(), -1.0);
+        QTest::qWait(300);
+        transfers.progress(9001, 101000, 1000000);
+        const double speed = row.data(ucd::TransferListModel::SpeedRole).toDouble();
+        QVERIFY2(speed > 100000 && speed < 400000, qPrintable(QString::number(speed)));  // ~100 KB in ~0.3 s
+        const double eta = row.data(ucd::TransferListModel::EtaRole).toDouble();
+        QVERIFY2(eta > 2 && eta < 10, qPrintable(QString::number(eta)));
+        QVERIFY(transfers.summary("test-device").value("eta").toDouble() > 0);
+        transfers.finish(9001, "C:/tmp/big.bin", {}, false);
+        QCOMPARE(row.data(ucd::TransferListModel::EtaRole).toDouble(), -1.0);
+        transfers.clearFinished();
+    }
+
     // Double-clicking a file opens it (with Read); a folder is browsed into.
     void doubleClickOpensFilesAndEntersFolders() {
         show({entry("docs", true), entry("a.txt")});

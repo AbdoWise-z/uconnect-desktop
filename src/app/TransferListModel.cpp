@@ -2,7 +2,26 @@
 
 #include <algorithm>
 
+#include <QElapsedTimer>
+
 namespace ucd {
+namespace {
+
+qint64 nowMs() {
+    static QElapsedTimer clock = [] {
+        QElapsedTimer t;
+        t.start();
+        return t;
+    }();
+    return clock.elapsed();
+}
+
+}  // namespace
+
+double TransferListModel::etaOf(const Transfer& t) {
+    if (t.state != QLatin1String("active") || t.speed <= 0 || t.total < 0) return -1;
+    return double(std::max<qint64>(0, t.total - t.received)) / t.speed;
+}
 
 int TransferListModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : static_cast<int>(rows_.size());
@@ -23,6 +42,8 @@ QVariant TransferListModel::data(const QModelIndex& index, int role) const {
     case ErrorRole: return t.error;
     case DirectionRole: return t.upload ? QStringLiteral("upload") : QStringLiteral("download");
     case CanRetryRole: return t.state == QLatin1String("failed") && !t.folder.isEmpty();
+    case SpeedRole: return t.state == QLatin1String("active") ? t.speed : 0.0;
+    case EtaRole: return etaOf(t);
     default: return {};
     }
 }
@@ -40,6 +61,8 @@ QHash<int, QByteArray> TransferListModel::roleNames() const {
         {ErrorRole, "error"},
         {DirectionRole, "direction"},
         {CanRetryRole, "canRetry"},
+        {SpeedRole, "speed"},
+        {EtaRole, "eta"},
     };
 }
 
@@ -60,9 +83,22 @@ void TransferListModel::add(quint32 id, const QString& devId, const QString& rem
 void TransferListModel::progress(quint32 id, qint64 received, qint64 total) {
     const int row = rowOf(id);
     if (row < 0) return;
-    rows_[row].received = received;
-    rows_[row].total    = total;
-    emit dataChanged(index(row), index(row), {ReceivedRole, TotalRole});
+    Transfer& t = rows_[row];
+    t.received = received;
+    t.total    = total;
+    // A smoothed rate from samples at least a quarter second apart. The first
+    // sample only sets the start, which for a resumed download is not zero.
+    const qint64 now = nowMs();
+    if (t.sampledBytes < 0 || received < t.sampledBytes) {
+        t.sampledBytes = received;
+        t.sampledAt    = now;
+    } else if (now - t.sampledAt >= 250) {
+        const double rate = double(received - t.sampledBytes) * 1000.0 / double(now - t.sampledAt);
+        t.speed        = t.speed <= 0 ? rate : 0.7 * t.speed + 0.3 * rate;
+        t.sampledBytes = received;
+        t.sampledAt    = now;
+    }
+    emit dataChanged(index(row), index(row), {ReceivedRole, TotalRole, SpeedRole, EtaRole});
     bump();
 }
 
@@ -131,6 +167,7 @@ void TransferListModel::clearFinished(const QString& devId) {
 QVariantMap TransferListModel::summary(const QString& devId) const {
     int    count = 0, active = 0, failed = 0;
     qint64 done = 0, total = 0;
+    double speed = 0;
     bool   totalKnown = true;
     for (const Transfer& t : rows_) {
         if (t.devId != devId) continue;
@@ -139,6 +176,7 @@ QVariantMap TransferListModel::summary(const QString& devId) const {
         if (t.state != QLatin1String("active")) continue;
         ++active;
         done += t.received;
+        speed += t.speed;
         if (t.total < 0) totalKnown = false;
         else total += t.total;
     }
@@ -148,6 +186,8 @@ QVariantMap TransferListModel::summary(const QString& devId) const {
         {"failed", failed},
         {"done", double(done)},
         {"total", totalKnown ? double(total) : -1.0},
+        {"speed", speed},
+        {"eta", totalKnown && speed > 0 ? double(std::max<qint64>(0, total - done)) / speed : -1.0},
     };
 }
 
