@@ -45,6 +45,7 @@ Window {
         property bool debugOnStartup
         property var sharedFolders: []
         property string downloadFolder
+        property int maxUploadMB: 0
         property var defaultPermissions: []
         property var untrust: []  // public keys
     }
@@ -65,6 +66,7 @@ Window {
 ") !== App.sharedFolders.join("
 ")
                                      || draft.downloadFolder !== App.downloadFolder
+                                     || draft.maxUploadMB !== App.maxUploadMB
                                      || !sameServices(draft.defaultPermissions, App.defaultPermissions)
                                      || draft.untrust.length > 0
 
@@ -78,6 +80,7 @@ Window {
         draft.debugOnStartup = App.debugOnStartup
         draft.sharedFolders = App.sharedFolders.slice()
         draft.downloadFolder = App.downloadFolder
+        draft.maxUploadMB = App.maxUploadMB
         draft.defaultPermissions = App.defaultPermissions.slice()
         draft.untrust = []
     }
@@ -93,6 +96,7 @@ Window {
             debugOnStartup: draft.debugOnStartup,
             sharedFolders: draft.sharedFolders,
             downloadFolder: draft.downloadFolder,
+            maxUploadMB: draft.maxUploadMB,
             defaultPermissions: draft.defaultPermissions,
             untrust: draft.untrust
         })
@@ -467,6 +471,33 @@ Window {
                 visible: dlg.offers("storage") && draft.sharedFolders.length === 0
                 color: Theme.warning
                 text: qsTr("Storage is offered, but no folder is shared yet.")
+            }
+
+            TitledSeparator { text: qsTr("Uploads from other devices") }
+            RowLayout {
+                spacing: 8
+                UCheckBox {
+                    id: limitUploads
+                    text: qsTr("Refuse files larger than")
+                    checked: draft.maxUploadMB > 0
+                    onToggled: draft.maxUploadMB = checked ? Math.max(1, Number(uploadLimitField.text) || 1024) : 0
+                }
+                UTextField {
+                    id: uploadLimitField
+                    implicitWidth: 90
+                    enabled: limitUploads.checked
+                    text: draft.maxUploadMB > 0 ? String(draft.maxUploadMB) : "1024"
+                    validator: IntValidator { bottom: 1; top: 100000000 }
+                    onTextEdited: if (acceptableInput) draft.maxUploadMB = Number(text)
+                }
+                Text {
+                    text: qsTr("MB")
+                    color: Theme.text
+                }
+                Item { Layout.fillWidth: true }
+            }
+            Indented {
+                Help { text: qsTr("Uploads are also refused when they would leave this device's disk with less than 256 MB free.") }
             }
 
             TitledSeparator { text: qsTr("Downloads") }

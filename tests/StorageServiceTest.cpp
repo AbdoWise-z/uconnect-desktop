@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <QtTest>
 
+#include <limits>
 #include <memory>
 
 #include "core/Permissions.hpp"
@@ -521,6 +522,26 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!progress.isEmpty() && progress.last().at(1).toLongLong() > 0, 10000);
         link_->requester->cancel(canceled);
         QVERIFY(!QFile::exists(part));
+    }
+
+    void refusesUploadsOverTheLimitOrTheFreeSpace() {
+        write(outside_ + "/eleven.txt", "eleven byte");
+        link_->offerer->setUploadLimit(10);
+        const auto big = upload(outside_ + "/eleven.txt");
+        QVERIFY2(big.error.contains("larger"), qPrintable(big.error));
+        link_->offerer->setUploadLimit(11);
+        const auto fits = upload(outside_ + "/eleven.txt");
+        QVERIFY2(fits.error.isEmpty(), qPrintable(fits.error));
+        QVERIFY(QFile::remove(uploadedPath(fits.localPath)));
+
+        // As if the disk were nearly full.
+        link_->offerer->setMinimumFreeSpace(std::numeric_limits<qint64>::max() / 2);
+        const auto full = upload(outside_ + "/eleven.txt");
+        QVERIFY2(full.error.contains("space"), qPrintable(full.error));
+        const auto copy = op({{"t", "fs.copy"}, {"path", "/share/hello.txt"}, {"to", "/share/sub"}});
+        QVERIFY2(copy.error.contains("space"), qPrintable(copy.error));
+        QVERIFY(!QFile::exists(share_ + "/sub/hello.txt"));
+        QVERIFY(QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).isEmpty());
     }
 
     void replacesExistingFilesOnlyWithWrite() {

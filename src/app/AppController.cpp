@@ -41,6 +41,7 @@ constexpr auto Verbose        = "verboseLogging";
 constexpr auto DebugOnStartup = "debugOnStartup";
 constexpr auto SharedFolders  = "storage/sharedFolders";
 constexpr auto DownloadFolder = "storage/downloadFolder";
+constexpr auto MaxUploadMB    = "storage/maxUploadMB";
 constexpr auto DefaultPerms   = "permissions/defaults";
 constexpr auto Trust          = "trust";  // a group per trusted public key
 }  // namespace Key
@@ -107,6 +108,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     downloadFolder_ = settings.value(Key::DownloadFolder,
                                      QStandardPaths::writableLocation(QStandardPaths::DownloadLocation))
                           .toString();
+    maxUploadMB_    = std::max(0, settings.value(Key::MaxUploadMB, 0).toInt());
     // The link carries the topic's secret key, so remembering it stores a
     // credential in plain settings. Opt-out exists in Settings > Security; move
     // it to the OS keychain before shipping.
@@ -204,6 +206,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     worker_.start();
     pushHello();
     pushSharedFolders();
+    pushUploadLimit();
     onSession([s = session_, id = *identity_] { s->setIdentity(id); });
     pushAccessPolicy();
     if (!identityWarning.isEmpty()) appendLog(identityWarning);
@@ -297,6 +300,16 @@ void AppController::applySettings(const QVariantMap& values) {
             downloadFolder_ = folder;
             settings.setValue(Key::DownloadFolder, folder);
             emit settingsChanged();
+        }
+    }
+
+    if (values.contains(QStringLiteral("maxUploadMB"))) {
+        const int mb = std::max(0, values.value(QStringLiteral("maxUploadMB")).toInt());
+        if (mb != maxUploadMB_) {
+            maxUploadMB_ = mb;
+            settings.setValue(Key::MaxUploadMB, mb);
+            emit settingsChanged();
+            pushUploadLimit();
         }
     }
 
@@ -939,6 +952,10 @@ void AppController::pushAccessPolicy() {
 
 void AppController::pushSharedFolders() {
     onSession([s = session_, folders = sharedFolders_] { s->setSharedFolders(folders); });
+}
+
+void AppController::pushUploadLimit() {
+    onSession([s = session_, bytes = qint64(maxUploadMB_) * 1024 * 1024] { s->setUploadLimit(bytes); });
 }
 
 void AppController::pushHello() {

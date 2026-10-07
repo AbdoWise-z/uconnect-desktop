@@ -128,6 +128,21 @@ private slots:
         QCOMPARE(restarted.defaultPermissions(), QStringList{QStringLiteral("storage.upload")});
     }
 
+    void appliesTheUploadLimit() {
+        QObject* settingsDraft = draft();
+        QVERIFY(settingsDraft);
+        QCOMPARE(controller_->maxUploadMB(), 0);
+        QVERIFY(settingsDraft->setProperty("maxUploadMB", 500));
+        QTRY_VERIFY(dialog_->property("modified").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QCOMPARE(controller_->maxUploadMB(), 500);
+        QSettings().sync();
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QCOMPARE(restarted.maxUploadMB(), 500);
+        controller_->applySettings({{"maxUploadMB", -3}});
+        QCOMPARE(controller_->maxUploadMB(), 0);
+    }
+
     // Download was folded into Read; grants saved before that keep their effect.
     void migratesSavedDownloadPermissionToRead() {
         const QString key = QString(64, QLatin1Char('a'));

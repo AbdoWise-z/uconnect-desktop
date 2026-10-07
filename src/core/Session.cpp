@@ -208,6 +208,10 @@ void Session::setSharedFolders(const QStringList& folders) {
     storage_->setSharedFolders(folders);
 }
 
+void Session::setUploadLimit(qint64 bytes) {
+    storage_->setUploadLimit(bytes);
+}
+
 void Session::storageList(const QString& devId, const QString& path, quint32 requestId) {
     const auto dev = parseDevId(devId);
     if (!topic_ || !dev) {

@@ -48,7 +48,11 @@
 //             while a copy (or a move between drives) runs; bytes
 //       code: not_offered | forbidden | not_found | denied | not_a_dir |
 //             not_a_file | busy | io | bad_request | exists | root | inside |
-//             corrupt
+//             corrupt | too_large | no_space
+//
+// An offerer refuses an upload larger than its limit (too_large), and an
+// upload or copy that would leave its disk with less than a margin free
+// (no_space), counting uploads already in progress.
 //
 // "sha256" is the SHA-256 of the whole file, lowercase hex, also when a read
 // resumed part-way. The receiver checks it when present and discards a file
@@ -132,6 +136,10 @@ public:
     // Deleted items go to the trash when possible; tests turn that off so
     // they do not fill the user's Recycle Bin.
     void setUseTrash(bool use) { useTrash_ = use; }
+    // Largest file accepted as an upload; 0 for no limit.
+    void setUploadLimit(qint64 bytes) { uploadLimit_ = bytes; }
+    // Free space an upload or copy must leave on the disk it goes to.
+    void setMinimumFreeSpace(qint64 bytes) { minimumFree_ = bytes; }
     // Tests: moves copy and delete, as they must between drives.
     void setAlwaysCopyMoves(bool copy) { alwaysCopyMoves_ = copy; }
 
@@ -265,6 +273,9 @@ private:
     // A summary of a watched folder's listing; 0 if it does not resolve.
     size_t watchSignature(const QString& virtualPath) const;
     void pollWatches();
+    // Whether `bytes` more fit in `folder`'s disk, leaving the margin free and
+    // room for the uploads in progress there.
+    bool hasRoomFor(const QString& folder, qint64 bytes) const;
     std::optional<Entry> resolveEntry(const QString& path, QString* code) const;
     void onWriteData(const uconnect::DevId& dev, std::span<const uint8_t> message);
     void onWriteEnd(const uconnect::DevId& dev, const QJsonObject& msg);
@@ -321,6 +332,8 @@ private:
     std::map<quint32, PendingOp>   ops_;
     bool                           useTrash_ = true;
     bool                           alwaysCopyMoves_ = false;
+    qint64                         uploadLimit_ = 0;
+    qint64                         minimumFree_ = 256LL * 1024 * 1024;
     std::map<std::pair<uconnect::DevId, quint32>, Job> jobs_;
     std::map<std::pair<uconnect::DevId, quint32>, Watch> watches_;
     std::map<quint32, Watching>    watching_;

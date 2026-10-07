@@ -47,6 +47,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool debugOnStartup READ debugOnStartup NOTIFY settingsChanged)
     Q_PROPERTY(QStringList sharedFolders READ sharedFolders NOTIFY settingsChanged)
     Q_PROPERTY(QString downloadFolder READ downloadFolder NOTIFY settingsChanged)
+    // Largest upload this device accepts, in MB; 0 for no limit.
+    Q_PROPERTY(int maxUploadMB READ maxUploadMB NOTIFY settingsChanged)
     // --- topic ---
     Q_PROPERTY(QString topicLink READ topicLink WRITE setTopicLink NOTIFY topicLinkChanged)
     Q_PROPERTY(bool topicLinkValid READ topicLinkValid NOTIFY topicLinkChanged)
@@ -83,6 +85,7 @@ public:
     bool        debugOnStartup() const { return debugOnStartup_; }
     QStringList sharedFolders() const { return sharedFolders_; }
     QString     downloadFolder() const { return downloadFolder_; }
+    int         maxUploadMB() const { return maxUploadMB_; }
 
     QString topicLink() const { return topicLink_; }
     void    setTopicLink(const QString& value);
@@ -111,7 +114,7 @@ public:
     Q_INVOKABLE bool isValidServer(const QString& address) const;
     Q_INVOKABLE void completeFirstRun(const QString& server, const QString& name);
     // Keys: server, deviceName, services, autoConnect, rememberTopic,
-    // verboseLogging, debugOnStartup, sharedFolders, downloadFolder,
+    // verboseLogging, debugOnStartup, sharedFolders, downloadFolder, maxUploadMB,
     // defaultPermissions, and untrust (public keys to stop trusting).
     // Absent keys are left unchanged.
     Q_INVOKABLE void applySettings(const QVariantMap& values);
@@ -221,6 +224,7 @@ private:
     void    onBatchUpload(quint32 uploadId, const QString& error, bool canceled);
     void    finishUploadBatchIfDone(quint32 batchId);
     void pushSharedFolders();
+    void pushUploadLimit();
     void pushAccessPolicy();
     void loadTrust();
     void saveTrusted(const QString& key);
@@ -237,6 +241,7 @@ private:
     QString  topicLink_;
     QStringList sharedFolders_;
     QString     downloadFolder_;
+    int         maxUploadMB_ = 0;
 
     Session::Status status_ = Session::Status::Offline;
     QString         statusDetail_;

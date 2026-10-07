@@ -153,6 +153,8 @@ QString errorText(const QString& code) {
     if (code == QLatin1String("root")) return StorageService::tr("A shared folder itself cannot be renamed, moved or deleted.");
     if (code == QLatin1String("inside")) return StorageService::tr("A folder cannot be moved or copied into itself.");
     if (code == QLatin1String("corrupt")) return StorageService::tr("The file was damaged on the way; try again.");
+    if (code == QLatin1String("too_large")) return StorageService::tr("The file is larger than the device accepts.");
+    if (code == QLatin1String("no_space")) return StorageService::tr("The device does not have enough free space.");
     return StorageService::tr("The request failed.");
 }
 
@@ -651,10 +653,12 @@ void StorageService::serveWrite(const uconnect::DevId& dev, const QJsonObject& r
     const bool replace = req.value("replace").toBool();
     if (replace && !authorize_(dev, perm::StorageWrite))
         return failIncoming(dev, *id, QStringLiteral("forbidden"));
+    if (uploadLimit_ > 0 && total > uploadLimit_) return failIncoming(dev, *id, QStringLiteral("too_large"));
     QString code;
     const auto resolved = resolve(path, &code);
     if (!resolved) return failIncoming(dev, *id, code);
     if (!QFileInfo(resolved->second).isDir()) return failIncoming(dev, *id, QStringLiteral("not_a_dir"));
+    if (!hasRoomFor(resolved->second, total)) return failIncoming(dev, *id, QStringLiteral("no_space"));
 
     Incoming in;
     in.folder = resolved->second;
@@ -670,6 +674,15 @@ void StorageService::serveWrite(const uconnect::DevId& dev, const QJsonObject& r
     incoming_.emplace(key, std::move(in));
     updateTicker();
     sendReliably(dev, {{"t", "fs.write.r"}, {"id", qint64(*id)}});
+}
+
+bool StorageService::hasRoomFor(const QString& folder, qint64 bytes) const {
+    const QStorageInfo disk(folder);
+    if (!disk.isValid()) return true;  // unknown: let the write itself fail if it must
+    qint64 pending = 0;
+    for (const auto& [key, in] : incoming_)
+        if (QStorageInfo(in.folder).device() == disk.device()) pending += in.total - in.received;
+    return disk.bytesAvailable() - pending - bytes >= minimumFree_;
 }
 
 void StorageService::sendReliably(const uconnect::DevId& dev, const QJsonObject& reply) {
@@ -998,10 +1011,12 @@ void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject
     auto state = std::make_shared<JobState>();
     jobs_.emplace(key, Job{state, targetVirtual, Clock::now()});
     updateTicker();
+    const qint64 available = QStorageInfo(dest->second).bytesAvailable() - minimumFree_;
     runOffThread<QString>(
         this,
-        [state, from = e->path, target, move = !copy] {
+        [state, from = e->path, target, move = !copy, available] {
             state->total = treeSize(QFileInfo(from));
+            if (state->total > available) return QStringLiteral("no_space");
             if (!copyTree(QFileInfo(from), target, state->done, state->cancel)) {
                 removeEntry(QFileInfo(target));  // whatever was copied before it failed
                 return QStringLiteral("io");
