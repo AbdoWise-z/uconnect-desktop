@@ -153,12 +153,30 @@ qint32 blockSizeFor(qint64 fileSize) {
     return qint32(size);
 }
 
+QString nameProblem(const QString& name) {
+    if (name.isEmpty() || name == QLatin1String(".") || name == QLatin1String("..")) return QStringLiteral("invalid");
+    if (name.size() > 255) return QStringLiteral("long");
+    static const QString forbidden = QStringLiteral("\\/:*?\"<>|");
+    for (const QChar c : name) {
+        if (c.unicode() < 0x20 || c.unicode() == 0x7f) return QStringLiteral("control");
+        if (forbidden.contains(c)) return QStringLiteral("char:") + c;
+    }
+    if (name.endsWith(QLatin1Char('.')) || name.endsWith(QLatin1Char(' '))) return QStringLiteral("trailing");
+    if (isReservedDeviceName(name)) return QStringLiteral("reserved");
+    if (name.normalized(QString::NormalizationForm_C) != name) return QStringLiteral("unicode");
+    return {};
+}
+
+QString foldName(const QString& path) {
+    return path.normalized(QString::NormalizationForm_C).toCaseFolded();
+}
+
 bool isValidSyncPath(const QString& path) {
     if (path.isEmpty() || path.size() > 4096 || path.startsWith(QLatin1Char('/')) || path.endsWith(QLatin1Char('/')))
         return false;
     const QStringList parts = path.split(QLatin1Char('/'));
     for (const QString& part : parts) {
-        if (!isValidComponent(part) || part.startsWith(QLatin1String(kPartPrefix))) return false;
+        if (!nameProblem(part).isEmpty() || part.startsWith(QLatin1String(kPartPrefix))) return false;
     }
     if (parts.first() == QLatin1String(kKeptDir)) return false;
     return parts.first() != QLatin1String(kSkipFile) || parts.size() > 1;

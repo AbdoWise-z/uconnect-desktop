@@ -282,6 +282,9 @@ private:
     void pushSync();
     void addSyncEvent(const QString& folderId, const QString& path, const QString& kind);
     QString deviceName(const QString& key) const;
+    // Why a file present here is not synced, for people; see
+    // SyncFolder::heldReason().
+    QString heldText(const QString& path, const QString& reason) const;
     void loadActivity();
 
     bool     firstRun_ = false;

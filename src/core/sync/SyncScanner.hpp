@@ -31,6 +31,9 @@ struct ScanResult {
     QString skipText;
     QVector<FileEntry> items;  // everything present and taking part; no versions yet
     QSet<QString>      unstable;  // present but still changing
+    // Present but named so that some member could not hold it: path ->
+    // nameProblem(). Not synced; the user is told.
+    QHash<QString, QString> unsupported;
 };
 
 ScanResult scanFolder(const ScanInput& input);

@@ -65,8 +65,22 @@ struct FileEntry {
 qint32 blockSizeFor(qint64 fileSize);
 inline constexpr qint32 kMaxBlockSize = 16 * 1024 * 1024;
 
-// A relative path another device may name: valid components only, and none
-// of the names the sync service keeps for itself.
+// Synced names follow the strictest rules of the systems members may run, so
+// every member can hold every synced file. Empty if `name` (one path
+// component) may be synced; otherwise why not:
+//   "char:<c>"  one of \ / : * ? " < > | (Windows)
+//   "control"   a control character
+//   "trailing"  ends with a dot or a space (Windows drops them)
+//   "reserved"  CON, PRN, AUX, NUL, COM1-9, LPT1-9, with or without an extension
+//   "long"      more than 255 characters
+//   "unicode"   not in Unicode normalization form C (macOS stores another form)
+//   "invalid"   empty, "." or ".."
+QString nameProblem(const QString& name);
+// The form two names that one device or another would treat as the same
+// share: case folded, NFC. "Report.txt" and "report.txt" clash.
+QString foldName(const QString& path);
+// A relative path another device may name: synced names only (above), and
+// none of the names the sync service keeps for itself.
 bool isValidSyncPath(const QString& path);
 // Temporary files of downloads in progress.
 inline constexpr char kPartPrefix[] = ".syncpart-";

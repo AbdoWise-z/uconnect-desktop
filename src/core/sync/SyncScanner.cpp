@@ -29,15 +29,25 @@ struct Walker {
         const QFileInfoList children = QDir(dirPath).entryInfoList(
             QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
         for (const QFileInfo& fi : children) {
+#ifdef Q_OS_MACOS
+            // macOS hands names out in another Unicode form and finds files by
+            // either; the index keeps the form every other system uses.
+            const QString name = fi.fileName().normalized(QString::NormalizationForm_C);
+#else
             const QString name = fi.fileName();
+#endif
             const QString rel  = relDir.isEmpty() ? name : relDir + QLatin1Char('/') + name;
             // Links are not synced: following one could lead out of the folder.
             if (fi.isSymLink() || fi.isJunction()) continue;
             if (name.startsWith(QLatin1String(kPartPrefix))) continue;
             if (relDir.isEmpty() && (name == QLatin1String(kSkipFile) || name == QLatin1String(kKeptDir))) continue;
-            if (!isValidSyncPath(rel)) continue;
             const bool dir = fi.isDir();
             if (ignore.matches(rel, dir) || skip.matches(rel, dir)) continue;
+            if (const QString problem = nameProblem(name); !problem.isEmpty()) {
+                out.unsupported.insert(rel, problem);  // and nothing inside it, if a folder
+                continue;
+            }
+            if (!isValidSyncPath(rel)) continue;
 
             FileEntry e;
             e.path = rel;

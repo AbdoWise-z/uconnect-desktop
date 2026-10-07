@@ -220,6 +220,95 @@ private slots:
         QVERIFY2(n.dataBytes <= 128 * 1024, qPrintable(QString::number(n.dataBytes)));  // one block
     }
 
+    // A rename moves the file in place: nothing fetched, nothing kept aside.
+    // A change of case only is one too.
+    void renamesInPlace() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        const QByteArray big = randomBytes(1024 * 1024, 3);
+        write(at(0, "big.bin"), big);
+        write(at(0, "report.txt"), "report");
+        n.join(0);
+        n.join(1);
+        n.link(0, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "big.bin")), big, 10000);
+        QTRY_COMPARE(contents(at(1, "report.txt")), QByteArray("report"));
+
+        n.dataBytes = 0;
+        QVERIFY(QFile::rename(at(0, "big.bin"), at(0, "moved.bin")));
+        QVERIFY(QFile::rename(at(0, "report.txt"), at(0, "step.tmp")));
+        QVERIFY(QFile::rename(at(0, "step.tmp"), at(0, "Report.txt")));
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "moved.bin")), big, 10000);
+        QTRY_VERIFY(QDir(at(1, "")).entryList(QDir::Files).contains("Report.txt"));
+        QVERIFY(!QDir(at(1, "")).entryList(QDir::Files).contains("report.txt"));
+        QTRY_VERIFY(!QFile::exists(at(1, "big.bin")));
+        QCOMPARE(n.dataBytes, 0);
+        QVERIFY(!QFileInfo::exists(at(1, ".synctrash")));
+        QTest::qWait(500);
+        QCOMPARE(conflictsOf(*n.nodes[1]), 0);
+    }
+
+    // Two devices made the same name in different case: the older one is
+    // synced, the newer one stays where it is but is held back, and syncs
+    // once the older one goes.
+    void namesThatClashWaitForTheOlderOne() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        write(at(0, "Report.txt"), "alice's, older");
+        write(at(1, "report.txt"), "bob's, newer");
+        {
+            QFile old(at(0, "Report.txt"));
+            QVERIFY(old.open(QIODevice::ReadWrite));
+            old.setFileTime(QDateTime::currentDateTime().addDays(-10), QFileDevice::FileModificationTime);
+        }
+        n.join(0);
+        n.join(1);
+        QTest::qWait(600);  // each has scanned its own
+        n.link(0, 1);
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            for (const QVariant& h : n.nodes[1]->status.value("held").toList())
+                if (h.toMap().value("path") == "report.txt" && h.toMap().value("reason") == "clash:Report.txt")
+                    return true;
+            return false;
+        }(), 10000);
+        QTest::qWait(800);
+        QCOMPARE(contents(at(0, "Report.txt")), QByteArray("alice's, older"));  // nothing written over
+        QCOMPARE(contents(at(1, "report.txt")), QByteArray("bob's, newer"));
+        QVERIFY(!QDir(at(0, "")).entryList(QDir::Files).contains("report.txt"));
+
+        // Alice's goes: Bob's syncs.
+        QVERIFY(QFile::remove(at(0, "Report.txt")));
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(0, "report.txt")), QByteArray("bob's, newer"), 15000);
+        QVERIFY(QDir(at(0, "")).entryList(QDir::Files).contains("report.txt"));
+        QCOMPARE(contents(at(1, "report.txt")), QByteArray("bob's, newer"));
+    }
+
+    void doesNotSyncNamesSomeMemberCannotHold() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+#ifdef Q_OS_WIN
+        // Windows cannot even create such names; the rule shows on Unicode.
+        const QString bad = QStringLiteral("cafe\u0301.txt");
+#else
+        const QString bad = QStringLiteral("notes: draft.txt");
+#endif
+        write(at(0, bad), "x");
+        write(at(0, "fine.txt"), "fine");
+        n.join(0);
+        n.join(1);
+        n.link(0, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "fine.txt")), QByteArray("fine"), 10000);
+        QTRY_VERIFY([&] {
+            for (const QVariant& h : n.nodes[0]->status.value("held").toList())
+                if (h.toMap().value("reason").toString().startsWith("name:")) return true;
+            return false;
+        }());
+        QCOMPARE(QDir(at(1, "")).entryList(QDir::Files), QStringList{"fine.txt"});
+    }
+
     void receiveOnlyMembersDoNotChangeOthers() {
         Net& n = *net_;
         n.add("alice");

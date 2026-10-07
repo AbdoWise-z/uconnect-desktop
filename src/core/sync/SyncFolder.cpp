@@ -33,17 +33,121 @@ QVector<FileEntry> SyncFolder::changedSince(quint64 since) const {
     return out;
 }
 
+namespace {
+
+// Of names that clash ignoring case, the oldest is synced; ties go to the
+// lower name. Folders have no time, so their names decide.
+bool olderThan(qint64 aTime, const QString& a, qint64 bTime, const QString& b) {
+    return aTime != bTime ? aTime < bTime : a < b;
+}
+
+// `held` plus everything inside a held folder.
+void holdDescendants(QHash<QString, QString>& held, const QStringList& paths) {
+    if (held.isEmpty()) return;
+    for (const QString& p : paths) {
+        for (qsizetype slash = p.indexOf(QLatin1Char('/')); slash >= 0; slash = p.indexOf(QLatin1Char('/'), slash + 1)) {
+            const auto parent = held.constFind(p.left(slash));
+            if (parent != held.cend()) {
+                held.insert(p, *parent);
+                break;
+            }
+        }
+    }
+}
+
+}  // namespace
+
+QString SyncFolder::heldReason(const QString& path) const {
+    const auto s = scanHeld.constFind(path);
+    return s != scanHeld.cend() ? *s : clashHeld.value(path);
+}
+
+QHash<QString, QString> SyncFolder::clashes(const QHash<QString, Decision>& decisions) const {
+    struct Live {
+        QString path;
+        qint64  mtime = 0;
+    };
+    QHash<QString, QVector<Live>> byName;
+    QSet<QString> paths(local.keyBegin(), local.keyEnd());
+    for (auto it = decisions.keyBegin(); it != decisions.keyEnd(); ++it) paths.insert(*it);
+    QStringList live;
+    for (const QString& p : paths) {
+        const auto d = decisions.constFind(p);
+        if (d != decisions.cend() && (d->kind == Decision::Apply || (d->kind == Decision::Conflict && d->apply))) {
+            if (d->target.deleted) continue;
+            byName[foldName(p)] << Live{p, d->target.dir ? 0 : d->target.mtime};
+            live << p;
+            continue;
+        }
+        const auto l = local.constFind(p);
+        if (l == local.cend() || l->deleted || scanHeld.contains(p)) continue;
+        // Skipped for .syncskip takes no part; held back for a clash still competes.
+        if (l->skipped && !clashHeld.contains(p)) continue;
+        byName[foldName(p)] << Live{p, l->dir ? 0 : l->mtime};
+        live << p;
+    }
+    QHash<QString, QString> held;
+    for (const QVector<Live>& same : byName) {
+        if (same.size() < 2) continue;
+        const Live* oldest = &same.first();
+        for (const Live& l : same)
+            if (olderThan(l.mtime, l.path, oldest->mtime, oldest->path)) oldest = &l;
+        for (const Live& l : same)
+            if (l.path != oldest->path) held.insert(l.path, QStringLiteral("clash:") + oldest->path);
+    }
+    holdDescendants(held, live);
+    return held;
+}
+
 int SyncFolder::applyScan(const ScanResult& result, quint64 seqAtStart) {
     if (!result.ok) return 0;
     // The rules this scan went by; the caller may hold newer ones.
     const IgnoreRules scanIgnore(result.ignoreText), scanSkip(result.skipText);
     const quint64 before = seq;
 
+    // Names here that clash ignoring case (a case-sensitive disk can hold
+    // both): the oldest syncs, the rest are held back. Names some member
+    // could not hold are held back too.
+    scanHeld.clear();
+    QHash<QString, const FileEntry*> oldest;
+    for (const FileEntry& obs : result.items) {
+        const FileEntry*& o = oldest[foldName(obs.path)];
+        if (!o) {
+            o = &obs;
+        } else if (olderThan(obs.dir ? 0 : obs.mtime, obs.path, o->dir ? 0 : o->mtime, o->path)) {
+            scanHeld.insert(o->path, QStringLiteral("clash:") + obs.path);
+            o = &obs;
+        } else {
+            scanHeld.insert(obs.path, QStringLiteral("clash:") + o->path);
+        }
+    }
+    // A loser's own clash target may itself have lost to an older name later on.
+    for (auto it = scanHeld.begin(); it != scanHeld.end(); ++it)
+        it.value() = QStringLiteral("clash:") + oldest.value(foldName(it.key()))->path;
+    QStringList observed;
+    for (const FileEntry& obs : result.items) observed << obs.path;
+    holdDescendants(scanHeld, observed);
+    for (auto it = result.unsupported.cbegin(); it != result.unsupported.cend(); ++it)
+        scanHeld.insert(it.key(), QStringLiteral("name:") + it.value());
+
+    auto holdBack = [&](const QString& path) {
+        const auto it = local.constFind(path);
+        if (it != local.cend() && !it->deleted && !it->skipped) {
+            FileEntry e = *it;
+            e.skipped   = true;  // stays on disk; peers neither take nor delete it
+            setLocal(e);
+        }
+    };
+
     QSet<QString> seen;
     for (const FileEntry& obs : result.items) {
         seen.insert(obs.path);
         const auto it = local.constFind(obs.path);
         if (it != local.cend() && it->seq > seqAtStart) continue;  // we changed it since the scan began
+        if (scanHeld.contains(obs.path) || clashHeld.contains(obs.path)) {
+            holdBack(obs.path);
+            continue;
+        }
         if (it != local.cend() && !it->deleted && it->dir == obs.dir && (obs.dir || it->hash == obs.hash)) {
             if (it->skipped) {  // taking part again, with the same content
                 FileEntry e = *it;
@@ -63,6 +167,10 @@ int SyncFolder::applyScan(const ScanResult& result, quint64 seqAtStart) {
     for (const QString& path : paths) {
         const FileEntry& l = local[path];
         if (l.deleted || seen.contains(path) || l.seq > seqAtStart || result.unstable.contains(path)) continue;
+        if (scanHeld.contains(path) || clashHeld.contains(path)) {
+            holdBack(path);
+            continue;
+        }
         if (scanSkip.matches(path, l.dir) && !scanIgnore.matches(path, l.dir)) {
             if (!l.skipped) {
                 FileEntry e = l;

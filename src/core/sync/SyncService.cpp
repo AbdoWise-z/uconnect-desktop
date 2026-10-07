@@ -387,14 +387,55 @@ void SyncService::plan(const QString& folderId) {
     if (const QString text = readRules(kSkipFile); text != f->state->skip.text()) f->state->skip = IgnoreRules(text);
     const auto since = [this](const QString& key) { return sinceOf(key); };
 
+    QHash<QString, Decision> decisions;
+    for (const QString& path : f->state->allPaths()) {
+        Decision d = f->state->decide(path, since);
+        if (d.kind != Decision::None) decisions.insert(path, std::move(d));
+    }
+
+    // Names that clash, ignoring case, with an older one are held back here:
+    // not fetched, and if they are files of ours, marked skipped. When the
+    // older one goes, they come back at the next scan.
+    const QHash<QString, QString> clashes = f->state->clashes(decisions);
+    for (auto it = f->state->clashHeld.cbegin(); it != f->state->clashHeld.cend(); ++it)
+        if (!clashes.contains(it.key())) f->rescanSoon = true;  // released
+    f->state->clashHeld = clashes;
+    for (auto it = clashes.cbegin(); it != clashes.cend(); ++it) {
+        decisions.remove(it.key());
+        const auto l = f->state->local.constFind(it.key());
+        if (l != f->state->local.cend() && !l->deleted && !l->skipped) {
+            FileEntry e = *l;
+            e.skipped   = true;
+            f->state->setLocal(e);
+            f->dirty  = true;
+        }
+    }
+    // Tell the user once about each thing held back, and why.
+    QVariantList held;
+    QSet<QString> heldPaths(f->state->scanHeld.keyBegin(), f->state->scanHeld.keyEnd());
+    for (auto it = clashes.keyBegin(); it != clashes.keyEnd(); ++it) heldPaths.insert(*it);
+    QStringList heldSorted(heldPaths.begin(), heldPaths.end());
+    std::sort(heldSorted.begin(), heldSorted.end());
+    for (const QString& path : heldSorted) {
+        const QString reason = f->state->heldReason(path);
+        held << QVariantMap{{"path", path}, {"reason", reason}};
+        if (!f->logged.contains(path + QLatin1Char('|') + reason)) {
+            f->logged.insert(path + QLatin1Char('|') + reason);
+            emit event(folderId, path, QStringLiteral("held:") + reason);
+        }
+    }
+    f->held = held;
+
     struct Planned {
         QString  path;
         Decision d;
     };
     QVector<Planned> deletes, dirs, files, adopts;
     QVariantList conflicts;
-    for (const QString& path : f->state->allPaths()) {
-        const Decision d = f->state->decide(path, since);
+    QStringList  paths = decisions.keys();
+    std::sort(paths.begin(), paths.end());
+    for (const QString& path : paths) {
+        const Decision& d = decisions[path];
         if (d.kind == Decision::Conflict) {
             QVariantList candidates;
             for (const Candidate& c : d.candidates)
@@ -416,7 +457,6 @@ void SyncService::plan(const QString& folderId) {
             }
             if (!d.apply) continue;
         }
-        if (d.kind == Decision::None) continue;
         if (f->blocked.contains(path)) continue;
         if (d.kind == Decision::Adopt) adopts << Planned{path, d};
         else if (d.target.deleted) deletes << Planned{path, d};
@@ -425,9 +465,43 @@ void SyncService::plan(const QString& folderId) {
     }
     f->conflicts = conflicts;
 
+    for (const Planned& p : adopts) {
+        f->state->setLocal(p.d.target);
+        f->state->forced.remove(p.path);
+    }
+    // Folders top-down.
+    for (const Planned& p : dirs) apply(*f, folderId, p.d);
+
+    // Renames: a new name whose content is that of a file about to be
+    // deleted here is the same file, moved. Rename it in place rather than
+    // assembling a copy and setting the original aside. A change of case
+    // only is one too.
+    for (auto file = files.begin(); file != files.end();) {
+        const auto had = f->state->local.constFind(file->path);
+        const bool fresh = had == f->state->local.cend() || had->deleted;
+        auto from = deletes.end();
+        if (fresh && !f->pulls.contains(file->path)) {
+            for (auto del = deletes.begin(); del != deletes.end(); ++del) {
+                const auto l = f->state->local.constFind(del->path);
+                if (l == f->state->local.cend() || l->deleted || l->dir || !l->sameContent(file->d.target)) continue;
+                // Prefer the same name in another case: that is surely the one.
+                if (from == deletes.end() || foldName(del->path) == foldName(file->path)) from = del;
+            }
+        }
+        if (from != deletes.end() && renameLocal(*f, from->path, file->d.target)) {
+            f->state->setLocal(from->d.target);
+            f->state->forced.remove(from->path);
+            f->state->forced.remove(file->path);
+            deletes.erase(from);
+            file = files.erase(file);
+            f->dirty  = true;
+            f->replan = true;
+        } else {
+            ++file;
+        }
+    }
+
     // Fetches no longer wanted, or wanted with other contents.
-    QSet<QString> wantedFiles;
-    for (const Planned& p : files) wantedFiles.insert(p.path);
     for (auto it = f->pulls.begin(); it != f->pulls.end();) {
         const auto want = std::find_if(files.begin(), files.end(), [&](const Planned& p) { return p.path == it->first; });
         if (want == files.end() || !want->d.target.sameContent(it->second.target)) {
@@ -441,15 +515,8 @@ void SyncService::plan(const QString& folderId) {
         }
     }
 
-    for (const Planned& p : adopts) {
-        f->state->setLocal(p.d.target);
-        f->state->forced.remove(p.path);
-    }
-    // Folders top-down.
-    for (const Planned& p : dirs) apply(*f, folderId, p.d);
-
     // Fetches start before any delete: starting one copies the blocks it can
-    // from files here, which may be the very files about to go (a rename).
+    // from files here, which may be the very files about to go.
     f->needFiles = 0;
     f->needBytes = 0;
     bool allStarted = true;
@@ -478,6 +545,40 @@ void SyncService::plan(const QString& folderId) {
     }
 }
 
+// Moves the file at `from` to `to.path`, if the disk still holds what the
+// index says and nothing else is at the new name (or it is the same file
+// under another case).
+bool SyncService::renameLocal(Folder& f, const QString& from, const FileEntry& to) {
+    const bool caseOnly = foldName(from) == foldName(to.path);
+    const QString parent = to.path.contains(QLatin1Char('/')) ? to.path.section(QLatin1Char('/'), 0, -2) : QString();
+    if (!caseMismatch(f, caseOnly ? parent : to.path).isEmpty()) return false;
+    if (!diskMatches(f, from) || !safeParent(f, to.path, true)) return false;
+    const QString absFrom = absolute(f, from), absTo = absolute(f, to.path);
+    if (QFileInfo::exists(absTo) && !caseOnly) return false;
+    if (caseOnly) {
+        // A case-insensitive disk sees the new name as taken by this very
+        // file; going through another name works everywhere.
+        const QString step = QDir(QFileInfo(absFrom).absolutePath())
+                                 .filePath(QLatin1String(kPartPrefix) + QStringLiteral("rename-") + QFileInfo(absFrom).fileName());
+        if (!QFile::rename(absFrom, step)) return false;
+        if (!QFile::rename(step, absTo)) {
+            QFile::rename(step, absFrom);
+            return false;
+        }
+    } else if (!QFile::rename(absFrom, absTo)) {
+        return false;
+    }
+    QFile moved(absTo);
+    if (moved.open(QIODevice::ReadWrite)) {
+        moved.setFileTime(QDateTime::fromMSecsSinceEpoch(to.mtime), QFileDevice::FileModificationTime);
+        moved.close();
+    }
+    FileEntry done = to;
+    done.mtime     = QFileInfo(absTo).lastModified().toMSecsSinceEpoch();
+    f.state->setLocal(done);
+    return true;
+}
+
 // --- applying decisions -----------------------------------------------------------
 
 QString SyncService::absolute(const Folder& f, const QString& path) const {
@@ -486,11 +587,31 @@ QString SyncService::absolute(const Folder& f, const QString& path) const {
 
 // The disk still holds what the index says, so changing it loses nothing
 // the scanner has not seen.
+QString SyncService::caseMismatch(const Folder& f, const QString& path) const {
+    QString dir = f.root;
+    QString rel;
+    for (const QString& part : path.split(QLatin1Char('/'))) {
+        const QString next = QDir(dir).filePath(part);
+        const QFileInfo fi(next);
+        if (!fi.exists() && !fi.isSymLink()) return {};  // the rest is not there yet
+        rel = rel.isEmpty() ? part : rel + QLatin1Char('/') + part;
+        QStringList names = QDir(dir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+#ifdef Q_OS_MACOS
+        for (QString& n : names) n = n.normalized(QString::NormalizationForm_C);
+#endif
+        if (!names.contains(part)) return rel;  // found only by ignoring case
+        dir = next;
+    }
+    return {};
+}
+
 bool SyncService::diskMatches(const Folder& f, const QString& path) const {
     const QFileInfo fi(absolute(f, path));
     if (fi.isSymLink() || fi.isJunction()) return false;
     const auto l = f.state->local.constFind(path);
-    if (l == f.state->local.cend() || l->deleted) return !fi.exists();
+    // Not ours: nothing there, or only something under another case, which
+    // the callers keep clear of.
+    if (l == f.state->local.cend() || l->deleted) return !fi.exists() || !caseMismatch(f, path).isEmpty();
     if (l->skipped) return false;
     if (l->dir) return fi.isDir();
     return fi.isFile() && fi.size() == l->size && fi.lastModified().toMSecsSinceEpoch() == l->mtime;
@@ -509,9 +630,14 @@ void SyncService::apply(Folder& f, const QString& folderId, const Decision& d) {
     const QString abs  = absolute(f, path);
     const QFileInfo fi(abs);
     auto block = [&](const QString& reason) {
-        if (f.blocked.value(path) != reason) emit event(folderId, path, QStringLiteral("blocked:") + reason);
+        if (!f.logged.contains(path + QStringLiteral("|blocked:") + reason)) {  // told once, though retried
+            f.logged.insert(path + QStringLiteral("|blocked:") + reason);
+            emit event(folderId, path, QStringLiteral("blocked:") + reason);
+        }
         f.blocked.insert(path, reason);
     };
+    const bool otherCase = !caseMismatch(f, path).isEmpty();
+    if (otherCase && !d.target.deleted) return block(QStringLiteral("clash"));
     if (!safeParent(f, path, d.target.dir)) return block(QStringLiteral("outside"));
 
     if (d.target.dir) {
@@ -534,7 +660,7 @@ void SyncService::apply(Folder& f, const QString& folderId, const Decision& d) {
         f.rescanSoon = true;  // changed here meanwhile: the scan will make it a conflict
         return block(QStringLiteral("changed"));
     }
-    if (fi.exists()) {
+    if (fi.exists() && !otherCase) {  // under another case it is a different file of ours
         if (fi.isDir() && !QDir(abs).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System))
             return block(QStringLiteral("not_empty"));  // holds files that are not synced
         // Files are kept aside for a while; an empty folder just goes.
@@ -548,9 +674,16 @@ void SyncService::apply(Folder& f, const QString& folderId, const Decision& d) {
 void SyncService::startPull(Folder& f, const QString& folderId, const FileEntry& target, const QStringList& sources) {
     const QString path = target.path;
     auto block = [&](const QString& reason) {
-        if (f.blocked.value(path) != reason) emit event(folderId, path, QStringLiteral("blocked:") + reason);
+        if (!f.logged.contains(path + QStringLiteral("|blocked:") + reason)) {  // told once, though retried
+            f.logged.insert(path + QStringLiteral("|blocked:") + reason);
+            emit event(folderId, path, QStringLiteral("blocked:") + reason);
+        }
         f.blocked.insert(path, reason);
     };
+    // A file or folder of ours under another case holds this name on a disk
+    // that does not tell case apart: it is held back, and this cannot be
+    // written over or into it. Nothing to retry until one of them goes.
+    if (!caseMismatch(f, path).isEmpty()) return block(QStringLiteral("clash"));
     if (!safeParent(f, path, true)) return block(QStringLiteral("outside"));
     if (!diskMatches(f, path)) {
         f.rescanSoon = true;
@@ -708,7 +841,10 @@ void SyncService::finishPull(const QString& folderId, const QString& path) {
     Pull pull = std::move(it->second);
     f->pulls.erase(it);
     auto block = [&](const QString& reason) {
-        if (f->blocked.value(path) != reason) emit event(folderId, path, QStringLiteral("blocked:") + reason);
+        if (!f->logged.contains(path + QStringLiteral("|blocked:") + reason)) {
+            f->logged.insert(path + QStringLiteral("|blocked:") + reason);
+            emit event(folderId, path, QStringLiteral("blocked:") + reason);
+        }
         f->blocked.insert(path, reason);
     };
 
@@ -721,6 +857,7 @@ void SyncService::finishPull(const QString& folderId, const QString& path) {
         f->rescanSoon = true;
         return block(QStringLiteral("changed"));
     }
+    if (!caseMismatch(*f, path).isEmpty()) return block(QStringLiteral("clash"));
     if (pull.keepOld && QFileInfo(abs).isFile() && !keepAside(*f, path)) return block(QStringLiteral("io"));
     if (!replaceWith(pull.temp, abs)) return block(QStringLiteral("io"));
     FileEntry done = pull.target;
@@ -922,6 +1059,7 @@ QVariantMap SyncService::folderStatus(const QString& folderId, const Folder& f) 
         {"needBytes", std::max<qint64>(0, f.needBytes - fetched)},
         {"conflicts", f.conflicts},
         {"blocked", blocked},
+        {"held", f.held},
     };
 }
 

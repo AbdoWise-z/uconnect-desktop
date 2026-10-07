@@ -408,7 +408,7 @@ that never meet the author.
 
 | field | meaning |
 |---|---|
-| `p` | path relative to the folder, `/`-separated; every component valid as in 5.1, none starting with `.syncpart-`, and never `.syncskip` or `.synctrash` at the top |
+| `p` | path relative to the folder, `/`-separated; every component a synced name (6.6), none starting with `.syncpart-`, and never `.syncskip` or `.synctrash` at the top |
 | `v` | version vector: member id -> how many changes that member made to this path |
 | `q` | the sender's sequence number for this change; receivers remember the highest seen |
 | `del` | `true`: deleted (a tombstone); no size or blocks |
@@ -487,7 +487,45 @@ unless it ignores itself.
 keep their local contents: changes to them are neither sent nor applied.
 The device's entry for such a path carries `skip:true`.
 
-### 6.6 Fetching and applying
+### 6.6 Names
+
+Synced names follow the strictest rules of the systems members may run, so
+every member can hold every synced file. On **every** device, a name is not
+synced if it:
+
+- contains `\ / : * ? " < > |` or a control character;
+- ends with a dot or a space;
+- is a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`,
+  `LPT1`-`LPT9`), with or without an extension;
+- is longer than 255 characters;
+- is not in Unicode normalization form C. macOS devices convert the names
+  they read to form C, and find the files under either form.
+
+Such a file stays where it is, takes no part in sync, and the user is told
+why. If it was synced before, its entry is marked `skip:true`, so other
+devices neither take it nor delete their copy.
+
+**Names that differ only in case** (compared case-folded, in form C), such
+as `report.txt` and `Report.txt`, cannot both exist on devices that ignore
+case.
+
+- Only the **older** file (by modification time; between folders, or at the
+  same time, the lower name) is synced. The others are held back the same
+  way, with a warning.
+- When the older one goes, the next one is synced.
+- Everything inside a held-back folder is held back with it.
+- This applies both to names on one device and to names arriving from
+  different devices.
+- A device never writes into, over, or through a file or folder of its own
+  whose name matches only when case is ignored.
+
+### 6.7 Fetching and applying
+
+**Renames.** On the wire, a rename is a new path plus a tombstone. When a
+new path has the same content (hash and size) as a file about to be deleted
+here, the device renames that file in place instead of assembling a copy.
+That covers changes of case too. Nothing is fetched, and nothing is kept
+aside.
 
 **Assembling a file.** A file is assembled from blocks already at hand
 before any are requested:
@@ -525,7 +563,7 @@ files about to go.
 - `.synctrash` is never scanned, synced or written by peers.
 - A folder that still holds files that are not synced is left in place.
 
-### 6.7 Safety rules
+### 6.8 Safety rules
 
 These are MUSTs for any implementation:
 
@@ -545,7 +583,7 @@ These are MUSTs for any implementation:
 | storage 1.1 | uploads (`fs.write`…, kind 3); `fs.rename`, `fs.delete`, `fs.mkdir`; `replace`; `storage.download` folded into `storage.read` |
 | storage 1.2 | `fs.mkdir` `existing`; `fs.move`, `fs.copy`, `fs.progress`; `fs.watch`, `fs.unwatch`, `fs.changed` |
 | storage 1.3 | `sha256` on `fs.read.end` and `fs.write.end`; `fs.read` `offset`; codes `corrupt`, `too_large`, `no_space`, `read_only`; `readOnly` in listings |
-| sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello`, `sync.index`, `sync.get`, `sync.err`, kind 4 |
+| sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello`, `sync.index`, `sync.get`, `sync.err`, kind 4; strict names and case clashes (6.6); `.synctrash` |
 
 Every change so far only adds messages, fields and codes, so an older peer
 ignores what it does not know. A request type that a peer does not

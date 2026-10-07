@@ -420,6 +420,39 @@ Window {
                             }
                         }
 
+                        // Held back
+                        Section {
+                            visible: win.current && win.current.held && win.current.held.length > 0
+                            text: qsTr("Not synced here")
+                        }
+                        Help {
+                            visible: win.current && win.current.held && win.current.held.length > 0
+                            text: qsTr("Synced names follow the strictest rules of every system, so any device can hold every file. These stay on this device, untouched, until the cause goes.")
+                        }
+                        Repeater {
+                            model: win.current && win.current.held ? win.current.held : []
+                            delegate: ColumnLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 0
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.path
+                                    textFormat: Text.PlainText
+                                    elide: Text.ElideMiddle
+                                    color: Theme.text
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.text
+                                    textFormat: Text.PlainText
+                                    wrapMode: Text.WordWrap
+                                    color: Theme.textSecondary
+                                    font.pixelSize: Theme.smallFontSize
+                                }
+                            }
+                        }
+
                         // Devices
                         Section { text: qsTr("Devices") }
                         Help {

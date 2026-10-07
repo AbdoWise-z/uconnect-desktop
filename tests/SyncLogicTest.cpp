@@ -100,6 +100,77 @@ private slots:
         QVERIFY(!FileEntry::fromJson(bad));
     }
 
+    void usesTheStrictestNames() {
+        QCOMPARE(nameProblem("report.txt"), QString());
+        QCOMPARE(nameProblem("notes: draft.txt"), QStringLiteral("char::"));
+        QCOMPARE(nameProblem("what?.txt"), QStringLiteral("char:?"));
+        QCOMPARE(nameProblem("back\\slash"), QStringLiteral("char:\\"));
+        QCOMPARE(nameProblem("tab\tname"), QStringLiteral("control"));
+        QCOMPARE(nameProblem("ends with dot."), QStringLiteral("trailing"));
+        QCOMPARE(nameProblem("ends with space "), QStringLiteral("trailing"));
+        QCOMPARE(nameProblem("CON"), QStringLiteral("reserved"));
+        QCOMPARE(nameProblem("lpt1.log"), QStringLiteral("reserved"));
+        QCOMPARE(nameProblem(QString(256, QLatin1Char('a'))), QStringLiteral("long"));
+        QCOMPARE(nameProblem(QStringLiteral("cafe\u0301")), QStringLiteral("unicode"));  // e + accent
+        QCOMPARE(nameProblem(QStringLiteral("caf\u00e9")), QString());
+        QCOMPARE(foldName("Docs/Report.TXT"), foldName("docs/report.txt"));
+        QVERIFY(!isValidSyncPath("a/what?.txt"));
+    }
+
+    // On a disk that tells case apart, both can exist: the older one syncs.
+    void holdsBackNewerNamesThatClash() {
+        SyncFolder f(config(), "A", {});
+        ScanResult scan;
+        FileEntry older = file("Report.txt", "first", {});
+        older.mtime     = 100;
+        FileEntry newer = file("report.txt", "second", {});
+        newer.mtime     = 200;
+        FileEntry docs, docsLower, inside;
+        docs.path = "Docs";
+        docs.dir  = true;
+        docsLower = docs;
+        docsLower.path = "docs";
+        inside = file("docs/x.txt", "x", {});
+        scan.items << newer << older << docs << docsLower << inside;
+        scan.unsupported.insert("bad:name.txt", "char::");
+        f.applyScan(scan, f.seq);
+        QCOMPARE(f.scanHeld.value("report.txt"), QStringLiteral("clash:Report.txt"));
+        QCOMPARE(f.scanHeld.value("docs"), QStringLiteral("clash:Docs"));  // folders: by name
+        QCOMPARE(f.scanHeld.value("docs/x.txt"), QStringLiteral("clash:Docs"));
+        QCOMPARE(f.scanHeld.value("bad:name.txt"), QStringLiteral("name:char::"));
+        QVERIFY(f.local.contains("Report.txt") && !f.local.contains("report.txt"));
+        QVERIFY(!f.local.contains("docs/x.txt"));
+
+        // The older one goes: the other syncs.
+        scan.items = {newer};
+        scan.unsupported.clear();
+        f.applyScan(scan, f.seq);
+        QVERIFY(f.scanHeld.isEmpty());
+        QVERIFY(f.local["Report.txt"].deleted);
+        QVERIFY(f.local.contains("report.txt") && !f.local["report.txt"].skipped);
+    }
+
+    // Across devices: a newer name here loses to an older one from a peer.
+    void holdsBackNamesThatClashWithPeers() {
+        SyncFolder f(config(), "A", {});
+        FileEntry mine = file("report.txt", "mine", {{"A", 1}});
+        mine.mtime     = 200;
+        f.setLocal(mine);
+        FileEntry theirs = file("Report.txt", "theirs", {{"B", 1}});
+        theirs.mtime     = 100;
+        f.applyRemote(kBob, 1, true, {theirs});
+        QHash<QString, Decision> decisions{{"Report.txt", f.decide("Report.txt", neverConnected)}};
+        QCOMPARE(decisions["Report.txt"].kind, Decision::Apply);
+        auto held = f.clashes(decisions);
+        QCOMPARE(held.value("report.txt"), QStringLiteral("clash:Report.txt"));
+        QVERIFY(!held.contains("Report.txt"));
+
+        // Ours is the older one: theirs waits.
+        f.local["report.txt"].mtime = 50;
+        held = f.clashes(decisions);
+        QCOMPARE(held.value("Report.txt"), QStringLiteral("clash:report.txt"));
+    }
+
     void followsNewerVersions() {
         SyncFolder f(config(), "A", {});
         f.setLocal(file("a.txt", "old", {{"B", 1}}));

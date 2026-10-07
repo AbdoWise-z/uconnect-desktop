@@ -81,6 +81,19 @@ public:
     // Resolutions waiting for their content: path -> what the entry becomes.
     QHash<QString, FileEntry> forced;
 
+    // Paths this device holds back from sync, and why: "clash:<path>" (the
+    // name clashes, ignoring case, with that older one, which is synced) or
+    // "name:<problem>" (see nameProblem()). Held-back files stay on disk and
+    // are marked skipped, so peers neither take nor delete them; they sync
+    // again when what held them back goes.
+    QHash<QString, QString> scanHeld;   // found by the last scan
+    QHash<QString, QString> clashHeld;  // clashes with other devices' names
+    QString heldReason(const QString& path) const;
+
+    // Which live names clash with an older one, ignoring case, given what the
+    // decisions of this round would bring (path -> decision).
+    QHash<QString, QString> clashes(const QHash<QString, Decision>& decisions) const;
+
     bool participates(const QString& path, bool dir = false) const;
     void setLocal(FileEntry e);
     // Entries changed after `since`, oldest change first.

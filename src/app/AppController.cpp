@@ -1184,6 +1184,13 @@ QVariantList AppController::syncFolders() const {
             conflicts << conflict;
         }
         folder.insert("conflicts", conflicts);
+        QVariantList held;
+        for (const QVariant& v : folder.value("held").toList()) {
+            QVariantMap h = v.toMap();
+            h.insert("text", heldText(h.value("path").toString(), h.value("reason").toString()));
+            held << h;
+        }
+        folder.insert("held", held);
         out << folder;
     }
     return out;
@@ -1295,6 +1302,31 @@ void AppController::clearSyncEvents() {
     emit syncChanged();
 }
 
+QString AppController::heldText(const QString& path, const QString& reason) const {
+    if (reason.startsWith(QLatin1String("clash:")))
+        return tr("Not synced: its name differs only in case from %1, which is older and is synced. "
+                  "Devices that ignore case can hold only one; this one syncs once %1 is gone.")
+            .arg(reason.mid(6));
+    const QString problem = reason.mid(5);  // after "name:"
+    QString why;
+    if (problem.startsWith(QLatin1String("char:")))
+        why = tr("“%1” cannot be used in names on every system").arg(problem.mid(5));
+    else if (problem == QLatin1String("control"))
+        why = tr("its name holds a control character");
+    else if (problem == QLatin1String("trailing"))
+        why = tr("its name ends with a dot or a space, which Windows drops");
+    else if (problem == QLatin1String("reserved"))
+        why = tr("Windows keeps that name for a device");
+    else if (problem == QLatin1String("long"))
+        why = tr("its name is longer than 255 characters");
+    else if (problem == QLatin1String("unicode"))
+        why = tr("its name is written in a Unicode form some systems store differently");
+    else
+        why = tr("its name cannot be used");
+    Q_UNUSED(path);
+    return tr("Not synced: %1. Rename it to sync it.").arg(why);
+}
+
 void AppController::addSyncEvent(const QString& folderId, const QString& path, const QString& kind) {
     QString label;
     for (const sync::FolderConfig& c : syncFolders_)
@@ -1315,6 +1347,11 @@ void AppController::addSyncEvent(const QString& folderId, const QString& path, c
         text = tr("Did not delete the folder %1: it holds files that are not synced.").arg(path);
     else if (kind == QLatin1String("blocked:in_the_way"))
         text = tr("Could not create %1: something else is in the way.").arg(path);
+    else if (kind.startsWith(QLatin1String("held:")))
+        text = path + QStringLiteral(" — ") + heldText(path, kind.mid(5));
+    else if (kind == QLatin1String("blocked:clash"))
+        text = tr("%1 from another device was not written: a file or folder here has the same name in "
+                  "another case, and this device can hold only one.").arg(path);
     else if (kind == QLatin1String("blocked:outside"))
         text = tr("Refused %1: it would be outside the synced folder.").arg(path);
     else

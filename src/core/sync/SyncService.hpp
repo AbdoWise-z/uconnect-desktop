@@ -79,7 +79,8 @@ signals:
     // to resolve), "following:<key>" (behind both sides, followed that
     // peer's chain), "kept" (stayed on our chain), "waiting" (no holder
     // online), or "blocked:<reason>" with reason outside | in_the_way |
-    // changed | not_empty | io.
+    // changed | not_empty | io | clash, or "held:<reason>" (see
+    // SyncFolder::heldReason()) for a file present here that is not synced.
     void event(const QString& folderId, const QString& path, const QString& kind);
 
 private:
@@ -108,6 +109,7 @@ private:
         QHash<QString, QString> blocked;  // path -> why it cannot be applied now
         QSet<QString> logged;             // conflicts already told
         QVariantList  conflicts;
+        QVariantList  held;  // [{path, reason}]: present here but not synced
         QVariantMap   lastStatus;
         qint64 needFiles = 0, needBytes = 0;
     };
@@ -148,6 +150,7 @@ private:
     void requestBlocks(const QString& folderId);
     void finishPull(const QString& folderId, const QString& path);
     void dropPull(Folder& f, const QString& path);
+    bool renameLocal(Folder& f, const QString& from, const sync::FileEntry& to);
     void onHello(const uconnect::DevId& dev, const QJsonObject& msg);
     void onIndex(const uconnect::DevId& dev, const QJsonObject& msg);
     void onGet(const uconnect::DevId& dev, const QJsonObject& msg);
@@ -156,6 +159,9 @@ private:
     void failRequest(quint32 id, bool dropSource);
     QString absolute(const Folder& f, const QString& path) const;
     bool    diskMatches(const Folder& f, const QString& path) const;
+    // The first part of `path` that is on disk only under another case (a
+    // disk that ignores case finds it anyway); empty if there is none.
+    QString caseMismatch(const Folder& f, const QString& path) const;
     // Moves a file into .synctrash, its path kept and the time added to its name.
     bool    keepAside(const Folder& f, const QString& path) const;
     void    cleanKept(const QString& folderId);
