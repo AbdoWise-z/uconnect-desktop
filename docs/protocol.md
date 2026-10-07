@@ -23,6 +23,9 @@ queued is not sent. An offerer MUST retry its replies (`fs.list.r`,
 drop them. A requester MUST do the same for its cancels. A requester whose
 request cannot be queued fails that request at once.
 
+Folder sync (section 6) queues every message per peer and sends them in
+order as the peer's queue allows; it drops nothing.
+
 ## 2. Envelope
 
 Every message is `[u8 kind][payload]`:
@@ -111,6 +114,10 @@ peer without a verified key gets the default set.
 | `camera.view`, `screen.view`, `control.input` | reserved; those services are not specified yet |
 
 A saved grant of `storage.download`, from an earlier version, means `storage.read`.
+
+Folder sync does not use these ids. It has its own grants, **send** and
+**accept**, per folder and per peer (6.1). They are not listed in
+`perm.granted`; `sync.offers` tells a peer which folders it is sent.
 
 ## 5. Storage
 
@@ -368,7 +375,9 @@ member through any chain of members that are online.
   - **accept:** take the peer's changes into this device's copy.
 
   A device that is sent a folder but not accepted from keeps a copy without
-  changing anyone else's.
+  changing anyone else's. When a device changes its grants, it sends
+  `sync.offers` again to connected peers, and `sync.hello` for any folder
+  it had not yet greeted that peer in.
 - **Member id.** A member's id in version vectors is the first 16 hex digits
   of SHA-256(its 32-byte public key).
 
@@ -413,7 +422,7 @@ that never meet the author.
 | `q` | the sender's sequence number for this change; receivers remember the highest seen |
 | `del` | `true`: deleted (a tombstone); no size or blocks |
 | `dir` | `true`: a folder; no size or blocks |
-| `skip` | `true`: the sender no longer takes part in this path (its `.syncskip`); others leave the entry out |
+| `skip` | `true`: the sender no longer takes part in this path: its `.syncskip` (6.5), or a name it holds back (6.6). Others leave the entry out, and neither take the file nor delete theirs |
 | `s`, `m` | size, and modification time in ms |
 | `h` | SHA-256 of the whole file |
 | `bs`, `b` | block size, and the SHA-256 of each block in order |
@@ -434,9 +443,20 @@ other's, they are *concurrent*. Clocks never decide anything.
 folder, it records a version: its current one, with its own counter raised
 by one. A deleted path becomes a tombstone the same way.
 
+- A file whose time changed but whose content did not is no change.
+- How a device notices changes is its own business. The desktop app scans
+  every 10 seconds, rereads only files whose size or time changed, and
+  leaves files changed in the last 2 seconds for the next scan.
+
 **Choosing.** For each path, a device looks at its own entry and the entries
-of every peer it accepts from. It sets aside any entry that another entry
-is newer than, and groups what is left by content. Then:
+of every peer it accepts from.
+
+- Left out: entries marked `skip`, paths its `.syncignore` or `.syncskip`
+  match, and names it holds back (6.6).
+- It sets aside any entry that another entry is newer than, and groups what
+  is left by content.
+
+Then:
 
 - **One content.** Take it.
   - If the device already has that content, it adopts the merged version
@@ -458,7 +478,8 @@ is newer than, and groups what is left by content. Then:
 
 - keep their own version;
 - take a peer's version (fetched first);
-- stop syncing the file (adds it to `.syncskip`).
+- stop syncing the file (adds a pattern matching exactly that path to
+  `.syncskip`, so its entry gets `skip:true`).
 
 Whatever is kept gets the merged version of every candidate, plus one for
 the resolving device. That makes it newer than all of them, so it settles
@@ -536,8 +557,9 @@ before any are requested:
 
 **Fetching missing blocks.**
 
-- They are requested from any member whose entry has the same content, at
-  most 16 at a time per peer.
+- They are requested from any connected peer the device accepts from whose
+  entry has the same content, at most 16 at a time per peer. That peer
+  serves them only if it sends the folder to the device (6.8).
 - Each block is checked against its hash.
 - On `sync.err` or a 30-second timeout, another holder is tried.
 
@@ -583,7 +605,7 @@ These are MUSTs for any implementation:
 | storage 1.1 | uploads (`fs.write`…, kind 3); `fs.rename`, `fs.delete`, `fs.mkdir`; `replace`; `storage.download` folded into `storage.read` |
 | storage 1.2 | `fs.mkdir` `existing`; `fs.move`, `fs.copy`, `fs.progress`; `fs.watch`, `fs.unwatch`, `fs.changed` |
 | storage 1.3 | `sha256` on `fs.read.end` and `fs.write.end`; `fs.read` `offset`; codes `corrupt`, `too_large`, `no_space`, `read_only`; `readOnly` in listings |
-| sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello`, `sync.index`, `sync.get`, `sync.err`, kind 4; strict names and case clashes (6.6); `.synctrash` |
+| sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
 
 Every change so far only adds messages, fields and codes, so an older peer
 ignores what it does not know. A request type that a peer does not
