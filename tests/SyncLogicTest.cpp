@@ -89,6 +89,8 @@ private slots:
         QVERIFY(!isValidSyncPath("/abs"));
         QVERIFY(!isValidSyncPath("a//b"));
         QVERIFY(!isValidSyncPath("a/.syncpart-x"));
+        QVERIFY(!isValidSyncPath(".synctrash/a.txt"));
+        QVERIFY(isValidSyncPath("sub/.synctrash"));  // reserved at the top only
         QVERIFY(!FileEntry::fromJson({{"p", "../x"}, {"v", QJsonObject{{"A", 1}}}, {"del", true}}));
         // Block hashes must agree with the size.
         FileEntry e = file("a.txt", "hello", {{"A", 1}});

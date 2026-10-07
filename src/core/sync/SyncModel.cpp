@@ -160,6 +160,7 @@ bool isValidSyncPath(const QString& path) {
     for (const QString& part : parts) {
         if (!isValidComponent(part) || part.startsWith(QLatin1String(kPartPrefix))) return false;
     }
+    if (parts.first() == QLatin1String(kKeptDir)) return false;
     return parts.first() != QLatin1String(kSkipFile) || parts.size() > 1;
 }
 

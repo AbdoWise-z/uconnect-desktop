@@ -34,7 +34,7 @@ struct Walker {
             // Links are not synced: following one could lead out of the folder.
             if (fi.isSymLink() || fi.isJunction()) continue;
             if (name.startsWith(QLatin1String(kPartPrefix))) continue;
-            if (relDir.isEmpty() && name == QLatin1String(kSkipFile)) continue;
+            if (relDir.isEmpty() && (name == QLatin1String(kSkipFile) || name == QLatin1String(kKeptDir))) continue;
             if (!isValidSyncPath(rel)) continue;
             const bool dir = fi.isDir();
             if (ignore.matches(rel, dir) || skip.matches(rel, dir)) continue;

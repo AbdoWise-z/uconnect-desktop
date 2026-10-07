@@ -72,5 +72,7 @@ bool isValidSyncPath(const QString& path);
 inline constexpr char kPartPrefix[] = ".syncpart-";
 inline constexpr char kIgnoreFile[] = ".syncignore";  // synced
 inline constexpr char kSkipFile[]   = ".syncskip";    // this device only
+// Where files sync deletes or sets aside wait before going to the trash.
+inline constexpr char kKeptDir[]    = ".synctrash";
 
 }  // namespace ucd::sync

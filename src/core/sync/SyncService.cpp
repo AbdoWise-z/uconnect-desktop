@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -9,6 +10,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QTimer>
 
 #include "core/FsUtil.hpp"
@@ -31,6 +33,7 @@ constexpr int    kMaxPulls      = 32;               // files being fetched per f
 constexpr qint64 kPumpBudget    = 8 * 1024 * 1024;  // bytes sent per event-loop turn
 constexpr auto   kRequestTimeout = 30s;
 constexpr auto   kSaveEvery      = 2s;
+constexpr auto   kCleanEvery     = 1h;
 
 std::optional<quint32> idOf(const QJsonObject& o) {
     const qint64 v = o.value("id").toInteger(-1);
@@ -326,6 +329,7 @@ void SyncService::work() {
         // Planning need not wait for a scan: a scan's result leaves alone
         // whatever changed after it began.
         if (f.replan) plan(id);
+        if (now >= f.nextCleanup) cleanKept(id);
         if (!f.scanning && (f.rescanSoon || now >= f.nextScan)) startScan(id);
         requestBlocks(id);
     }
@@ -533,7 +537,8 @@ void SyncService::apply(Folder& f, const QString& folderId, const Decision& d) {
     if (fi.exists()) {
         if (fi.isDir() && !QDir(abs).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System))
             return block(QStringLiteral("not_empty"));  // holds files that are not synced
-        const bool gone = (useTrash_ && QFile::moveToTrash(abs)) || removeEntry(fi);
+        // Files are kept aside for a while; an empty folder just goes.
+        const bool gone = fi.isDir() ? QDir().rmdir(abs) : (keepAside(f, path) || removeEntry(fi));
         if (!gone) return block(QStringLiteral("io"));
     }
     f.state->setLocal(d.target);
@@ -555,6 +560,7 @@ void SyncService::startPull(Folder& f, const QString& folderId, const FileEntry&
     Pull p;
     p.target  = target;
     p.sources = sources;
+    p.keepOld = f.state->forced.contains(path);  // this device's own version, given up in a conflict
     p.temp    = QDir(fi.absolutePath()).filePath(QLatin1String(kPartPrefix) +
                                                  QString::fromLatin1(target.hash.toHex().left(8)) + QLatin1Char('-') +
                                                  fi.fileName());
@@ -715,6 +721,7 @@ void SyncService::finishPull(const QString& folderId, const QString& path) {
         f->rescanSoon = true;
         return block(QStringLiteral("changed"));
     }
+    if (pull.keepOld && QFileInfo(abs).isFile() && !keepAside(*f, path)) return block(QStringLiteral("io"));
     if (!replaceWith(pull.temp, abs)) return block(QStringLiteral("io"));
     FileEntry done = pull.target;
     done.mtime     = QFileInfo(abs).lastModified().toMSecsSinceEpoch();  // as the disk keeps it
@@ -723,6 +730,55 @@ void SyncService::finishPull(const QString& folderId, const QString& path) {
     f->state->forced.remove(path);
     f->dirty  = true;
     f->replan = true;
+}
+
+bool SyncService::keepAside(const Folder& f, const QString& path) const {
+    const QFileInfo name(path);
+    const QString   stamp  = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
+    const QString   suffix = name.suffix();
+    const QString   kept   = name.completeBaseName() + QLatin1Char('~') + stamp +
+                         (suffix.isEmpty() ? QString() : QLatin1Char('.') + suffix);
+    const QString dir = QDir(QDir(f.root).filePath(QLatin1String(kKeptDir))).filePath(
+        path.contains(QLatin1Char('/')) ? path.section(QLatin1Char('/'), 0, -2) : QString());
+    if (!QDir().mkpath(dir)) return false;
+    return QFile::rename(absolute(f, path), uniquePath(dir, kept));
+}
+
+// Files kept longer than keepDays_ go on to the trash; empty folders left
+// behind go too. Runs off the worker thread.
+void SyncService::cleanKept(const QString& folderId) {
+    Folder* f = folder(folderId);
+    if (!f) return;
+    f->nextCleanup = Clock::now() + kCleanEvery;
+    if (f->root.isEmpty()) return;
+    const QString root = QDir(f->root).filePath(QLatin1String(kKeptDir));
+    if (!QFileInfo(root).isDir()) return;
+    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-keepDays_);
+    runOffThread<int>(
+        this,
+        [root, cutoff, trash = useTrash_] {
+            static const QRegularExpression stamp(QStringLiteral("~(\\d{8}-\\d{6})(?:\\.[^.]*)?$"));
+            int gone = 0;
+            std::function<void(const QString&)> clean = [&](const QString& dir) {
+                for (const QFileInfo& fi : QDir(dir).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden)) {
+                    if (fi.isSymLink() || fi.isJunction()) continue;
+                    if (fi.isDir()) {
+                        clean(fi.absoluteFilePath());
+                        QDir().rmdir(fi.absoluteFilePath());  // only if it is empty now
+                        continue;
+                    }
+                    const auto m = stamp.match(fi.fileName());
+                    const QDateTime when = m.hasMatch()
+                                               ? QDateTime::fromString(m.captured(1), QStringLiteral("yyyyMMdd-HHmmss"))
+                                               : fi.lastModified();
+                    if (!when.isValid() || when > cutoff) continue;
+                    if ((trash && QFile::moveToTrash(fi.absoluteFilePath())) || QFile::remove(fi.absoluteFilePath())) ++gone;
+                }
+            };
+            clean(root);
+            return gone;
+        },
+        [](std::optional<int>) {});
 }
 
 void SyncService::dropPull(Folder& f, const QString& path) {

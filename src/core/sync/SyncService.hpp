@@ -64,6 +64,9 @@ public:
     // Tests.
     void setScanInterval(int ms) { scanInterval_ = ms; }
     void setStableAfter(int ms) { stableAfter_ = ms; }
+    // Files kept in .synctrash go to the trash (or, without one, are
+    // deleted) after this many days.
+    void setKeepDays(int days) { keepDays_ = days; }
     void setUseTrash(bool use) { useTrash_ = use; }
 
 signals:
@@ -89,6 +92,7 @@ private:
         std::unique_ptr<QFile> file;
         QVector<int>    missing;     // blocks still to fetch
         QSet<int>       requested;
+        bool            keepOld = false;  // set the file it replaces aside (a conflict resolved for theirs)
         Clock::time_point lastProgress;
     };
     struct Folder {
@@ -96,6 +100,7 @@ private:
         QString root;  // real path; empty if missing
         bool    scanning = false;
         bool    rescanSoon = true;
+        Clock::time_point nextCleanup;  // of .synctrash
         Clock::time_point nextScan;
         bool    dirty = false;     // state to save
         bool    replan = true;     // decisions to make again
@@ -151,6 +156,9 @@ private:
     void failRequest(quint32 id, bool dropSource);
     QString absolute(const Folder& f, const QString& path) const;
     bool    diskMatches(const Folder& f, const QString& path) const;
+    // Moves a file into .synctrash, its path kept and the time added to its name.
+    bool    keepAside(const Folder& f, const QString& path) const;
+    void    cleanKept(const QString& folderId);
     bool    safeParent(const Folder& f, const QString& path, bool create) const;
     qint64  sinceOf(const QString& key) const;
     QVariantMap folderStatus(const QString& folderId, const Folder& f) const;
@@ -174,6 +182,7 @@ private:
     int  scanInterval_ = 10000;
     int  stableAfter_  = 2000;
     bool useTrash_     = true;
+    int  keepDays_     = 30;
     Clock::time_point lastSave_;
 };
 

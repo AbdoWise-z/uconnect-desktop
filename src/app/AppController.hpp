@@ -140,6 +140,8 @@ public:
                                             const QString& key);
     Q_INVOKABLE void    rescanSyncFolder(const QString& id);
     Q_INVOKABLE void    openSyncFolder(const QString& id) const;
+    // Opens .synctrash, where files sync removed or set aside wait 30 days.
+    Q_INVOKABLE void    openSyncKept(const QString& id);
     Q_INVOKABLE void    clearSyncEvents();
     Q_INVOKABLE void clearStorageActivity();
 

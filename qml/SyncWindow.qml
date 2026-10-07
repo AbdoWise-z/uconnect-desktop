@@ -295,6 +295,10 @@ Window {
                                 onClicked: App.openSyncFolder(win.current.id)
                             }
                             UButton {
+                                text: qsTr("Kept Files")
+                                onClicked: App.openSyncKept(win.current.id)
+                            }
+                            UButton {
                                 text: qsTr("Rescan")
                                 enabled: win.current && !win.current.paused
                                 onClicked: App.rescanSyncFolder(win.current.id)
@@ -329,6 +333,10 @@ Window {
                             }
                         }
 
+                        Help {
+                            text: qsTr("Files that syncing deletes, or that you give up in a conflict, are kept in .synctrash inside the folder for 30 days, then moved to the Recycle Bin.")
+                        }
+
                         // Conflicts
                         Section {
                             visible: win.current && win.current.conflicts.length > 0
@@ -336,7 +344,7 @@ Window {
                         }
                         Help {
                             visible: win.current && win.current.conflicts.length > 0
-                            text: qsTr("Devices changed these files without seeing each other's change. Whatever you choose reaches every device; files you set aside go to the Recycle Bin.")
+                            text: qsTr("Devices changed these files without seeing each other's change. Whatever you choose reaches every device; a version you give up here is kept in .synctrash.")
                         }
                         Repeater {
                             model: win.current ? win.current.conflicts : []

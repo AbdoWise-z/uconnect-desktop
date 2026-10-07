@@ -1281,6 +1281,15 @@ void AppController::openSyncFolder(const QString& id) const {
         if (c.id == id) QDesktopServices::openUrl(QUrl::fromLocalFile(c.path));
 }
 
+void AppController::openSyncKept(const QString& id) {
+    for (const sync::FolderConfig& c : syncFolders_) {
+        if (c.id != id) continue;
+        const QString kept = QDir(c.path).filePath(QLatin1String(sync::kKeptDir));
+        if (QFileInfo(kept).isDir()) QDesktopServices::openUrl(QUrl::fromLocalFile(kept));
+        else emit notify(tr("Nothing has been removed from %1 by syncing yet.").arg(c.label));
+    }
+}
+
 void AppController::clearSyncEvents() {
     syncEvents_.clear();
     emit syncChanged();

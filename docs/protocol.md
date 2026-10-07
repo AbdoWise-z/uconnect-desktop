@@ -408,7 +408,7 @@ that never meet the author.
 
 | field | meaning |
 |---|---|
-| `p` | path relative to the folder, `/`-separated; every component valid as in 5.1, none starting with `.syncpart-`, and never `.syncskip` at the top |
+| `p` | path relative to the folder, `/`-separated; every component valid as in 5.1, none starting with `.syncpart-`, and never `.syncskip` or `.synctrash` at the top |
 | `v` | version vector: member id -> how many changes that member made to this path |
 | `q` | the sender's sequence number for this change; receivers remember the highest seen |
 | `del` | `true`: deleted (a tombstone); no size or blocks |
@@ -516,7 +516,13 @@ before any are requested:
 **Deletes** come after every fetch has taken the blocks it needs from the
 files about to go.
 
-- Deleted files go to the trash where there is one.
+- Deleted files are kept in `.synctrash` at the top of the folder: same
+  relative path, with `~yyyyMMdd-HHmmss` (local time of removal) added
+  before the extension. A file given up by taking another device's version
+  in a conflict is kept the same way.
+- After 30 days, kept files go to the system trash, or are deleted where
+  there is none.
+- `.synctrash` is never scanned, synced or written by peers.
 - A folder that still holds files that are not synced is left in place.
 
 ### 6.7 Safety rules

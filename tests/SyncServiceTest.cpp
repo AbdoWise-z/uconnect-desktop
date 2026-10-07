@@ -189,6 +189,10 @@ private slots:
         write(at(1, "new.txt"), "from bob");
         QTRY_COMPARE_WITH_TIMEOUT(contents(at(0, "a.txt")), QByteArray("alpha, edited by bob"), 10000);
         QTRY_VERIFY(!QFile::exists(at(0, "sub/b.txt")));
+        // Kept aside, not gone.
+        const QStringList kept = QDir(at(0, ".synctrash/sub")).entryList({"b~*.txt"}, QDir::Files);
+        QCOMPARE(kept.size(), 1);
+        QCOMPARE(contents(at(0, ".synctrash/sub/" + kept.first())), QByteArray("bravo"));
         QTRY_COMPARE(contents(at(0, "new.txt")), QByteArray("from bob"));
         QCOMPARE(conflictsOf(*n.nodes[0]), 0);
     }
@@ -283,6 +287,30 @@ private slots:
         QTRY_COMPARE(conflictsOf(*n.nodes[0]), 0);
         QTRY_COMPARE(conflictsOf(*n.nodes[1]), 0);
         QCOMPARE(contents(at(1, "plan.md")), QByteArray("bob's longer version"));
+        // Alice's own version, given up, is kept aside.
+        const QStringList kept = QDir(at(0, ".synctrash")).entryList({"plan~*.md"}, QDir::Files);
+        QCOMPARE(kept.size(), 1);
+        QCOMPARE(contents(at(0, ".synctrash/" + kept.first())), QByteArray("alice's version"));
+    }
+
+    void keepsDeletedFilesForTheirTimeOnly() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        const QString fresh = QStringLiteral(".synctrash/fresh~%1.txt")
+                                  .arg(QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss"));
+        write(at(0, ".synctrash/old~20200101-000000.txt"), "old");
+        write(at(0, ".synctrash/deep/older~20200101-000000"), "older");
+        write(at(0, fresh), "fresh");
+        write(at(0, "a.txt"), "alpha");
+        n.join(0);
+        n.join(1);
+        n.link(0, 1);
+        QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(at(0, ".synctrash/old~20200101-000000.txt")), 5000);
+        QTRY_VERIFY(!QFileInfo::exists(at(0, ".synctrash/deep")));  // emptied folders go too
+        QVERIFY(QFile::exists(at(0, fresh)));
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "a.txt")), QByteArray("alpha"), 10000);
+        QVERIFY(!QFileInfo::exists(at(1, ".synctrash")));  // never synced
     }
 
     // Dave did not edit and is behind both sides: he follows the one he has
