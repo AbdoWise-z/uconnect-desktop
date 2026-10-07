@@ -77,6 +77,8 @@ endif ()
 
 # --- core: networking and services, no UI --------------------------------------
 add_library(uconnect_desktop_core STATIC
+    src/core/FsUtil.cpp
+    src/core/FsUtil.hpp
     src/core/Hello.cpp
     src/core/Hello.hpp
     src/core/Identity.cpp
