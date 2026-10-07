@@ -1,6 +1,7 @@
 #include "StorageService.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 
@@ -139,6 +140,8 @@ QString errorText(const QString& code) {
     if (code == QLatin1String("busy")) return StorageService::tr("The device is busy with other transfers; try again shortly.");
     if (code == QLatin1String("io")) return StorageService::tr("The device could not read or save the file.");
     if (code == QLatin1String("bad_request")) return StorageService::tr("The device rejected the request.");
+    if (code == QLatin1String("exists")) return StorageService::tr("Something with that name already exists there.");
+    if (code == QLatin1String("root")) return StorageService::tr("A shared folder itself cannot be renamed or deleted.");
     return StorageService::tr("The request failed.");
 }
 
@@ -154,6 +157,45 @@ QString uniquePath(const QString& folder, const QString& name) {
                                                   : QStringLiteral("%1 (%2).%3").arg(base).arg(n).arg(suffix));
         if (!QFileInfo::exists(candidate)) return candidate;
     }
+}
+
+// Removes a file, folder or link without ever following a link: a link (or
+// junction) is removed itself, so a delete cannot reach what it points to.
+// QDir::removeRecursively() descends into junctions on Windows, so it is not
+// used here.
+bool removeEntry(const QFileInfo& fi) {
+    const QString path = fi.absoluteFilePath();
+    if (fi.isSymLink() || fi.isJunction()) return QFile::remove(path) || QDir().rmdir(path);
+    if (fi.isDir()) {
+        const QFileInfoList children = QDir(path).entryInfoList(
+            QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+        for (const QFileInfo& child : children)
+            if (!removeEntry(child)) return false;
+        return QDir().rmdir(path);
+    }
+    QFile file(path);
+    if (file.remove()) return true;
+    file.setPermissions(file.permissions() | QFileDevice::WriteOwner);  // read-only files on Windows
+    return file.remove();
+}
+
+// Moves `source` onto `target` in one step, replacing a file already there.
+bool replaceWith(const QString& source, const QString& target) {
+#ifdef Q_OS_WIN
+    return MoveFileExW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(source).utf16()),
+                       reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(target).utf16()),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return std::rename(QFile::encodeName(source).constData(), QFile::encodeName(target).constData()) == 0;
+#endif
+}
+
+QString virtualPath(const QStringList& parts) {
+    return QLatin1Char('/') + parts.join(QLatin1Char('/'));
+}
+
+bool isAcceptableName(const QString& name) {
+    return isValidComponent(name) && safeFileName(name) == name;
 }
 
 }  // namespace
@@ -372,7 +414,8 @@ void StorageService::pump() {
         }
         auto& o = outgoing_.at(std::make_tuple(u.dev, id, true));
         if (!send_(u.dev, encodeControl({{"t", "fs.write"}, {"id", qint64(id)}, {"path", u.folder},
-                                         {"name", safeFileName(QFileInfo(u.localPath).fileName())}, {"size", u.total}})))
+                                         {"name", safeFileName(QFileInfo(u.localPath).fileName())}, {"size", u.total},
+                                         {"replace", u.replace}})))
             continue;
         u.requested = true;
         u.deadline = Clock::now() + kRequestTimeout;
@@ -435,7 +478,7 @@ void StorageService::pump() {
 // --- requester ----------------------------------------------------------------
 
 void StorageService::upload(const uconnect::DevId& dev, const QString& localPath,
-                            const QString& remoteFolder, quint32 id) {
+                            const QString& remoteFolder, quint32 id, bool replace) {
     const QFileInfo info(localPath);
     auto file = std::make_unique<QFile>(localPath);
     if (!info.isFile() || !file->open(QIODevice::ReadOnly)) {
@@ -446,6 +489,7 @@ void StorageService::upload(const uconnect::DevId& dev, const QString& localPath
     u.dev = dev;
     u.localPath = localPath;
     u.folder = remoteFolder;
+    u.replace = replace;
     u.total = file->size();
     u.deadline = Clock::now() + kRequestTimeout;
     uploads_.emplace(id, std::move(u));
@@ -477,8 +521,11 @@ void StorageService::serveWrite(const uconnect::DevId& dev, const QJsonObject& r
     const QString path = req.value("path").toString();
     const QString name = req.value("name").toString();
     const qint64 total = req.value("size").toInteger(-1);
-    if (total < 0 || !isValidComponent(name) || name.contains(QLatin1Char('/')) || safeFileName(name) != name)
+    if (total < 0 || !isAcceptableName(name))
         return failIncoming(dev, *id, QStringLiteral("bad_request"));
+    const bool replace = req.value("replace").toBool();
+    if (replace && !authorize_(dev, perm::StorageWrite))
+        return failIncoming(dev, *id, QStringLiteral("forbidden"));
     QString code;
     const auto resolved = resolve(path, &code);
     if (!resolved) return failIncoming(dev, *id, code);
@@ -490,6 +537,7 @@ void StorageService::serveWrite(const uconnect::DevId& dev, const QJsonObject& r
     in.name = name;
     in.virtualFolder = QLatin1Char('/') + path.split(QLatin1Char('/'), Qt::SkipEmptyParts).join(QLatin1Char('/'));
     in.total = total;
+    in.replace = replace;
     in.deadline = Clock::now() + kStallTimeout;
     in.file = std::make_unique<QTemporaryFile>(QDir(in.folder).filePath(QStringLiteral(".uconnect-upload-XXXXXX.part")));
     if (!in.file->open()) return failIncoming(dev, *id, QStringLiteral("io"));
@@ -549,9 +597,26 @@ void StorageService::onWriteEnd(const uconnect::DevId& dev, const QJsonObject& m
         realPath(in.file->fileName()).isEmpty() || !isWithin(realPath(in.file->fileName()), in.root))
         return failIncoming(dev, *id, QStringLiteral("denied"));
     if (!in.file->flush()) return failIncoming(dev, *id, QStringLiteral("io"));
-    const QString finalPath = uniquePath(in.folder, in.name);
-    if (!in.file->rename(finalPath)) return failIncoming(dev, *id, QStringLiteral("io"));
-    in.file->setAutoRemove(false);
+    QString finalPath;
+    if (in.replace) {
+        if (!authorize_(dev, perm::StorageWrite)) return failIncoming(dev, *id, QStringLiteral("forbidden"));
+        finalPath = QDir(in.folder).filePath(in.name);
+        if (QFileInfo(finalPath).isDir()) return failIncoming(dev, *id, QStringLiteral("exists"));
+        // QTemporaryFile keeps a hold on its file that stops Windows moving it
+        // over another, even after close(); give it a plain name first.
+        const QString staged = uniquePath(in.folder, QStringLiteral(".uconnect-replace-") + in.name);
+        if (!in.file->rename(staged)) return failIncoming(dev, *id, QStringLiteral("io"));
+        in.file->setAutoRemove(false);
+        in.file.reset();
+        if (!replaceWith(staged, finalPath)) {
+            QFile::remove(staged);
+            return failIncoming(dev, *id, QStringLiteral("io"));
+        }
+    } else {
+        finalPath = uniquePath(in.folder, in.name);
+        if (!in.file->rename(finalPath)) return failIncoming(dev, *id, QStringLiteral("io"));
+        in.file->setAutoRemove(false);
+    }
     const QString remotePath = in.virtualFolder + QLatin1Char('/') + QFileInfo(finalPath).fileName();
     incoming_.erase(it);
     cachedPath_.clear();
@@ -587,6 +652,127 @@ void StorageService::finishUpload(quint32 id, const QString& remotePath, const Q
     updateTicker();
     if (!outgoing_.empty() && !pumpTimer_->isActive()) pumpTimer_->start(0);
     emit uploadFinished(id, remotePath, error);
+}
+
+// --- write operations ----------------------------------------------------------
+
+std::optional<StorageService::Entry> StorageService::resolveEntry(const QString& path, QString* code) const {
+    const QStringList parts = path.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (!path.startsWith(QLatin1Char('/')) || parts.isEmpty() ||
+        !std::all_of(parts.begin(), parts.end(), isValidComponent)) {
+        *code = QStringLiteral("bad_request");
+        return std::nullopt;
+    }
+    if (parts.size() == 1) {
+        *code = QStringLiteral("root");
+        return std::nullopt;
+    }
+    const auto folder = std::find_if(folders_.begin(), folders_.end(),
+                                     [&](const SharedFolder& f) { return f.name == parts.first(); });
+    if (folder == folders_.end()) {
+        *code = QStringLiteral("not_found");
+        return std::nullopt;
+    }
+    // The parent is resolved and checked like any other path; the entry itself
+    // is then addressed inside it, so a link is acted on, not followed.
+    const QStringList between = parts.mid(1, parts.size() - 2);
+    const QString     parent  = realPath(between.isEmpty()
+                                             ? folder->canonical
+                                             : folder->canonical + QLatin1Char('/') + between.join(QLatin1Char('/')));
+    if (parent.isEmpty()) {
+        *code = QStringLiteral("not_found");
+        return std::nullopt;
+    }
+    if (!isWithin(parent, folder->canonical)) {
+        *code = QStringLiteral("denied");
+        return std::nullopt;
+    }
+    const QString   entry = QDir(parent).filePath(parts.last());
+    const QFileInfo info(entry);
+    if (!info.exists() && !info.isSymLink()) {
+        *code = QStringLiteral("not_found");
+        return std::nullopt;
+    }
+    return Entry{&*folder, parent, entry, virtualPath(parts.mid(0, parts.size() - 1))};
+}
+
+void StorageService::serveRename(const uconnect::DevId& dev, const QJsonObject& req) {
+    const auto id = idOf(req);
+    if (!id) return;
+    if (!offered_) return sendError(dev, *id, QStringLiteral("not_offered"));
+    if (!authorize_(dev, perm::StorageWrite)) return sendError(dev, *id, QStringLiteral("forbidden"));
+
+    QString    code;
+    const auto e = resolveEntry(req.value("path").toString(), &code);
+    if (!e) return sendError(dev, *id, code);
+    const QString name = req.value("name").toString();
+    if (!isAcceptableName(name)) return sendError(dev, *id, QStringLiteral("bad_request"));
+
+    const QString   target = QDir(e->parent).filePath(name);
+    const QFileInfo existing(target);
+    // A change of case only ("a.txt" -> "A.txt") names the same file on Windows.
+    if ((existing.exists() || existing.isSymLink()) && target.compare(e->path, kPathCase) != 0)
+        return sendError(dev, *id, QStringLiteral("exists"));
+    if (!QDir().rename(e->path, target)) return sendError(dev, *id, QStringLiteral("io"));
+
+    cachedPath_.clear();
+    sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+                         {"path", e->virtualParent + QLatin1Char('/') + name}});
+}
+
+void StorageService::serveDelete(const uconnect::DevId& dev, const QJsonObject& req) {
+    const auto id = idOf(req);
+    if (!id) return;
+    if (!offered_) return sendError(dev, *id, QStringLiteral("not_offered"));
+    if (!authorize_(dev, perm::StorageWrite)) return sendError(dev, *id, QStringLiteral("forbidden"));
+
+    QString    code;
+    const auto e = resolveEntry(req.value("path").toString(), &code);
+    if (!e) return sendError(dev, *id, code);
+
+    const bool trashed = useTrash_ && QFile::moveToTrash(e->path);
+    if (!trashed && !removeEntry(QFileInfo(e->path))) return sendError(dev, *id, QStringLiteral("io"));
+
+    cachedPath_.clear();
+    sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+                         {"path", e->virtualParent + QLatin1Char('/') + QFileInfo(e->path).fileName()},
+                         {"trashed", trashed}});
+}
+
+void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& req) {
+    const auto id = idOf(req);
+    if (!id) return;
+    if (!offered_) return sendError(dev, *id, QStringLiteral("not_offered"));
+    if (!authorize_(dev, perm::StorageUpload)) return sendError(dev, *id, QStringLiteral("forbidden"));
+
+    const QString path = req.value("path").toString();
+    const QString name = req.value("name").toString();
+    if (!isAcceptableName(name)) return sendError(dev, *id, QStringLiteral("bad_request"));
+    QString    code;
+    const auto resolved = resolve(path, &code);
+    if (!resolved) return sendError(dev, *id, code);
+    if (!QFileInfo(resolved->second).isDir()) return sendError(dev, *id, QStringLiteral("not_a_dir"));
+
+    const QString target = uniquePath(resolved->second, name);
+    if (!QDir().mkdir(target)) return sendError(dev, *id, QStringLiteral("io"));
+
+    cachedPath_.clear();
+    sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+                         {"path", virtualPath(path.split(QLatin1Char('/'), Qt::SkipEmptyParts)) +
+                                      QLatin1Char('/') + QFileInfo(target).fileName()}});
+}
+
+void StorageService::operation(const uconnect::DevId& dev, QJsonObject request, quint32 id) {
+    request.insert("id", qint64(id));
+    ops_[id] = PendingOp{dev, Clock::now() + kRequestTimeout};
+    updateTicker();
+    if (!send_(dev, encodeControl(request))) finishOperation(id, {}, tr("Could not reach the device."));
+}
+
+void StorageService::finishOperation(quint32 id, const QString& path, const QString& error) {
+    if (ops_.erase(id) == 0) return;
+    updateTicker();
+    emit operationFinished(id, path, error);
 }
 
 void StorageService::list(const uconnect::DevId& dev, const QString& path, quint32 id) {
@@ -727,6 +913,7 @@ void StorageService::onError(const uconnect::DevId& dev, const QJsonObject& msg)
     const QString text = errorText(msg.value("code").toString());
     if (auto it = lists_.find(*id); it != lists_.end() && it->second.dev == dev) finishList(*id, text);
     if (auto it = downloads_.find(*id); it != downloads_.end() && it->second.dev == dev) finishDownload(*id, text);
+    if (auto it = ops_.find(*id); it != ops_.end() && it->second.dev == dev) finishOperation(*id, {}, text);
 }
 
 void StorageService::finishList(quint32 id, const QString& error) {
@@ -769,6 +956,14 @@ bool StorageService::handleMessage(const uconnect::DevId& dev, std::span<const u
     if (t == QLatin1String("fs.list")) serveList(dev, *msg);
     else if (t == QLatin1String("fs.read")) serveRead(dev, *msg);
     else if (t == QLatin1String("fs.write")) serveWrite(dev, *msg);
+    else if (t == QLatin1String("fs.rename")) serveRename(dev, *msg);
+    else if (t == QLatin1String("fs.delete")) serveDelete(dev, *msg);
+    else if (t == QLatin1String("fs.mkdir")) serveMkdir(dev, *msg);
+    else if (t == QLatin1String("fs.done")) {
+        const auto id = idOf(*msg);
+        if (const auto it = id ? ops_.find(*id) : ops_.end(); it != ops_.end() && it->second.dev == dev)
+            finishOperation(*id, msg->value("path").toString(), {});
+    }
     else if (t == QLatin1String("fs.write.end")) onWriteEnd(dev, *msg);
     else if (t == QLatin1String("fs.write.cancel")) {
         if (const auto id = idOf(*msg)) incoming_.erase(std::make_pair(dev, *id));
@@ -802,6 +997,10 @@ void StorageService::peerGone(const uconnect::DevId& dev) {
         if (d.dev == dev) downloads.push_back(id);
     for (quint32 id : lists) finishList(id, tr("The device disconnected."));
     for (quint32 id : downloads) finishDownload(id, tr("The device disconnected."));
+    std::vector<quint32> ops;
+    for (const auto& [id, op] : ops_)
+        if (op.dev == dev) ops.push_back(id);
+    for (quint32 id : ops) finishOperation(id, {}, tr("The device disconnected."));
 }
 
 void StorageService::reset() {
@@ -815,6 +1014,7 @@ void StorageService::reset() {
     for (const auto& [id, d] : downloads_) downloads.push_back(id);
     for (quint32 id : lists) finishList(id, tr("Disconnected."));
     for (quint32 id : downloads) finishDownload(id, tr("Disconnected."));
+    while (!ops_.empty()) finishOperation(ops_.begin()->first, {}, tr("Disconnected."));
 }
 
 void StorageService::checkDeadlines() {
@@ -836,6 +1036,10 @@ void StorageService::checkDeadlines() {
     for (const auto& [id, d] : downloads_)
         if (now > d.deadline) downloads.push_back(id);
     for (quint32 id : lists) finishList(id, tr("No response from the device."));
+    std::vector<quint32> ops;
+    for (const auto& [id, op] : ops_)
+        if (now > op.deadline) ops.push_back(id);
+    for (quint32 id : ops) finishOperation(id, {}, tr("No response from the device."));
     for (quint32 id : downloads) {
         const Download& d = downloads_.at(id);
         send_(d.dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
@@ -844,7 +1048,8 @@ void StorageService::checkDeadlines() {
 }
 
 void StorageService::updateTicker() {
-    if (lists_.empty() && downloads_.empty() && uploads_.empty() && incoming_.empty()) ticker_->stop();
+    if (lists_.empty() && downloads_.empty() && uploads_.empty() && incoming_.empty() && ops_.empty())
+        ticker_->stop();
     else if (!ticker_->isActive()) ticker_->start();
 }
 

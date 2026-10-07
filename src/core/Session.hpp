@@ -111,7 +111,10 @@ public:
     void setSharedFolders(const QStringList& folders);
     void storageList(const QString& devId, const QString& path, quint32 requestId);
     void storageDownload(const QString& devId, const QString& remotePath, const QString& folder, quint32 requestId);
-    void storageUpload(const QString& devId, const QString& localPath, const QString& remoteFolder, quint32 requestId);
+    void storageUpload(const QString& devId, const QString& localPath, const QString& remoteFolder, quint32 requestId,
+                       bool replace = false);
+    // fs.rename, fs.delete or fs.mkdir, without "id".
+    void storageOperation(const QString& devId, const QJsonObject& request, quint32 requestId);
     void storageCancel(quint32 requestId);
     StorageService* storage() const { return storage_; }
 

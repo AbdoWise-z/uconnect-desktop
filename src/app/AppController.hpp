@@ -132,7 +132,14 @@ public:
     // `transfers`; the returned id identifies the request.
     Q_INVOKABLE quint32 storageList(const QString& devId, const QString& path);
     Q_INVOKABLE quint32 storageDownload(const QString& devId, const QString& remotePath);
-    Q_INVOKABLE int     storageUpload(const QString& devId, const QString& remoteFolder, const QList<QUrl>& files);
+    // `replace`: overwrite files of the same name (needs their storage.write)
+    // instead of adding numbered copies.
+    Q_INVOKABLE int     storageUpload(const QString& devId, const QString& remoteFolder, const QList<QUrl>& files,
+                                      bool replace = false);
+    // Write operations; each finishes with storageOperationFinished().
+    Q_INVOKABLE quint32 storageRename(const QString& devId, const QString& path, const QString& newName);
+    Q_INVOKABLE int     storageDelete(const QString& devId, const QStringList& paths);
+    Q_INVOKABLE quint32 storageMakeFolder(const QString& devId, const QString& folder, const QString& name);
     Q_INVOKABLE void    storageCancel(quint32 requestId);
     Q_INVOKABLE void    showInFolder(const QString& localPath) const;
     Q_INVOKABLE QString localPath(const QUrl& url) const;
@@ -163,12 +170,14 @@ signals:
     void storageListed(quint32 requestId, const QString& path, const QVariantList& entries,
                        const QString& error);
     void storageUploaded(const QString& devId, const QString& remotePath);
+    void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
     void trustChanged();
 
 private:
     template <class F> void onSession(F&& f);
     void setServices(uint32_t services);
     void pushHello();
+    quint32 startOperation(const QString& devId, const QJsonObject& request);
     void pushSharedFolders();
     void pushAccessPolicy();
     void loadTrust();
@@ -205,6 +214,7 @@ private:
     TransferListModel transfers_;
     quint32           nextRequestId_ = 1;
     QSet<quint32>     canceled_;
+    QHash<quint32, QString> operationDevices_;  // request id -> device
 
     std::deque<QString> log_;
     QString             serverReport_;

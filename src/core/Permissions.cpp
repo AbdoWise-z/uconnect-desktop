@@ -21,7 +21,7 @@ const std::vector<PermissionInfo>& permissionTable() {
         {perm::StorageRead, "storage", tr("Read"),
          tr("Open files and save copies of them to their device."), true},
         {perm::StorageWrite, "storage", tr("Write"),
-         tr("Change, rename or delete existing files."), false},
+         tr("Rename, replace or delete existing files and folders."), true},
         {perm::StorageUpload, "storage", tr("Upload"),
          tr("Add new files to the shared folders."), true},
         {perm::CameraView, "camera", tr("View"),

@@ -125,6 +125,12 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     connect(storage, &StorageService::uploadProgress, this, [this](quint32 id, qint64 sent, qint64 total) {
         transfers_.progress(id, sent, total);
     });
+    connect(storage, &StorageService::operationFinished, this,
+            [this](quint32 id, const QString& path, const QString& error) {
+                const QString devId = operationDevices_.take(id);
+                if (!error.isEmpty()) emit notify(error);
+                emit storageOperationFinished(id, devId, path, error);
+            });
     connect(storage, &StorageService::uploadFinished, this,
             [this](quint32 id, const QString& remotePath, const QString& error) {
                 const bool canceled = canceled_.remove(id);
@@ -420,7 +426,28 @@ void AppController::storageCancel(quint32 requestId) {
     onSession([s = session_, requestId] { s->storageCancel(requestId); });
 }
 
-int AppController::storageUpload(const QString& devId, const QString& remoteFolder, const QList<QUrl>& files) {
+quint32 AppController::startOperation(const QString& devId, const QJsonObject& request) {
+    const quint32 id = nextRequestId_++;
+    operationDevices_.insert(id, devId);
+    onSession([s = session_, devId, request, id] { s->storageOperation(devId, request, id); });
+    return id;
+}
+
+quint32 AppController::storageRename(const QString& devId, const QString& path, const QString& newName) {
+    return startOperation(devId, {{"t", "fs.rename"}, {"path", path}, {"name", newName.trimmed()}});
+}
+
+int AppController::storageDelete(const QString& devId, const QStringList& paths) {
+    for (const QString& path : paths) startOperation(devId, {{"t", "fs.delete"}, {"path", path}});
+    return static_cast<int>(paths.size());
+}
+
+quint32 AppController::storageMakeFolder(const QString& devId, const QString& folder, const QString& name) {
+    return startOperation(devId, {{"t", "fs.mkdir"}, {"path", folder}, {"name", name.trimmed()}});
+}
+
+int AppController::storageUpload(const QString& devId, const QString& remoteFolder, const QList<QUrl>& files,
+                                 bool replace) {
     if (remoteFolder == QLatin1String("/")) {
         emit notify(tr("Open a shared folder before uploading."));
         return 0;
@@ -436,7 +463,9 @@ int AppController::storageUpload(const QString& devId, const QString& remoteFold
         seen.insert(info.absoluteFilePath());
         const quint32 id = nextRequestId_++;
         transfers_.add(id, devId, remoteFolder + QLatin1Char('/') + info.fileName(), path, true);
-        onSession([s = session_, devId, path, remoteFolder, id] { s->storageUpload(devId, path, remoteFolder, id); });
+        onSession([s = session_, devId, path, remoteFolder, id, replace] {
+            s->storageUpload(devId, path, remoteFolder, id, replace);
+        });
         ++added;
     }
     if (skipped > 0) emit notify(tr("Skipped %n item(s). Uploads accept local files only.", nullptr, skipped));

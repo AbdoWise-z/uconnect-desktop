@@ -126,14 +126,35 @@ class StorageServiceTest : public QObject {
         return {{}, QStringLiteral("timed out")};
     }
 
-    DownloadResult upload(const QString& localPath, const QString& folder = QStringLiteral("/share/sub")) {
+    DownloadResult upload(const QString& localPath, const QString& folder = QStringLiteral("/share/sub"),
+                          bool replace = false) {
         const quint32 id = nextId();
         QSignalSpy spy(link_->requester.get(), &StorageService::uploadFinished);
-        link_->requester->upload(kOfferer, localPath, folder, id);
+        link_->requester->upload(kOfferer, localPath, folder, id, replace);
         if (spy.isEmpty()) spy.wait(10000);
         for (const auto& args : spy)
             if (args.at(0).toUInt() == id) return {args.at(1).toString(), args.at(2).toString()};
         return {{}, QStringLiteral("timed out")};
+    }
+
+    // fs.rename, fs.delete or fs.mkdir: the resulting path, or an error.
+    DownloadResult op(const QJsonObject& request) {
+        const quint32 id = nextId();
+        QSignalSpy    spy(link_->requester.get(), &StorageService::operationFinished);
+        link_->requester->operation(kOfferer, request, id);
+        if (spy.isEmpty()) spy.wait(5000);
+        for (const auto& args : spy)
+            if (args.at(0).toUInt() == id) return {args.at(1).toString(), args.at(2).toString()};
+        return {{}, QStringLiteral("timed out")};
+    }
+
+    static bool makeLink(const QString& link, const QString& target) {
+#ifdef Q_OS_WIN
+        return QProcess::execute("cmd", {"/c", "mklink", "/J", QDir::toNativeSeparators(link),
+                                         QDir::toNativeSeparators(target)}) == 0;
+#else
+        return QFile::link(target, link);
+#endif
     }
 
     QString uploadedPath(const QString& remotePath) const {
@@ -177,19 +198,134 @@ private slots:
         write(outside_ + "/secret.txt", "secret");
 
         // A link inside the share that leads out of it.
-        const QString link = share_ + "/escape";
-#ifdef Q_OS_WIN
-        haveEscapeLink_ = QProcess::execute("cmd", {"/c", "mklink", "/J", QDir::toNativeSeparators(link),
-                                                    QDir::toNativeSeparators(outside_)}) == 0;
-#else
-        haveEscapeLink_ = QFile::link(outside_, link);
-#endif
+        haveEscapeLink_ = makeLink(share_ + "/escape", outside_);
     }
 
     void init() {
         link_ = std::make_unique<Link>();
         link_->offerer->setOffered(true);
         link_->offerer->setSharedFolders({share_});
+        link_->offerer->setUseTrash(false);  // keep deletes out of the user's Recycle Bin
+    }
+
+    void renamesOnlyWithWriteAndWithinItsFolder() {
+        write(share_ + "/sub/rename-me.txt", "r");
+        const QJsonObject rename{{"t", "fs.rename"}, {"path", "/share/sub/rename-me.txt"}, {"name", "renamed.txt"}};
+        QVERIFY(!op(rename).error.isEmpty());  // no storage.write yet
+        QVERIFY(QFile::exists(share_ + "/sub/rename-me.txt"));
+
+        link_->granted.insert(perm::StorageWrite);
+        const auto r = op(rename);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(r.localPath, QStringLiteral("/share/sub/renamed.txt"));
+        QVERIFY(QFile::exists(share_ + "/sub/renamed.txt"));
+        QVERIFY(!QFile::exists(share_ + "/sub/rename-me.txt"));
+
+        // Names that would leave the folder, are not plain, or clash are refused.
+        for (const QString& name : {QStringLiteral("../escaped.txt"), QStringLiteral("a/b.txt"), QStringLiteral(".."),
+                                    QStringLiteral("CON"), QStringLiteral("nested.txt")}) {
+            const auto bad = op({{"t", "fs.rename"}, {"path", "/share/sub/renamed.txt"}, {"name", name}});
+            QVERIFY2(!bad.error.isEmpty(), qPrintable(name));
+        }
+        QVERIFY(QFile::exists(share_ + "/sub/renamed.txt"));
+        QCOMPARE(contents(share_ + "/sub/nested.txt"), QByteArray("nested"));
+        QVERIFY(!QFile::exists(share_ + "/escaped.txt"));
+
+        // A shared folder itself is not renamed.
+        QVERIFY(!op({{"t", "fs.rename"}, {"path", "/share"}, {"name", "other"}}).error.isEmpty());
+        QVERIFY(QFileInfo(share_).isDir());
+        QVERIFY(QFile::remove(share_ + "/sub/renamed.txt"));
+    }
+
+    void deletesFilesAndFoldersOnlyWithWrite() {
+        QVERIFY(QDir().mkpath(share_ + "/doomed/inner"));
+        write(share_ + "/doomed/inner/a.txt", "a");
+        write(share_ + "/doomed/b.txt", "b");
+        const QJsonObject doomed{{"t", "fs.delete"}, {"path", "/share/doomed"}};
+        QVERIFY(!op(doomed).error.isEmpty());  // no storage.write yet
+        QVERIFY(QFileInfo(share_ + "/doomed").isDir());
+
+        link_->granted.insert(perm::StorageWrite);
+        QVERIFY(op({{"t", "fs.delete"}, {"path", "/share/doomed/b.txt"}}).error.isEmpty());
+        QVERIFY(!QFile::exists(share_ + "/doomed/b.txt"));
+        const auto folder = op(doomed);
+        QVERIFY2(folder.error.isEmpty(), qPrintable(folder.error));
+        QVERIFY(!QFileInfo::exists(share_ + "/doomed"));
+
+        // Not the shared folder itself, nothing outside it, and nothing that is not there.
+        for (const QString& path : {QStringLiteral("/share"), QStringLiteral("/share/../outside/secret.txt"),
+                                    QStringLiteral("/share/missing.txt"), QStringLiteral("/unknown/x")}) {
+            QVERIFY2(!op({{"t", "fs.delete"}, {"path", path}}).error.isEmpty(), qPrintable(path));
+        }
+        QVERIFY(QFileInfo(share_).isDir());
+        QCOMPARE(contents(outside_ + "/secret.txt"), QByteArray("secret"));
+    }
+
+    // A link that leads out of the share: deleting through it is refused, and
+    // deleting it (or a folder holding it) removes the link, not its target.
+    void deletesLinksNotWhatTheyPointTo() {
+        if (!haveEscapeLink_) QSKIP("could not create a link on this system");
+        link_->granted.insert(perm::StorageWrite);
+        QVERIFY(!op({{"t", "fs.delete"}, {"path", "/share/escape/secret.txt"}}).error.isEmpty());
+        QCOMPARE(contents(outside_ + "/secret.txt"), QByteArray("secret"));
+
+        QVERIFY(QDir().mkpath(share_ + "/holder"));
+        QVERIFY(makeLink(share_ + "/holder/link", outside_));
+        const auto holder = op({{"t", "fs.delete"}, {"path", "/share/holder"}});
+        QVERIFY2(holder.error.isEmpty(), qPrintable(holder.error));
+        QVERIFY(!QFileInfo::exists(share_ + "/holder"));
+        QCOMPARE(contents(outside_ + "/secret.txt"), QByteArray("secret"));
+
+        const auto link = op({{"t", "fs.delete"}, {"path", "/share/escape"}});
+        QVERIFY2(link.error.isEmpty(), qPrintable(link.error));
+        QVERIFY(!QFileInfo(share_ + "/escape").exists() && !QFileInfo(share_ + "/escape").isSymLink());
+        QCOMPARE(contents(outside_ + "/secret.txt"), QByteArray("secret"));
+        haveEscapeLink_ = makeLink(share_ + "/escape", outside_);  // for the tests after this one
+    }
+
+    void createsFoldersWithUploadPermission() {
+        const QJsonObject mkdir{{"t", "fs.mkdir"}, {"path", "/share/sub"}, {"name", "New folder"}};
+        link_->granted = {perm::StorageObserve};
+        QVERIFY(!op(mkdir).error.isEmpty());
+
+        link_->granted.insert(perm::StorageUpload);
+        const auto first  = op(mkdir);
+        const auto second = op(mkdir);
+        QVERIFY2(first.error.isEmpty() && second.error.isEmpty(), qPrintable(first.error + second.error));
+        QCOMPARE(first.localPath, QStringLiteral("/share/sub/New folder"));
+        QCOMPARE(second.localPath, QStringLiteral("/share/sub/New folder (1)"));
+        QVERIFY(QFileInfo(share_ + "/sub/New folder").isDir());
+
+        QVERIFY(!op({{"t", "fs.mkdir"}, {"path", "/share/sub"}, {"name", "../x"}}).error.isEmpty());
+        QVERIFY(!op({{"t", "fs.mkdir"}, {"path", "/share/../outside"}, {"name", "x"}}).error.isEmpty());
+        QVERIFY(!QFileInfo::exists(outside_ + "/x"));
+        QVERIFY(QDir().rmdir(share_ + "/sub/New folder"));
+        QVERIFY(QDir().rmdir(share_ + "/sub/New folder (1)"));
+    }
+
+    void replacesExistingFilesOnlyWithWrite() {
+        write(share_ + "/sub/target.txt", "old");
+        write(outside_ + "/target.txt", "new contents");
+        QVERIFY(!upload(outside_ + "/target.txt", "/share/sub", true).error.isEmpty());  // upload only
+        QCOMPARE(contents(share_ + "/sub/target.txt"), QByteArray("old"));
+
+        link_->granted.insert(perm::StorageWrite);
+        const auto r = upload(outside_ + "/target.txt", "/share/sub", true);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(r.localPath, QStringLiteral("/share/sub/target.txt"));
+        QCOMPARE(contents(share_ + "/sub/target.txt"), QByteArray("new contents"));
+        QVERIFY(!QFile::exists(share_ + "/sub/target (1).txt"));
+
+        // Never replaces a folder.
+        QVERIFY(QDir().mkpath(share_ + "/sub/target-dir"));
+        write(outside_ + "/target-dir", "x");
+        QVERIFY(!upload(outside_ + "/target-dir", "/share/sub", true).error.isEmpty());
+        QVERIFY(QFileInfo(share_ + "/sub/target-dir").isDir());
+
+        QTest::qWait(50);
+        QVERIFY(QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).isEmpty());
+        QVERIFY(QFile::remove(share_ + "/sub/target.txt"));
+        QVERIFY(QDir().rmdir(share_ + "/sub/target-dir"));
     }
 
     void listsSharedFoldersByNameOnly() {

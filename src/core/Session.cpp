@@ -232,13 +232,22 @@ void Session::storageCancel(quint32 requestId) {
 }
 
 void Session::storageUpload(const QString& devId, const QString& localPath, const QString& remoteFolder,
-                            quint32 requestId) {
+                            quint32 requestId, bool replace) {
     const auto dev = parseDevId(devId);
     if (!topic_ || !dev) {
         emit storage_->uploadFinished(requestId, {}, tr("Not connected."));
         return;
     }
-    storage_->upload(*dev, localPath, remoteFolder, requestId);
+    storage_->upload(*dev, localPath, remoteFolder, requestId, replace);
+}
+
+void Session::storageOperation(const QString& devId, const QJsonObject& request, quint32 requestId) {
+    const auto dev = parseDevId(devId);
+    if (!topic_ || !dev) {
+        emit storage_->operationFinished(requestId, {}, tr("Not connected."));
+        return;
+    }
+    storage_->operation(*dev, request, requestId);
 }
 
 void Session::requestServerStats() {

@@ -9,10 +9,15 @@
 //     {"t":"fs.list",   "id":u32, "path":"/Docs/sub", "offset":n}
 //     {"t":"fs.read",   "id":u32, "path":"/Docs/file.txt"}
 //     {"t":"fs.cancel", "id":u32}
-//     {"t":"fs.write", "id":u32, "path":"/Docs", "name":"file.txt", "size":n}
+//     {"t":"fs.write", "id":u32, "path":"/Docs", "name":"file.txt", "size":n,
+//      "replace":bool}   replace: overwrite a file of that name instead of
+//                         adding "file (1).txt"
 //       waits for fs.write.r, then sends kind 3 [u8 3][u32 id, big-endian][bytes]
 //     {"t":"fs.write.end", "id":u32, "sent":n}
 //     {"t":"fs.write.cancel", "id":u32}
+//     {"t":"fs.rename", "id":u32, "path":"/Docs/a.txt", "name":"b.txt"}
+//     {"t":"fs.delete", "id":u32, "path":"/Docs/a.txt"}   files or folders
+//     {"t":"fs.mkdir",  "id":u32, "path":"/Docs", "name":"New folder"}
 //
 //   offerer -> requester
 //     kind 1  {"t":"fs.list.r", "id", "path", "offset", "total",
@@ -24,12 +29,20 @@
 //     kind 1  {"t":"fs.write.r", "id"}
 //     kind 1  {"t":"fs.write.done", "id", "path"}  after saving the file
 //     kind 1  {"t":"fs.write.err", "id", "code"}
+//     kind 1  {"t":"fs.done", "id", "path"}   rename, delete or mkdir succeeded;
+//             path is the result (delete: what was removed; also "trashed")
 //       code: not_offered | forbidden | not_found | denied | not_a_dir |
-//             not_a_file | busy | io | bad_request
+//             not_a_file | busy | io | bad_request | exists | root
 //
 // Permissions (see Permissions.hpp): fs.list needs storage.observe, fs.read
-// needs storage.read, fs.write needs storage.upload. Uploads add files;
-// name collisions get a suffix, and existing files are never overwritten.
+// needs storage.read, fs.write and fs.mkdir need storage.upload, and fs.rename,
+// fs.delete and fs.write with "replace" need storage.write. Uploads otherwise
+// add files; name collisions get a suffix.
+//
+// Rename and delete act on the named entry itself: a link inside a shared
+// folder is renamed or removed, never what it points to. A shared folder
+// itself cannot be renamed or deleted ("root"). Deleted items go to the
+// offering device's trash when it has one.
 //
 // Paths are virtual. "/" lists the shared folders by name, and "/<name>/..."
 // is inside one; a requester never learns where a folder really is. Listings
@@ -81,8 +94,15 @@ public:
     // --- requester ---
     void list(const uconnect::DevId& dev, const QString& path, quint32 id);
     void download(const uconnect::DevId& dev, const QString& remotePath, const QString& folder, quint32 id);
-    void upload(const uconnect::DevId& dev, const QString& localPath, const QString& remoteFolder, quint32 id);
+    void upload(const uconnect::DevId& dev, const QString& localPath, const QString& remoteFolder,
+                quint32 id, bool replace = false);
+    // fs.rename, fs.delete or fs.mkdir; `request` is the message without "id".
+    void operation(const uconnect::DevId& dev, QJsonObject request, quint32 id);
     void cancel(quint32 id);
+
+    // Deleted items go to the trash when possible; tests turn that off so
+    // they do not fill the user's Recycle Bin.
+    void setUseTrash(bool use) { useTrash_ = use; }
 
     // True if the message belonged to this service.
     bool handleMessage(const uconnect::DevId& dev, std::span<const uint8_t> message);
@@ -96,6 +116,7 @@ signals:
     void downloadFinished(quint32 id, const QString& localPath, const QString& error);
     void uploadProgress(quint32 id, qint64 sent, qint64 total);
     void uploadFinished(quint32 id, const QString& remotePath, const QString& error);
+    void operationFinished(quint32 id, const QString& path, const QString& error);
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -138,8 +159,21 @@ private:
         qint64 total = 0;
         qint64 sent = 0;
         bool requested = false;
+        bool replace = false;
         Clock::time_point deadline;
         Clock::time_point lastProgress;
+    };
+    struct PendingOp {
+        uconnect::DevId   dev{};
+        Clock::time_point deadline;
+    };
+    // An existing entry named by a virtual path, located without following
+    // the entry itself if it is a link.
+    struct Entry {
+        const SharedFolder* folder = nullptr;
+        QString             parent;   // real, inside the folder
+        QString             path;     // parent + name
+        QString             virtualParent;
     };
     struct Incoming {
         QString folder;
@@ -149,6 +183,7 @@ private:
         std::unique_ptr<QTemporaryFile> file;
         qint64 total = 0;
         qint64 received = 0;
+        bool replace = false;
         Clock::time_point deadline;
     };
     struct Reply {
@@ -161,6 +196,10 @@ private:
     void serveList(const uconnect::DevId& dev, const QJsonObject& req);
     void serveRead(const uconnect::DevId& dev, const QJsonObject& req);
     void serveWrite(const uconnect::DevId& dev, const QJsonObject& req);
+    void serveRename(const uconnect::DevId& dev, const QJsonObject& req);
+    void serveDelete(const uconnect::DevId& dev, const QJsonObject& req);
+    void serveMkdir(const uconnect::DevId& dev, const QJsonObject& req);
+    std::optional<Entry> resolveEntry(const QString& path, QString* code) const;
     void onWriteData(const uconnect::DevId& dev, std::span<const uint8_t> message);
     void onWriteEnd(const uconnect::DevId& dev, const QJsonObject& msg);
     void onWriteReply(const uconnect::DevId& dev, const QJsonObject& msg);
@@ -182,6 +221,7 @@ private:
     void onError(const uconnect::DevId& dev, const QJsonObject& msg);
     void finishList(quint32 id, const QString& error);
     void finishDownload(quint32 id, const QString& error);
+    void finishOperation(quint32 id, const QString& path, const QString& error);
     void checkDeadlines();
     void updateTicker();
 
@@ -204,6 +244,8 @@ private:
     std::map<quint32, PendingList> lists_;
     std::map<quint32, Download>    downloads_;
     std::map<quint32, Upload>      uploads_;
+    std::map<quint32, PendingOp>   ops_;
+    bool                           useTrash_ = true;
     QTimer*                        ticker_ = nullptr;
 };
 
