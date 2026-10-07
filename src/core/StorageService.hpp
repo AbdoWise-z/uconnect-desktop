@@ -3,6 +3,9 @@
 // the topic can browse, download and upload files. One instance plays both
 // roles, and lives on the Session's worker thread.
 //
+// The full wire contract, for other implementations such as the Flutter
+// app, is docs/protocol.md; keep it in step with this summary.
+//
 // Wire protocol (inside the [u8 kind][payload] envelope from Hello.hpp):
 //
 //   requester -> offerer, kind 1 (JSON)

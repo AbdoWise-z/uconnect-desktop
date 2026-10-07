@@ -454,15 +454,15 @@ void StorageService::serveList(const uconnect::DevId& dev, const QJsonObject& re
 
     QJsonArray page;
     for (qint64 i = offset; i < all.size() && page.size() < kPageSize; ++i) page.append(all.at(i));
-    send_(dev, encodeControl({
-                   {"t", "fs.list.r"},
-                   {"id", qint64(*id)},
-                   {"path", path},
-                   {"offset", offset},
-                   {"total", qint64(all.size())},
-                   {"readOnly", readOnly},
-                   {"entries", page},
-               }));
+    sendReliably(dev, {
+                          {"t", "fs.list.r"},
+                          {"id", qint64(*id)},
+                          {"path", path},
+                          {"offset", offset},
+                          {"total", qint64(all.size())},
+                          {"readOnly", readOnly},
+                          {"entries", page},
+                      });
 }
 
 void StorageService::serveRead(const uconnect::DevId& dev, const QJsonObject& req) {
@@ -504,7 +504,7 @@ void StorageService::serveRead(const uconnect::DevId& dev, const QJsonObject& re
 }
 
 void StorageService::sendError(const uconnect::DevId& dev, quint32 id, const QString& code) {
-    send_(dev, encodeControl({{"t", "fs.err"}, {"id", qint64(id)}, {"code", code}, {"error", errorText(code)}}));
+    sendReliably(dev, {{"t", "fs.err"}, {"id", qint64(id)}, {"code", code}, {"error", errorText(code)}});
 }
 
 // Sends file chunks round-robin across transfers until the budget for this

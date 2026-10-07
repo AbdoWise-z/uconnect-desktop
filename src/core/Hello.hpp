@@ -9,6 +9,7 @@
 // (e.g. the Flutter app) can parse it without sharing code with this one.
 // Kind 2 carries raw bytes for a service; its framing belongs to that service.
 // Kind 3 carries storage upload bytes, independently of kind 2 downloads.
+// docs/protocol.md specifies all of it.
 
 #include <cstdint>
 #include <optional>
