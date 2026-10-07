@@ -89,6 +89,14 @@ add_library(uconnect_desktop_core STATIC
     src/core/Session.hpp
     src/core/StorageService.cpp
     src/core/StorageService.hpp
+    src/core/sync/SyncFolder.cpp
+    src/core/sync/SyncFolder.hpp
+    src/core/sync/SyncIgnore.cpp
+    src/core/sync/SyncIgnore.hpp
+    src/core/sync/SyncModel.cpp
+    src/core/sync/SyncModel.hpp
+    src/core/sync/SyncScanner.cpp
+    src/core/sync/SyncScanner.hpp
 )
 target_include_directories(uconnect_desktop_core PUBLIC src)
 target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Core Qt6::Network uconnect PRIVATE monocypher)
@@ -240,6 +248,7 @@ if (UCD_BUILD_TESTS)
 
     ucd_add_test(IdentityTest)
     ucd_add_test(StorageServiceTest)
+    ucd_add_test(SyncLogicTest)
 
     ucd_add_test(StorageViewTest)
     target_sources(StorageViewTest PRIVATE
