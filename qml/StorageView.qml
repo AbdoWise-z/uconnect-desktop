@@ -99,10 +99,7 @@ Item {
         const e = entries.get(index)
         if (!e) return
         if (e.dir) navigate(childPath(e.name))
-        else if (canRead) {
-            App.storageDownloadItems(devId, path, [{ name: e.name, dir: false }])
-            transfersOpen = true
-        }
+        else if (canRead) App.storageOpen(devId, path, e.name)
     }
 
     // --- selection --------------------------------------------------------------
@@ -901,13 +898,13 @@ Item {
     UMenu {
         id: contextMenu
         UMenuItem {
-            text: view.current && view.current.dir ? qsTr("Open") : qsTr("Download")
+            text: qsTr("Open")
+            hint: "Enter"
             enabled: view.current !== null && (view.current.dir || view.canRead)
             onTriggered: view.activate(fileList.currentIndex)
         }
         UMenuItem {
             text: view.selectedCount > 1 ? qsTr("Download %1 Items").arg(view.selectedCount) : qsTr("Download")
-            visible: view.selectedCount > 1 || (view.current !== null && view.current.dir)
             enabled: view.canRead && view.selectedCount > 0
             onTriggered: view.downloadSelection()
         }

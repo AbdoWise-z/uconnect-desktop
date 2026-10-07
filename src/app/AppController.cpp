@@ -47,16 +47,24 @@ constexpr auto Trust          = "trust";  // a group per trusted public key
 
 constexpr int kMaxBatchFiles = 10000;
 
-// Where drag-out batches are fetched to before they are dragged out.
+// Where drag-out batches are fetched to before they are dragged out, and
+// files opened from another device before they are opened.
 QString dragStagingRoot() {
     return QStandardPaths::writableLocation(QStandardPaths::TempLocation) + QStringLiteral("/uconnect-drag");
 }
+QString openStagingRoot() {
+    return QStandardPaths::writableLocation(QStandardPaths::TempLocation) + QStringLiteral("/uconnect-open");
+}
+QString newStagingFolder(const QString& root, quint32 id) {
+    return QStringLiteral("%1/%2-%3").arg(root).arg(QDateTime::currentMSecsSinceEpoch()).arg(id);
+}
 
 // Drop targets may still be copying from a staging folder after the drag
-// ends, so they are cleared on a later start instead.
-void removeOldDragStaging() {
+// ends, and opened files may still be open, so they are cleared on a later
+// start instead.
+void removeOldStaging(const QString& root) {
     const QDateTime cutoff = QDateTime::currentDateTime().addDays(-1);
-    const QFileInfoList stale = QDir(dragStagingRoot()).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    const QFileInfoList stale = QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
     for (const QFileInfo& dir : stale)
         if (dir.lastModified() < cutoff) QDir(dir.absoluteFilePath()).removeRecursively();
 }
@@ -183,7 +191,8 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
                 }
             });
 
-    removeOldDragStaging();
+    removeOldStaging(dragStagingRoot());
+    removeOldStaging(openStagingRoot());
 
     worker_.setObjectName(QStringLiteral("uconnect-session"));
     worker_.start();
@@ -474,10 +483,20 @@ quint32 AppController::storageDownloadItems(const QString& devId, const QString&
 }
 
 quint32 AppController::prepareDragOut(const QString& devId, const QString& folder, const QVariantList& items) {
-    const QString staging = QStringLiteral("%1/%2-%3").arg(dragStagingRoot())
-                                .arg(QDateTime::currentMSecsSinceEpoch()).arg(nextRequestId_);
+    const QString staging = newStagingFolder(dragStagingRoot(), nextRequestId_);
     const quint32 batch = startBatch(devId, folder, items, staging, true);
     if (batches_.contains(batch)) batches_[batch].staging = staging;
+    return batch;
+}
+
+quint32 AppController::storageOpen(const QString& devId, const QString& folder, const QString& name) {
+    // A folder of its own per open, so the file keeps its name.
+    const QString staging = newStagingFolder(openStagingRoot(), nextRequestId_);
+    const quint32 batch = startBatch(devId, folder, {QVariantMap{{"name", name}, {"dir", false}}}, staging, true);
+    if (batches_.contains(batch)) {
+        batches_[batch].staging = staging;
+        batches_[batch].open    = true;
+    }
     return batch;
 }
 
@@ -575,7 +594,10 @@ void AppController::onBatchDownload(quint32 downloadId, const QString& localPath
     DownloadBatch& batch = batches_[batchId];
     --batch.pending;
     ++batch.filesDone;
-    if (!error.isEmpty() && !canceled) ++batch.failed;
+    if (!error.isEmpty() && !canceled) {
+        ++batch.failed;
+        if (batch.firstError.isEmpty()) batch.firstError = error;
+    }
     if (error.isEmpty() && slot >= 0 && slot < batch.topLevel.size()) batch.topLevel[slot] = localPath;
     emit storageBatchProgress(batchId, batch.filesDone, batch.filesKnown);
     finishBatchIfDone(batchId);
@@ -591,6 +613,16 @@ void AppController::finishBatchIfDone(quint32 batchId) {
     for (const QString& path : batch.topLevel)
         if (!path.isEmpty() && QFileInfo::exists(path)) urls << QUrl::fromLocalFile(path).toString();
     if (batch.canceled && !batch.staging.isEmpty()) QDir(batch.staging).removeRecursively();
+
+    if (batch.open && !batch.canceled) {
+        // A copy: changes made to it stay on this device.
+        if (batch.failed == 0 && !urls.isEmpty()) {
+            if (!QDesktopServices::openUrl(QUrl(urls.first())))
+                emit notify(tr("No app is set up to open %1.").arg(QFileInfo(batch.topLevel.first()).fileName()));
+        } else {
+            emit notify(tr("Could not open the file: %1").arg(batch.firstError));
+        }
+    }
 
     if (!batch.quiet && !batch.canceled) {
         const int ok = batch.filesDone - batch.failed;

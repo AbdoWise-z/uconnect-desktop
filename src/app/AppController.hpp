@@ -149,6 +149,9 @@ public:
     // As storageDownloadItems(), into a private staging folder, so the items
     // can then be dragged out of the app as ordinary local files.
     Q_INVOKABLE quint32 prepareDragOut(const QString& devId, const QString& folder, const QVariantList& items);
+    // Fetches a file to a temporary folder and opens it with its default app.
+    // Returns a batch id, as storageDownloadItems().
+    Q_INVOKABLE quint32 storageOpen(const QString& devId, const QString& folder, const QString& name);
     Q_INVOKABLE void    cancelBatch(quint32 batchId);
     Q_INVOKABLE void    storageCancel(quint32 requestId);
     Q_INVOKABLE void    showInFolder(const QString& localPath) const;
@@ -248,13 +251,15 @@ private:
         QString        devId;
         QStringList    topLevel;  // local paths of the items asked for
         QList<quint32> downloads;
-        QString        staging;   // set for drag-out batches
+        QString        staging;   // set for drag-out and open batches
+        QString        firstError;
         int            pending    = 0;  // lists and downloads not yet finished
         int            filesKnown = 0;
         int            filesDone  = 0;
         int            failed     = 0;
         bool           quiet      = false;
         bool           canceled   = false;
+        bool           open       = false;  // open the file when it arrives
     };
     struct BatchList {
         quint32 batch = 0;

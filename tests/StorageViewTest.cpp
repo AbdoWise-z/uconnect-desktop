@@ -36,6 +36,7 @@ public:
     QVariantList dragItems;
     QList<quint32> canceledBatches;
     QVariantList downloadedItems;
+    QString opened;
 
     QObject* peers() { return &peers_; }
     QObject* transfers() { return &transfers_; }
@@ -59,6 +60,10 @@ public:
     }
     Q_INVOKABLE quint32 prepareDragOut(const QString&, const QString&, const QVariantList& items) {
         dragItems = items;
+        return ++requestId;
+    }
+    Q_INVOKABLE quint32 storageOpen(const QString&, const QString& folder, const QString& name) {
+        opened = folder + "/" + name;
         return ++requestId;
     }
     Q_INVOKABLE void cancelBatch(quint32 id) { canceledBatches << id; }
@@ -172,6 +177,7 @@ private slots:
         app_.dragItems.clear();
         app_.canceledBatches.clear();
         app_.downloadedItems.clear();
+        app_.opened.clear();
         grant(true);
         window_ = std::make_unique<QQuickWindow>();
         window_->resize(1000, 680);
@@ -268,6 +274,20 @@ private slots:
     }
 
     // With Write, a clash asks whether to replace; without, it keeps both.
+    // Double-clicking a file opens it (with Read); a folder is browsed into.
+    void doubleClickOpensFilesAndEntersFolders() {
+        show({entry("docs", true), entry("a.txt")});
+        QTest::mouseDClick(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(1));
+        QVERIFY(app_.opened.isEmpty());  // no Read permission
+
+        grant(true, {ucd::perm::StorageRead});
+        QTest::mouseDClick(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(1));
+        QCOMPARE(app_.opened, QStringLiteral("/share/sub/a.txt"));
+
+        QTest::mouseDClick(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(0));
+        QCOMPARE(view_->property("path").toString(), QStringLiteral("/share/sub/docs"));
+    }
+
     void asksBeforeReplacingWhenItMayWrite() {
         const QList<QUrl> files{QUrl::fromLocalFile("C:/tmp/notes.txt")};
         show({entry("notes.txt")});
