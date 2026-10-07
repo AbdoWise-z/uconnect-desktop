@@ -8,7 +8,8 @@ import UConnect
 // directions. Selection works like a file manager: click, Ctrl/Shift+click,
 // the checkbox that appears on hover, or sweeping across rows with the mouse.
 // Dragging selected items out of the window downloads them to wherever they
-// are dropped; dropping local files in uploads them.
+// are dropped, and onto a folder in the list moves them there; dropping local
+// files in uploads them. Cut, Copy and Paste move and copy on the device.
 Item {
     id: view
 
@@ -37,6 +38,14 @@ Item {
     property int anchorIndex: -1
     property int hoveredIndex: -1
     property int dropIndex: -1  // folder row under an incoming drop
+    property int moveTarget: -1  // folder row a drag from the list would move into
+
+    // Cut or copied items, as paths on this device.
+    property var clipboard: ({ mode: "", paths: [] })  // mode: "cut" | "copy"
+    // Moves and copies in flight: request id -> true.
+    property var activeOps: ({})
+    property int activeOpCount: 0
+    property string opProgress: ""
 
     // Drag-out: the selection is fetched first, then dragged as local files.
     property real dragBatch: -1
@@ -210,6 +219,41 @@ Item {
                    qsTr("New folder"))
     }
 
+    // --- moving and copying on the device --------------------------------------------
+    function cutSelection() {
+        const paths = selectedPaths()
+        if (canWrite && path !== "/" && paths.length > 0) clipboard = { mode: "cut", paths: paths }
+    }
+    function copySelection() {
+        const paths = selectedPaths()
+        if (uploadGranted && path !== "/" && paths.length > 0) clipboard = { mode: "copy", paths: paths }
+    }
+    function isCut(name) {
+        return clipboard.mode === "cut" && clipboard.paths.indexOf(childPath(name)) >= 0
+    }
+    function canPasteInto(folder) {
+        if (clipboard.paths.length === 0 || !connected || folder === "/" || loading || error.length > 0) return false
+        return clipboard.mode === "copy" ? uploadGranted
+                                         : canWrite && parentPath(clipboard.paths[0]) !== folder
+    }
+    function paste() {
+        if (!canPasteInto(path)) return
+        const cut = clipboard.mode === "cut"
+        transfer(clipboard.paths, path, !cut)
+        if (cut) clipboard = { mode: "", paths: [] }  // the originals are gone
+    }
+    function transfer(paths, folder, copy) {
+        const ids = copy ? App.storageCopy(devId, paths, folder) : App.storageMove(devId, paths, folder)
+        const ops = Object.assign({}, activeOps)
+        for (const id of ids) ops[id] = true
+        activeOps = ops
+        activeOpCount = Object.keys(ops).length
+    }
+    // Over a folder row that is not part of what is being dragged.
+    function moveTargetAt(i) {
+        return canWrite && i >= 0 && entries.get(i).dir && !isSelected(i) ? i : -1
+    }
+
     // --- drag-out -------------------------------------------------------------------
     function startDragOut() {
         const items = selectedItems()
@@ -298,6 +342,16 @@ Item {
         }
         function onStorageOperationFinished(requestId, deviceId, changedPath, err) {
             if (deviceId === view.devId) reloadSoon.restart()
+            if (view.activeOps[requestId] === undefined) return
+            const ops = Object.assign({}, view.activeOps)
+            delete ops[requestId]
+            view.activeOps = ops
+            view.activeOpCount = Object.keys(ops).length
+            if (view.activeOpCount === 0) view.opProgress = ""
+        }
+        function onStorageOperationProgress(requestId, deviceId, done, total) {
+            if (view.activeOps[requestId] !== undefined)
+                view.opProgress = total > 0 ? Math.round(done * 100 / total) + "%" : Theme.formatBytes(done)
         }
         function onStorageBatchProgress(batchId, filesDone, filesKnown) {
             if (batchId === view.dragBatch)
@@ -325,6 +379,9 @@ Item {
     Shortcut { sequence: StandardKey.SelectAll; enabled: fileList.activeFocus; onActivated: view.selectAll() }
     Shortcut { sequence: "Delete"; enabled: fileList.activeFocus; onActivated: view.deleteSelection() }
     Shortcut { sequence: "Escape"; enabled: fileList.activeFocus; onActivated: view.clearSelection() }
+    Shortcut { sequences: [StandardKey.Cut]; enabled: fileList.activeFocus; onActivated: view.cutSelection() }
+    Shortcut { sequences: [StandardKey.Copy]; enabled: fileList.activeFocus; onActivated: view.copySelection() }
+    Shortcut { sequences: [StandardKey.Paste]; enabled: fileList.activeFocus; onActivated: view.paste() }
 
     component HeaderCell: Text {
         color: Theme.textSecondary
@@ -485,18 +542,27 @@ Item {
                     const i = fileList.indexAt(20, y - fileList.y + fileList.contentY)
                     return i >= 0 && entries.get(i).dir ? i : -1
                 }
+                // Our own drag-out coming back over the list: a move onto a folder.
+                property bool internal: false
                 onEntered: drag => {
-                    // Our own drag-out passing over the list is not an upload.
-                    drag.accepted = drag.hasUrls && drag.source !== dragSource
+                    internal = drag.source === dragSource
+                    drag.accepted = drag.hasUrls && (!internal || view.canWrite)
                 }
-                onPositionChanged: drag => view.dropIndex = rowAt(drag.y)
+                onPositionChanged: drag => view.dropIndex = internal ? view.moveTargetAt(rowAt(drag.y)) : rowAt(drag.y)
                 onExited: view.dropIndex = -1
                 onDropped: drop => {
-                    const row = rowAt(drop.y)
+                    const row = internal ? view.moveTargetAt(rowAt(drop.y)) : rowAt(drop.y)
                     view.dropIndex = -1
                     const folder = row >= 0 ? view.childPath(entries.get(row).name) : view.path
-                    if (drop.source !== dragSource && view.upload(drop.urls, folder)) drop.accept(Qt.CopyAction)
-                    else drop.accepted = false
+                    if (internal) {
+                        if (row < 0) return drop.accepted = false
+                        view.transfer(view.selectedPaths(), folder, false)
+                        drop.accept(Qt.CopyAction)
+                    } else if (view.upload(drop.urls, folder)) {
+                        drop.accept(Qt.CopyAction)
+                    } else {
+                        drop.accepted = false
+                    }
                 }
             }
 
@@ -544,6 +610,7 @@ Item {
                     color: selected ? Theme.selection : hovered ? Theme.hover : "transparent"
                     border.width: index === view.dropIndex ? 2 : 0
                     border.color: Theme.accent
+                    opacity: view.isCut(name) ? 0.5 : 1
 
                     RowLayout {
                         anchors.fill: parent
@@ -706,11 +773,16 @@ Item {
                     }
                     if (gesture === "maybeDrag"
                             && Math.abs(mouse.x - pressPoint.x) + Math.abs(mouse.y - pressPoint.y) > 8) {
-                        gesture = view.startDragOut() ? "dragOut" : ""
+                        // Out of the window downloads (needs Read); onto a folder moves (needs Write).
+                        if (view.canRead) view.startDragOut()
+                        gesture = view.canRead || view.canWrite ? "dragOut" : ""
                     }
                     if (gesture === "dragOut") {
                         view.dragCursor = Qt.point(mouse.x, mouse.y)
-                        if (view.dragState === "ready") view.beginOsDrag()
+                        const inside = mouse.x >= 0 && mouse.x <= width && mouse.y >= 0 && mouse.y <= height
+                        view.moveTarget = inside ? view.moveTargetAt(rowAt(mouse.y)) : -1
+                        view.dropIndex = view.moveTarget
+                        if (view.dragState === "ready" && view.moveTarget < 0) view.beginOsDrag()
                     } else if (gesture === "sweep") {
                         sweepTo(mouse.y)
                         if (mouse.y < 0 || mouse.y > height) autoScroll.start()
@@ -719,14 +791,23 @@ Item {
                 }
                 onReleased: mouse => {
                     autoScroll.stop()
-                    if (gesture === "maybeDrag" && pressIndex >= 0) view.selectOnly(pressIndex)
-                    else if (gesture === "dragOut" && view.dragState !== "dragging") view.cancelDragOut()
+                    if (gesture === "maybeDrag" && pressIndex >= 0) {
+                        view.selectOnly(pressIndex)
+                    } else if (gesture === "dragOut" && view.dragState !== "dragging") {
+                        const target = view.moveTarget
+                        view.cancelDragOut()
+                        if (target >= 0) view.transfer(view.selectedPaths(), view.childPath(entries.get(target).name), false)
+                    }
                     gesture = ""
+                    view.moveTarget = -1
+                    view.dropIndex = -1
                 }
                 onCanceled: {
                     autoScroll.stop()
                     if (gesture === "dragOut" && view.dragState !== "dragging") view.cancelDragOut()
                     gesture = ""
+                    view.moveTarget = -1
+                    view.dropIndex = -1
                 }
                 onDoubleClicked: mouse => {
                     const i = rowAt(mouse.y)
@@ -753,20 +834,25 @@ Item {
 
             // Where a drag-out is while its files are being fetched.
             Rectangle {
-                visible: view.dragState === "preparing" || view.dragState === "ready"
+                visible: pointer.gesture === "dragOut" && view.dragState !== "dragging"
                 x: Math.min(listArea.width - width - 8, fileList.x + view.dragCursor.x + 14)
                 y: Math.min(listArea.height - height - 8, fileList.y + view.dragCursor.y + 14)
                 width: dragLabel.implicitWidth + 20
                 height: dragLabel.implicitHeight + 12
                 radius: Theme.radius
                 color: Theme.popup
-                border.color: view.dragState === "ready" ? Theme.accent : Theme.popupBorder
+                border.color: view.dragState === "ready" || view.moveTarget >= 0 ? Theme.accent : Theme.popupBorder
                 Text {
                     id: dragLabel
                     anchors.centerIn: parent
                     color: Theme.text
                     font.pixelSize: Theme.smallFontSize
-                    text: view.dragState === "ready"
+                    textFormat: Text.PlainText
+                    text: view.moveTarget >= 0
+                          ? qsTr("Move to %1").arg(entries.get(view.moveTarget).name)
+                          : view.dragState === ""
+                          ? qsTr("Drop onto a folder to move")
+                          : view.dragState === "ready"
                           ? qsTr("Ready — drag to where the files should go")
                           : qsTr("Fetching %1 — keep holding%2")
                                 .arg(view.selectedCount === 1 ? qsTr("1 item") : qsTr("%1 items").arg(view.selectedCount))
@@ -863,7 +949,10 @@ Item {
             Layout.leftMargin: 12
             Layout.rightMargin: 12
             Text {
-                text: view.selectedCount > 0
+                text: view.activeOpCount > 0
+                      ? qsTr("Moving or copying %n item(s)...", "", view.activeOpCount)
+                        + (view.opProgress.length > 0 ? " " + view.opProgress : "")
+                      : view.selectedCount > 0
                       ? qsTr("%1 of %2 selected").arg(view.selectedCount).arg(entries.count)
                       : entries.count === 1 ? qsTr("1 item") : qsTr("%1 items").arg(entries.count)
                 color: Theme.textSecondary
@@ -920,6 +1009,25 @@ Item {
             hint: "Del"
             enabled: view.canWrite && view.selectedCount > 0 && view.path !== "/"
             onTriggered: view.deleteSelection()
+        }
+        UMenuSeparator {}
+        UMenuItem {
+            text: qsTr("Cut")
+            hint: "Ctrl+X"
+            enabled: view.canWrite && view.selectedCount > 0 && view.path !== "/"
+            onTriggered: view.cutSelection()
+        }
+        UMenuItem {
+            text: qsTr("Copy")
+            hint: "Ctrl+C"
+            enabled: view.uploadGranted && view.selectedCount > 0 && view.path !== "/"
+            onTriggered: view.copySelection()
+        }
+        UMenuItem {
+            text: view.clipboard.paths.length > 1 ? qsTr("Paste %1 Items").arg(view.clipboard.paths.length) : qsTr("Paste")
+            hint: "Ctrl+V"
+            enabled: view.canPasteInto(view.path)
+            onTriggered: view.paste()
         }
         UMenuSeparator {}
         UMenuItem {

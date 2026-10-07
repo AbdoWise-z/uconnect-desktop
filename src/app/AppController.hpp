@@ -142,6 +142,10 @@ public:
     Q_INVOKABLE quint32 storageRename(const QString& devId, const QString& path, const QString& newName);
     Q_INVOKABLE int     storageDelete(const QString& devId, const QStringList& paths);
     Q_INVOKABLE quint32 storageMakeFolder(const QString& devId, const QString& folder, const QString& name);
+    // Move or copy items into `toFolder` on the same device; one request per
+    // path, whose ids are returned. Long ones report storageOperationProgress().
+    Q_INVOKABLE QVariantList storageMove(const QString& devId, const QStringList& paths, const QString& toFolder);
+    Q_INVOKABLE QVariantList storageCopy(const QString& devId, const QStringList& paths, const QString& toFolder);
     // Downloads files and whole folders (recursively) into the download folder.
     // `items` are {name, dir} entries of `folder` on that device. Returns a
     // batch id; storageBatchFinished() reports the outcome.
@@ -184,6 +188,7 @@ signals:
                        const QString& error);
     void storageUploaded(const QString& devId, const QString& remotePath);
     void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
+    void storageOperationProgress(quint32 requestId, const QString& devId, qint64 done, qint64 total);
     void storageBatchProgress(quint32 batchId, int filesDone, int filesKnown);
     // `urls`: file URLs of the top-level items, as downloaded.
     void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);

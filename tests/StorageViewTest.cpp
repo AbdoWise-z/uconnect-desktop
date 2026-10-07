@@ -37,6 +37,9 @@ public:
     QList<quint32> canceledBatches;
     QVariantList downloadedItems;
     QString opened;
+    QString transferKind;  // "move" | "copy"
+    QStringList transferred;
+    QString transferredTo;
 
     QObject* peers() { return &peers_; }
     QObject* transfers() { return &transfers_; }
@@ -66,6 +69,20 @@ public:
         opened = folder + "/" + name;
         return ++requestId;
     }
+    Q_INVOKABLE QVariantList storageMove(const QString&, const QStringList& paths, const QString& to) {
+        return transfer("move", paths, to);
+    }
+    Q_INVOKABLE QVariantList storageCopy(const QString&, const QStringList& paths, const QString& to) {
+        return transfer("copy", paths, to);
+    }
+    QVariantList transfer(const QString& kind, const QStringList& paths, const QString& to) {
+        transferKind = kind;
+        transferred = paths;
+        transferredTo = to;
+        QVariantList ids;
+        for (int i = 0; i < paths.size(); ++i) ids << ++requestId;
+        return ids;
+    }
     Q_INVOKABLE void cancelBatch(quint32 id) { canceledBatches << id; }
     Q_INVOKABLE void storageCancel(quint32) {}
     Q_INVOKABLE void copyText(const QString&) {}
@@ -74,6 +91,7 @@ signals:
     void storageListed(quint32 requestId, const QString& path, const QVariantList& entries, const QString& error);
     void storageUploaded(const QString& devId, const QString& remotePath);
     void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
+    void storageOperationProgress(quint32 requestId, const QString& devId, qint64 done, qint64 total);
     void storageBatchProgress(quint32 batchId, int filesDone, int filesKnown);
     void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);
 };
@@ -178,6 +196,9 @@ private slots:
         app_.canceledBatches.clear();
         app_.downloadedItems.clear();
         app_.opened.clear();
+        app_.transferKind.clear();
+        app_.transferred.clear();
+        app_.transferredTo.clear();
         grant(true);
         window_ = std::make_unique<QQuickWindow>();
         window_->resize(1000, 680);
@@ -286,6 +307,63 @@ private slots:
 
         QTest::mouseDClick(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(0));
         QCOMPARE(view_->property("path").toString(), QStringLiteral("/share/sub/docs"));
+    }
+
+    // Cut and paste moves; copy and paste copies; both into the open folder.
+    void cutCopyAndPasteOnTheDevice() {
+        grant(true, {ucd::perm::StorageWrite});
+        show({entry("docs", true), entry("a.txt"), entry("b.txt")});
+        click(1);
+        click(2, Qt::ControlModifier);
+        QTest::keyClick(window_.get(), Qt::Key_X, Qt::ControlModifier);
+        QCOMPARE(view_->property("clipboard").toMap().value("mode").toString(), QStringLiteral("cut"));
+        QVERIFY(QMetaObject::invokeMethod(view_, "paste"));
+        QVERIFY(app_.transferred.isEmpty());  // moving into the folder it is in: nothing to do
+
+        QVERIFY(QMetaObject::invokeMethod(view_, "navigate", Q_ARG(QVariant, QVariant("/share/sub/docs"))));
+        QTRY_VERIFY(!view_->property("loading").toBool());
+        QTest::keyClick(window_.get(), Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(app_.transferKind, QStringLiteral("move"));
+        QCOMPARE(app_.transferred, QStringList({"/share/sub/a.txt", "/share/sub/b.txt"}));
+        QCOMPARE(app_.transferredTo, QStringLiteral("/share/sub/docs"));
+        QCOMPARE(view_->property("activeOpCount").toInt(), 2);
+        QVERIFY(view_->property("clipboard").toMap().value("paths").toList().isEmpty());
+
+        // Progress and completion of what was pasted.
+        const quint32 first = app_.requestId - 1;
+        emit app_.storageOperationProgress(first, "test-device", 50, 200);
+        QCOMPARE(view_->property("opProgress").toString(), QStringLiteral("25%"));
+        emit app_.storageOperationFinished(first, "test-device", "/share/sub/docs/a.txt", {});
+        emit app_.storageOperationFinished(first + 1, "test-device", "/share/sub/docs/b.txt", {});
+        QCOMPARE(view_->property("activeOpCount").toInt(), 0);
+
+        // Copying needs only upload, and can paste into the same folder.
+        grant(true);
+        show({entry("c.txt")});
+        click(0);
+        QTest::keyClick(window_.get(), Qt::Key_C, Qt::ControlModifier);
+        QTest::keyClick(window_.get(), Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(app_.transferKind, QStringLiteral("copy"));
+        QCOMPARE(app_.transferred, QStringList({"/share/sub/docs/c.txt"}));
+        QCOMPARE(app_.transferredTo, QStringLiteral("/share/sub/docs"));
+    }
+
+    // Dragging the selection onto a folder row moves it there.
+    void draggingOntoAFolderMovesTheSelection() {
+        grant(true, {ucd::perm::StorageWrite, ucd::perm::StorageRead});
+        show({entry("docs", true), entry("a.txt"), entry("b.txt")});
+        click(1);
+        click(2, Qt::ControlModifier);
+        QTest::mousePress(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(2));
+        QTest::mouseMove(window_.get(), rowPoint(2) - QPoint(0, 12));
+        QTest::mouseMove(window_.get(), rowPoint(0));
+        QCOMPARE(view_->property("moveTarget").toInt(), 0);
+        QTest::mouseRelease(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(0));
+        QCOMPARE(app_.transferKind, QStringLiteral("move"));
+        QCOMPARE(app_.transferred, QStringList({"/share/sub/a.txt", "/share/sub/b.txt"}));
+        QCOMPARE(app_.transferredTo, QStringLiteral("/share/sub/docs"));
+        QCOMPARE(app_.canceledBatches.size(), 1);  // the fetch for a drag-out was dropped
+        QCOMPARE(view_->property("moveTarget").toInt(), -1);
     }
 
     void asksBeforeReplacingWhenItMayWrite() {

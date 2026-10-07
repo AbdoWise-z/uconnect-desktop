@@ -20,6 +20,9 @@
 //     {"t":"fs.mkdir",  "id":u32, "path":"/Docs", "name":"New folder",
 //      "existing":bool}  existing: answer with a folder of that name if there
 //                         is one instead of adding "New folder (1)"
+//     {"t":"fs.move", "id":u32, "path":"/Docs/a.txt", "to":"/Other/folder"}
+//     {"t":"fs.copy", "id":u32, "path":"/Docs/a.txt", "to":"/Other/folder"}
+//       files or folders, into `to`; a name already there gets a suffix
 //
 //   offerer -> requester
 //     kind 1  {"t":"fs.list.r", "id", "path", "offset", "total",
@@ -34,18 +37,21 @@
 //     kind 1  {"t":"fs.done", "id", "path"}   rename, delete or mkdir succeeded;
 //             path is the result (delete: what was removed; also "trashed";
 //             mkdir: also "existed" when an existing folder was reused)
+//     kind 1  {"t":"fs.progress", "id", "done", "total"}  every few seconds
+//             while a copy (or a move between drives) runs; bytes
 //       code: not_offered | forbidden | not_found | denied | not_a_dir |
-//             not_a_file | busy | io | bad_request | exists | root
+//             not_a_file | busy | io | bad_request | exists | root | inside
 //
 // Permissions (see Permissions.hpp): fs.list needs storage.observe, fs.read
-// needs storage.read, fs.write and fs.mkdir need storage.upload, and fs.rename,
-// fs.delete and fs.write with "replace" need storage.write. Uploads otherwise
-// add files; name collisions get a suffix.
+// needs storage.read, fs.write, fs.mkdir and fs.copy need storage.upload, and
+// fs.rename, fs.delete, fs.move and fs.write with "replace" need storage.write.
+// Uploads otherwise add files; name collisions get a suffix.
 //
 // Rename and delete act on the named entry itself: a link inside a shared
 // folder is renamed or removed, never what it points to. A shared folder
-// itself cannot be renamed or deleted ("root"). Deleted items go to the
-// offering device's trash when it has one.
+// itself cannot be renamed, moved or deleted ("root"). Deleted items go to the
+// offering device's trash when it has one. Copies leave out links inside the
+// copied folder, and a link itself can be moved but not copied.
 //
 // Paths are virtual. "/" lists the shared folders by name, and "/<name>/..."
 // is inside one; a requester never learns where a folder really is. Listings
@@ -106,6 +112,8 @@ public:
     // Deleted items go to the trash when possible; tests turn that off so
     // they do not fill the user's Recycle Bin.
     void setUseTrash(bool use) { useTrash_ = use; }
+    // Tests: moves copy and delete, as they must between drives.
+    void setAlwaysCopyMoves(bool copy) { alwaysCopyMoves_ = copy; }
 
     // True if the message belonged to this service.
     bool handleMessage(const uconnect::DevId& dev, std::span<const uint8_t> message);
@@ -120,6 +128,8 @@ signals:
     void uploadProgress(quint32 id, qint64 sent, qint64 total);
     void uploadFinished(quint32 id, const QString& remotePath, const QString& error);
     void operationFinished(quint32 id, const QString& path, const QString& error);
+    // A long fs.copy or fs.move; `total` is -1 until known.
+    void operationProgress(quint32 id, qint64 done, qint64 total);
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -191,6 +201,13 @@ private:
         bool replace = false;
         Clock::time_point deadline;
     };
+    struct JobState;  // shared with the thread running the job
+    // A copy, or a move between drives, running off this thread.
+    struct Job {
+        std::shared_ptr<JobState> state;
+        QString                   target;  // virtual path of the result
+        Clock::time_point         lastBeat;
+    };
     struct Reply {
         uconnect::DevId dev{};
         std::vector<uint8_t> message;
@@ -204,6 +221,8 @@ private:
     void serveRename(const uconnect::DevId& dev, const QJsonObject& req);
     void serveDelete(const uconnect::DevId& dev, const QJsonObject& req);
     void serveMkdir(const uconnect::DevId& dev, const QJsonObject& req);
+    void serveTransfer(const uconnect::DevId& dev, const QJsonObject& req, bool copy);
+    void finishJob(const uconnect::DevId& dev, quint32 id, const QString& code);
     std::optional<Entry> resolveEntry(const QString& path, QString* code) const;
     void onWriteData(const uconnect::DevId& dev, std::span<const uint8_t> message);
     void onWriteEnd(const uconnect::DevId& dev, const QJsonObject& msg);
@@ -254,6 +273,8 @@ private:
     std::map<quint32, Upload>      uploads_;
     std::map<quint32, PendingOp>   ops_;
     bool                           useTrash_ = true;
+    bool                           alwaysCopyMoves_ = false;
+    std::map<std::pair<uconnect::DevId, quint32>, Job> jobs_;
     QTimer*                        ticker_ = nullptr;
 };
 

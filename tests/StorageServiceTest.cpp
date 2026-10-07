@@ -315,6 +315,73 @@ private slots:
         QVERIFY(QDir().rmdir(share_ + "/sub/New folder (1)"));
     }
 
+    void movesAndCopiesWithinTheShares() {
+        QVERIFY(QDir().mkpath(share_ + "/tree/inner"));
+        QVERIFY(QDir().mkpath(share_ + "/dest"));
+        write(share_ + "/tree/a.txt", "a");
+        write(share_ + "/tree/inner/b.txt", "b");
+        const bool innerLink = makeLink(share_ + "/tree/out", outside_);
+        auto move = [](const QString& path, const QString& to) {
+            return QJsonObject{{"t", "fs.move"}, {"path", path}, {"to", to}};
+        };
+        auto copy = [](const QString& path, const QString& to) {
+            return QJsonObject{{"t", "fs.copy"}, {"path", path}, {"to", to}};
+        };
+
+        // Moving needs write; copying needs upload.
+        QVERIFY(!op(move("/share/tree/a.txt", "/share/dest")).error.isEmpty());
+        link_->granted.remove(perm::StorageUpload);
+        QVERIFY(!op(copy("/share/tree/a.txt", "/share/dest")).error.isEmpty());
+        QVERIFY(!QFile::exists(share_ + "/dest/a.txt"));
+        link_->granted.insert(perm::StorageUpload);
+        link_->granted.insert(perm::StorageWrite);
+
+        const auto moved = op(move("/share/tree/a.txt", "/share/dest"));
+        QVERIFY2(moved.error.isEmpty(), qPrintable(moved.error));
+        QCOMPARE(moved.localPath, QStringLiteral("/share/dest/a.txt"));
+        QVERIFY(QFile::exists(share_ + "/dest/a.txt") && !QFile::exists(share_ + "/tree/a.txt"));
+
+        // A copy of a folder: everything but the link inside it.
+        const auto copied = op(copy("/share/tree", "/share/dest"));
+        QVERIFY2(copied.error.isEmpty(), qPrintable(copied.error));
+        QCOMPARE(copied.localPath, QStringLiteral("/share/dest/tree"));
+        QCOMPARE(contents(share_ + "/dest/tree/inner/b.txt"), QByteArray("b"));
+        QVERIFY(QFile::exists(share_ + "/tree/inner/b.txt"));
+        if (innerLink) {
+            QVERIFY(!QFileInfo(share_ + "/dest/tree/out").exists());
+            QVERIFY(!QFileInfo(share_ + "/dest/tree/out").isSymLink());
+        }
+        QCOMPARE(op(copy("/share/tree", "/share/dest")).localPath, QStringLiteral("/share/dest/tree (1)"));
+
+        // Between drives a move is a copy and a delete.
+        link_->offerer->setAlwaysCopyMoves(true);
+        const auto across = op(move("/share/dest/tree (1)", "/share/sub"));
+        QVERIFY2(across.error.isEmpty(), qPrintable(across.error));
+        QCOMPARE(across.localPath, QStringLiteral("/share/sub/tree (1)"));
+        QVERIFY(!QFileInfo::exists(share_ + "/dest/tree (1)"));
+        QCOMPARE(contents(share_ + "/sub/tree (1)/inner/b.txt"), QByteArray("b"));
+        link_->offerer->setAlwaysCopyMoves(false);
+
+        // Into itself, out of the share, the share itself, or a link's target.
+        QVERIFY(!op(move("/share/tree", "/share/tree/inner")).error.isEmpty());
+        QVERIFY(!op(copy("/share/tree", "/share/tree/inner")).error.isEmpty());
+        QVERIFY(!QFileInfo::exists(share_ + "/tree/inner/tree"));
+        QVERIFY(!op(move("/share", "/share/dest")).error.isEmpty());
+        QVERIFY(!op(move("/share/dest/a.txt", "/share/../outside")).error.isEmpty());
+        if (haveEscapeLink_) {
+            QVERIFY(!op(move("/share/dest/a.txt", "/share/escape")).error.isEmpty());
+            QVERIFY(!op(copy("/share/escape/secret.txt", "/share/dest")).error.isEmpty());
+            QVERIFY(!op(copy("/share/escape", "/share/dest")).error.isEmpty());
+            QVERIFY(!QFileInfo::exists(share_ + "/dest/secret.txt") && !QFileInfo::exists(share_ + "/dest/escape"));
+            QVERIFY(QFile::exists(outside_ + "/secret.txt"));
+        }
+
+        if (innerLink) QVERIFY(QDir().rmdir(share_ + "/tree/out"));
+        QVERIFY(QDir(share_ + "/tree").removeRecursively());
+        QVERIFY(QDir(share_ + "/dest").removeRecursively());
+        QVERIFY(QDir(share_ + "/sub/tree (1)").removeRecursively());
+    }
+
     void replacesExistingFilesOnlyWithWrite() {
         write(share_ + "/sub/target.txt", "old");
         write(outside_ + "/target.txt", "new contents");

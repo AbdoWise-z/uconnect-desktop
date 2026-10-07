@@ -1,6 +1,7 @@
 #include "StorageService.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -9,6 +10,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
+#include <QPromise>
+#include <QStorageInfo>
+#include <QThreadPool>
 #include <QTimer>
 #include <QTemporaryFile>
 
@@ -39,6 +44,7 @@ constexpr auto   kRequestTimeout     = 20s;
 constexpr auto   kStallTimeout       = 30s;
 constexpr auto   kCacheFor           = 10s;
 constexpr auto   kProgressEvery      = 100ms;
+constexpr auto   kJobBeatEvery       = 2s;
 
 #ifdef Q_OS_WIN
 constexpr Qt::CaseSensitivity kPathCase = Qt::CaseInsensitive;
@@ -141,7 +147,8 @@ QString errorText(const QString& code) {
     if (code == QLatin1String("io")) return StorageService::tr("The device could not read or save the file.");
     if (code == QLatin1String("bad_request")) return StorageService::tr("The device rejected the request.");
     if (code == QLatin1String("exists")) return StorageService::tr("Something with that name already exists there.");
-    if (code == QLatin1String("root")) return StorageService::tr("A shared folder itself cannot be renamed or deleted.");
+    if (code == QLatin1String("root")) return StorageService::tr("A shared folder itself cannot be renamed, moved or deleted.");
+    if (code == QLatin1String("inside")) return StorageService::tr("A folder cannot be moved or copied into itself.");
     return StorageService::tr("The request failed.");
 }
 
@@ -190,6 +197,37 @@ bool replaceWith(const QString& source, const QString& target) {
 #endif
 }
 
+constexpr auto kAllEntries = QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System;
+
+qint64 treeSize(const QFileInfo& fi) {
+    if (fi.isSymLink() || fi.isJunction()) return 0;
+    if (!fi.isDir()) return fi.size();
+    qint64 n = 0;
+    for (const QFileInfo& child : QDir(fi.absoluteFilePath()).entryInfoList(kAllEntries)) n += treeSize(child);
+    return n;
+}
+
+// Copies a file or folder to `to`, which must not exist. Links inside a
+// folder are left out rather than followed, so a copy cannot reach outside.
+bool copyTree(const QFileInfo& from, const QString& to, std::atomic<qint64>& done, const std::atomic<bool>& cancel) {
+    if (cancel) return false;
+    if (from.isSymLink() || from.isJunction()) return true;
+    if (from.isDir()) {
+        if (!QDir().mkdir(to)) return false;
+        for (const QFileInfo& child : QDir(from.absoluteFilePath()).entryInfoList(kAllEntries))
+            if (!copyTree(child, QDir(to).filePath(child.fileName()), done, cancel)) return false;
+        return true;
+    }
+    if (!QFile::copy(from.absoluteFilePath(), to)) return false;
+    done += from.size();
+    return true;
+}
+
+bool sameVolume(const QString& a, const QString& b) {
+    const QStorageInfo x(a), y(b);
+    return x.isValid() && y.isValid() && x.device() == y.device();
+}
+
 QString virtualPath(const QStringList& parts) {
     return QLatin1Char('/') + parts.join(QLatin1Char('/'));
 }
@@ -224,7 +262,15 @@ StorageService::StorageService(SendFn send, AuthorizeFn authorize, QObject* pare
     connect(ticker_, &QTimer::timeout, this, &StorageService::checkDeadlines);
 }
 
-StorageService::~StorageService() = default;
+struct StorageService::JobState {
+    std::atomic<qint64> done{0};
+    std::atomic<qint64> total{-1};
+    std::atomic<bool>   cancel{false};
+};
+
+StorageService::~StorageService() {
+    for (auto& [key, job] : jobs_) job.state->cancel = true;
+}
 
 // --- offerer ------------------------------------------------------------------
 
@@ -782,6 +828,84 @@ void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& r
                          {"path", parent + QLatin1Char('/') + QFileInfo(target).fileName()}});
 }
 
+void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject& req, bool copy) {
+    const auto id = idOf(req);
+    if (!id) return;
+    if (!offered_) return sendError(dev, *id, QStringLiteral("not_offered"));
+    if (!authorize_(dev, copy ? perm::StorageUpload : perm::StorageWrite))
+        return sendError(dev, *id, QStringLiteral("forbidden"));
+
+    QString    code;
+    const auto e = resolveEntry(req.value("path").toString(), &code);
+    if (!e) return sendError(dev, *id, code);
+    const QString to   = req.value("to").toString();
+    const auto    dest = resolve(to, &code);
+    if (!dest) return sendError(dev, *id, code);
+    if (!QFileInfo(dest->second).isDir()) return sendError(dev, *id, QStringLiteral("not_a_dir"));
+
+    const QFileInfo source(e->path);
+    const bool      link = source.isSymLink() || source.isJunction();
+    if (!link && source.isDir() && isWithin(dest->second, e->path))
+        return sendError(dev, *id, QStringLiteral("inside"));
+    const QString destVirtual = virtualPath(to.split(QLatin1Char('/'), Qt::SkipEmptyParts));
+    if (!copy && dest->second.compare(e->parent, kPathCase) == 0)  // already there
+        return sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+                                    {"path", destVirtual + QLatin1Char('/') + source.fileName()}});
+    const QString target        = uniquePath(dest->second, source.fileName());
+    const QString targetVirtual = destVirtual + QLatin1Char('/') + QFileInfo(target).fileName();
+
+    if (!copy && !alwaysCopyMoves_ && sameVolume(e->parent, dest->second)) {
+        if (!QDir().rename(e->path, target)) return sendError(dev, *id, QStringLiteral("io"));
+        cachedPath_.clear();
+        return sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)}, {"path", targetVirtual}});
+    }
+
+    // A copy, or a move between drives (a copy and a delete), can take a
+    // while, so it runs on a pool thread; the requester hears fs.progress.
+    if (link) return sendError(dev, *id, QStringLiteral("denied"));  // links are not followed
+    const auto key = std::make_pair(dev, *id);
+    if (jobs_.contains(key)) return sendError(dev, *id, QStringLiteral("bad_request"));
+    const auto mine = std::count_if(jobs_.begin(), jobs_.end(), [&](const auto& kv) { return kv.first.first == dev; });
+    if (static_cast<size_t>(mine) >= kMaxOutgoingPerPeer) return sendError(dev, *id, QStringLiteral("busy"));
+
+    auto state   = std::make_shared<JobState>();
+    auto promise = std::make_shared<QPromise<QString>>();
+    auto* watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, dev, id = *id] {
+        // No result: the job never ran (the pool was shutting down).
+        const QString result = watcher->future().resultCount() > 0 ? watcher->result() : QStringLiteral("io");
+        watcher->deleteLater();
+        finishJob(dev, id, result);
+    });
+    watcher->setFuture(promise->future());
+    jobs_.emplace(key, Job{state, targetVirtual, Clock::now()});
+    updateTicker();
+    promise->start();
+    QThreadPool::globalInstance()->start([promise, state, from = e->path, target, move = !copy] {
+        state->total = treeSize(QFileInfo(from));
+        QString result;
+        if (!copyTree(QFileInfo(from), target, state->done, state->cancel)) {
+            removeEntry(QFileInfo(target));  // whatever was copied before it failed
+            result = QStringLiteral("io");
+        } else if (move && !removeEntry(QFileInfo(from))) {
+            result = QStringLiteral("io");  // copied, but not all of the original could be removed
+        }
+        promise->addResult(result);
+        promise->finish();
+    });
+}
+
+void StorageService::finishJob(const uconnect::DevId& dev, quint32 id, const QString& code) {
+    auto node = jobs_.extract(std::make_pair(dev, id));
+    if (node.empty()) return;
+    cachedPath_.clear();
+    updateTicker();
+    if (code.isEmpty())
+        sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(id)}, {"path", node.mapped().target}});
+    else
+        sendWriteReply(dev, {{"t", "fs.err"}, {"id", qint64(id)}, {"code", code}, {"error", errorText(code)}});
+}
+
 void StorageService::operation(const uconnect::DevId& dev, QJsonObject request, quint32 id) {
     request.insert("id", qint64(id));
     ops_[id] = PendingOp{dev, Clock::now() + kRequestTimeout};
@@ -999,6 +1123,15 @@ bool StorageService::handleMessage(const uconnect::DevId& dev, std::span<const u
     else if (t == QLatin1String("fs.rename")) serveRename(dev, *msg);
     else if (t == QLatin1String("fs.delete")) serveDelete(dev, *msg);
     else if (t == QLatin1String("fs.mkdir")) serveMkdir(dev, *msg);
+    else if (t == QLatin1String("fs.move")) serveTransfer(dev, *msg, false);
+    else if (t == QLatin1String("fs.copy")) serveTransfer(dev, *msg, true);
+    else if (t == QLatin1String("fs.progress")) {
+        const auto id = idOf(*msg);
+        if (const auto it = id ? ops_.find(*id) : ops_.end(); it != ops_.end() && it->second.dev == dev) {
+            it->second.deadline = Clock::now() + kStallTimeout;
+            emit operationProgress(*id, msg->value("done").toInteger(), msg->value("total").toInteger(-1));
+        }
+    }
     else if (t == QLatin1String("fs.done")) {
         const auto id = idOf(*msg);
         if (const auto it = id ? ops_.find(*id) : ops_.end(); it != ops_.end() && it->second.dev == dev)
@@ -1025,6 +1158,11 @@ void StorageService::peerGone(const uconnect::DevId& dev) {
     std::erase_if(outgoing_, [&](const auto& kv) { return kv.second.dev == dev; });
     std::erase_if(incoming_, [&](const auto& kv) { return kv.first.first == dev; });
     std::erase_if(replies_, [&](const Reply& r) { return r.dev == dev; });
+    std::erase_if(jobs_, [&](auto& kv) {
+        if (kv.first.first != dev) return false;
+        kv.second.state->cancel = true;
+        return true;
+    });
     std::vector<quint32> uploads;
     for (const auto& [id, u] : uploads_)
         if (u.dev == dev) uploads.push_back(id);
@@ -1047,6 +1185,8 @@ void StorageService::reset() {
     outgoing_.clear();
     incoming_.clear();
     replies_.clear();
+    for (auto& [key, job] : jobs_) job.state->cancel = true;
+    jobs_.clear();
     while (!uploads_.empty()) finishUpload(uploads_.begin()->first, {}, tr("Disconnected."));
     cachedPath_.clear();
     std::vector<quint32> lists, downloads;
@@ -1080,6 +1220,12 @@ void StorageService::checkDeadlines() {
     for (const auto& [id, op] : ops_)
         if (now > op.deadline) ops.push_back(id);
     for (quint32 id : ops) finishOperation(id, {}, tr("No response from the device."));
+    for (auto& [key, job] : jobs_) {
+        if (now - job.lastBeat < kJobBeatEvery) continue;
+        job.lastBeat = now;
+        send_(key.first, encodeControl({{"t", "fs.progress"}, {"id", qint64(key.second)},
+                                        {"done", job.state->done.load()}, {"total", job.state->total.load()}}));
+    }
     for (quint32 id : downloads) {
         const Download& d = downloads_.at(id);
         send_(d.dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
@@ -1088,7 +1234,7 @@ void StorageService::checkDeadlines() {
 }
 
 void StorageService::updateTicker() {
-    if (lists_.empty() && downloads_.empty() && uploads_.empty() && incoming_.empty() && ops_.empty())
+    if (lists_.empty() && downloads_.empty() && uploads_.empty() && incoming_.empty() && ops_.empty() && jobs_.empty())
         ticker_->stop();
     else if (!ticker_->isActive()) ticker_->start();
 }

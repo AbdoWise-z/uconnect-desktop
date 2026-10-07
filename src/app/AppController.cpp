@@ -174,6 +174,9 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
                 if (!error.isEmpty()) emit notify(error);
                 emit storageOperationFinished(id, devId, path, error);
             });
+    connect(storage, &StorageService::operationProgress, this, [this](quint32 id, qint64 done, qint64 total) {
+        emit storageOperationProgress(id, operationDevices_.value(id), done, total);
+    });
     connect(storage, &StorageService::uploadFinished, this,
             [this](quint32 id, const QString& remotePath, const QString& error) {
                 const bool canceled = canceled_.remove(id);
@@ -652,6 +655,20 @@ int AppController::storageDelete(const QString& devId, const QStringList& paths)
 
 quint32 AppController::storageMakeFolder(const QString& devId, const QString& folder, const QString& name) {
     return startOperation(devId, {{"t", "fs.mkdir"}, {"path", folder}, {"name", name.trimmed()}});
+}
+
+QVariantList AppController::storageMove(const QString& devId, const QStringList& paths, const QString& toFolder) {
+    QVariantList ids;
+    for (const QString& path : paths)
+        ids << startOperation(devId, {{"t", "fs.move"}, {"path", path}, {"to", toFolder}});
+    return ids;
+}
+
+QVariantList AppController::storageCopy(const QString& devId, const QStringList& paths, const QString& toFolder) {
+    QVariantList ids;
+    for (const QString& path : paths)
+        ids << startOperation(devId, {{"t", "fs.copy"}, {"path", path}, {"to", toFolder}});
+    return ids;
 }
 
 int AppController::storageUpload(const QString& devId, const QString& remoteFolder, const QList<QUrl>& files,
