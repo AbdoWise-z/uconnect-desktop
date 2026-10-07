@@ -1,6 +1,8 @@
 #pragma once
 // Uploads and downloads, newest last.
 
+#include <optional>
+
 #include <QAbstractListModel>
 #include <QString>
 #include <QVariantMap>
@@ -26,6 +28,7 @@ public:
         StateRole,  // "active" | "done" | "failed" | "canceled"
         ErrorRole,
         DirectionRole,  // "upload" | "download"
+        CanRetryRole,
     };
     Q_ENUM(Role)
 
@@ -35,12 +38,26 @@ public:
     QVariant               data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 
+    // `folder`: where the file goes (a download's local folder, an upload's
+    // remote one), so a failed transfer can be retried.
     void add(quint32 id, const QString& devId, const QString& remotePath,
-             const QString& localPath = {}, bool upload = false);
+             const QString& localPath = {}, bool upload = false, const QString& folder = {}, bool replace = false);
     void progress(quint32 id, qint64 received, qint64 total);
     void finish(quint32 id, const QString& localPath, const QString& error, bool canceled);
     QString fileName(quint32 id) const;
     QString devId(quint32 id) const;
+    void    remove(quint32 id);
+
+    // What it takes to try a failed transfer again.
+    struct Retry {
+        QString devId;
+        QString remotePath;  // download: the file; upload: where it was going
+        QString localPath;   // upload: the file
+        QString folder;
+        bool    upload  = false;
+        bool    replace = false;
+    };
+    std::optional<Retry> retryOf(quint32 id) const;
 
     int activeCount() const;
     int revision() const { return revision_; }
@@ -65,6 +82,8 @@ private:
         QString state;
         QString error;
         bool upload = false;
+        QString folder;
+        bool replace = false;
     };
     int rowOf(quint32 id) const;
 

@@ -2,6 +2,7 @@
 // other browses and downloads. Covers the protocol end to end and, above all,
 // that nothing outside the shared folder can be reached.
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QProcess>
@@ -461,6 +462,67 @@ private slots:
         QFile::remove(downloads_ + "/hello.txt");
     }
 
+    // A download cut off by a lost connection resumes from what arrived.
+    void resumesDownloadsAfterTheConnectionDrops() {
+        const QString part = downloads_ + "/big.bin." +
+            QString::fromLatin1(QCryptographicHash::hash("/share/big.bin", QCryptographicHash::Sha256).toHex().left(8)) +
+            ".part";
+        QFile::remove(part);
+        qint64 sentData = 0;
+        link_->tamper = [&sentData](std::vector<uint8_t>& m) {
+            if (!m.empty() && m[0] == 2) sentData += static_cast<qint64>(m.size()) - 5;
+        };
+
+        // Drop the connection part-way through.
+        const quint32 id = nextId();
+        QSignalSpy progress(link_->requester.get(), &StorageService::downloadProgress);
+        QSignalSpy finished(link_->requester.get(), &StorageService::downloadFinished);
+        auto drop = connect(link_->requester.get(), &StorageService::downloadProgress, this,
+                            [this](quint32, qint64 received) {
+                                if (received <= 1024 * 1024) return;
+                                link_->requester->peerGone(kOfferer);
+                                link_->offerer->peerGone(kRequester);
+                            });
+        link_->requester->download(kOfferer, "/share/big.bin", downloads_, id);
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 10000);
+        disconnect(drop);
+        QVERIFY(!finished.first().at(2).toString().isEmpty());
+        const qint64 kept = QFileInfo(part).size();
+        QVERIFY2(kept > 1024 * 1024 && kept < big_.size(), qPrintable(QString::number(kept)));
+        QTest::qWait(50);  // let frames already on the way arrive (and be ignored)
+
+        // The same download again picks up where it stopped.
+        sentData = 0;
+        const auto again = download("/share/big.bin");
+        QVERIFY2(again.error.isEmpty(), qPrintable(again.error));
+        QCOMPARE(contents(again.localPath), big_);
+        QCOMPARE(sentData, big_.size() - kept);
+        QVERIFY(!QFile::exists(part));
+        QVERIFY(QFile::remove(again.localPath));
+
+        // A part that does not match the file is caught, discarded, and the
+        // next attempt starts over.
+        write(part, QByteArray(1000, 'z'));
+        const auto bad = download("/share/big.bin");
+        QVERIFY2(bad.error.contains("damaged"), qPrintable(bad.error));
+        QVERIFY(!QFile::exists(part));
+        sentData = 0;
+        const auto fresh = download("/share/big.bin");
+        QVERIFY2(fresh.error.isEmpty(), qPrintable(fresh.error));
+        QCOMPARE(contents(fresh.localPath), big_);
+        QCOMPARE(sentData, big_.size());
+        QVERIFY(QFile::remove(fresh.localPath));
+
+        // Canceling does not keep a part.
+        link_->tamper = nullptr;
+        const quint32 canceled = nextId();
+        progress.clear();
+        link_->requester->download(kOfferer, "/share/big.bin", downloads_, canceled);
+        QTRY_VERIFY_WITH_TIMEOUT(!progress.isEmpty() && progress.last().at(1).toLongLong() > 0, 10000);
+        link_->requester->cancel(canceled);
+        QVERIFY(!QFile::exists(part));
+    }
+
     void replacesExistingFilesOnlyWithWrite() {
         write(share_ + "/sub/target.txt", "old");
         write(outside_ + "/target.txt", "new contents");
@@ -674,7 +736,8 @@ private slots:
         link_->requester->cancel(id);
         QCOMPARE(finished.count(), 1);
         QVERIFY(!finished.first().at(2).toString().isEmpty());
-        QTRY_VERIFY(QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).isEmpty());
+        QTRY_VERIFY2(QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).isEmpty(),
+                     qPrintable(QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).join(", ")));
         QVERIFY(!QFileInfo::exists(share_ + "/sub/big.bin"));
     }
 

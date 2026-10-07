@@ -162,6 +162,9 @@ public:
     Q_INVOKABLE quint32 storageWatch(const QString& devId, const QString& path);
     Q_INVOKABLE void    storageUnwatch(quint32 watchId);
     Q_INVOKABLE void    storageCancel(quint32 requestId);
+    // Starts a failed transfer again under a new id, in place of the old row.
+    // A download picks up from what arrived before, where it can.
+    Q_INVOKABLE void    retryTransfer(quint32 requestId);
     Q_INVOKABLE void    showInFolder(const QString& localPath) const;
     Q_INVOKABLE QString localPath(const QUrl& url) const;
 
@@ -254,6 +257,7 @@ private:
     quint32           nextRequestId_ = 1;
     QSet<quint32>     canceled_;
     QHash<quint32, QString> operationDevices_;  // request id -> device
+    QHash<QString, QString> identityOf_;        // device id -> its public key, once verified
 
     // A multi-item or folder download: lists folders as it goes and downloads
     // every file found, keeping the folder structure.

@@ -138,6 +138,8 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
         emit snapshotChanged();
     });
     connect(session_, &Session::peersChanged, this, [this](const QVector<PeerRecord>& p) {
+        for (const PeerRecord& peer : p)
+            if (!peer.identityKey.isEmpty()) identityOf_.insert(peer.devId, peer.identityKey);
         peers_.setPeers(p);
     });
     connect(session_, &Session::logMessage, this, &AppController::appendLog);
@@ -468,7 +470,7 @@ quint32 AppController::storageList(const QString& devId, const QString& path) {
 
 quint32 AppController::storageDownload(const QString& devId, const QString& remotePath) {
     const quint32 id = nextRequestId_++;
-    transfers_.add(id, devId, remotePath);
+    transfers_.add(id, devId, remotePath, {}, false, downloadFolder_);
     onSession([s = session_, devId, remotePath, folder = downloadFolder_, id] {
         s->storageDownload(devId, remotePath, folder, id);
     });
@@ -483,6 +485,34 @@ quint32 AppController::storageWatch(const QString& devId, const QString& path) {
 
 void AppController::storageUnwatch(quint32 watchId) {
     onSession([s = session_, watchId] { s->storageUnwatch(watchId); });
+}
+
+void AppController::retryTransfer(quint32 requestId) {
+    auto retry = transfers_.retryOf(requestId);
+    if (!retry) return;
+    // A device that restarted is back under a new id; find it by its identity.
+    const auto& peers = peers_.peers();
+    auto connected = [](const PeerRecord& p) { return p.stateCode == static_cast<int>(uconnect::PeerState::Connected); };
+    const bool stillThere = std::any_of(peers.begin(), peers.end(), [&](const PeerRecord& p) {
+        return p.devId == retry->devId && connected(p);
+    });
+    const QString identity = identityOf_.value(retry->devId);
+    if (!stillThere && !identity.isEmpty()) {
+        const auto back = std::find_if(peers.begin(), peers.end(), [&](const PeerRecord& p) {
+            return p.identityKey == identity && connected(p);
+        });
+        if (back != peers.end()) retry->devId = back->devId;
+    }
+    transfers_.remove(requestId);
+    const quint32 id = nextRequestId_++;
+    transfers_.add(id, retry->devId, retry->upload ? joinRemote(retry->folder, QFileInfo(retry->localPath).fileName())
+                                                   : retry->remotePath,
+                   retry->localPath, retry->upload, retry->folder, retry->replace);
+    if (retry->upload) {
+        onSession([s = session_, r = *retry, id] { s->storageUpload(r.devId, r.localPath, r.folder, id, r.replace); });
+    } else {
+        onSession([s = session_, r = *retry, id] { s->storageDownload(r.devId, r.remotePath, r.folder, id); });
+    }
 }
 
 void AppController::storageCancel(quint32 requestId) {
@@ -568,7 +598,7 @@ void AppController::downloadForBatch(quint32 batchId, const QString& remotePath,
     batch.downloads << id;
     batchOfDownload_.insert(id, batchId);
     if (topSlot >= 0) topSlotOfDownload_.insert(id, topSlot);
-    transfers_.add(id, batch.devId, remotePath);
+    transfers_.add(id, batch.devId, remotePath, {}, false, localDir);
     onSession([s = session_, devId = batch.devId, remotePath, localDir, id] {
         s->storageDownload(devId, remotePath, localDir, id);
     });
@@ -732,7 +762,8 @@ void AppController::uploadFile(const QString& devId, const QString& localPath, c
     }
     const quint32 id = nextRequestId_++;
     if (batchId != 0) batchOfUpload_.insert(id, batchId);
-    transfers_.add(id, devId, joinRemote(remoteFolder, QFileInfo(localPath).fileName()), localPath, true);
+    transfers_.add(id, devId, joinRemote(remoteFolder, QFileInfo(localPath).fileName()), localPath, true,
+                   remoteFolder, replace);
     onSession([s = session_, devId, localPath, remoteFolder, id, replace] {
         s->storageUpload(devId, localPath, remoteFolder, id, replace);
     });

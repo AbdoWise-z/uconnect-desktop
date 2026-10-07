@@ -227,6 +227,33 @@ bool copyTree(const QFileInfo& from, const QString& to, std::atomic<qint64>& don
     return true;
 }
 
+// Runs `work` on a pool thread and `done` with its result (nullopt if it never
+// ran) back on `context`'s thread; nothing runs once `context` is gone.
+template <class T, class Work, class Done>
+void runOffThread(QObject* context, Work work, Done done) {
+    auto  promise = std::make_shared<QPromise<T>>();
+    auto* watcher = new QFutureWatcher<T>(context);
+    QObject::connect(watcher, &QFutureWatcherBase::finished, context, [watcher, done] {
+        std::optional<T> result;
+        if (watcher->future().resultCount() > 0) result = watcher->result();
+        watcher->deleteLater();
+        done(std::move(result));
+    });
+    watcher->setFuture(promise->future());
+    promise->start();
+    QThreadPool::globalInstance()->start([promise, work] {
+        promise->addResult(work());
+        promise->finish();
+    });
+}
+
+// The partial download of `remotePath` in `folder`: one name per remote
+// file, so a second attempt finds what the first one left.
+QString partPathFor(const QString& folder, const QString& name, const QString& remotePath) {
+    const QByteArray tag = QCryptographicHash::hash(remotePath.toUtf8(), QCryptographicHash::Sha256).toHex().left(8);
+    return QDir(folder).filePath(QStringLiteral("%1.%2.part").arg(name, QString::fromLatin1(tag)));
+}
+
 std::unique_ptr<QCryptographicHash> newHash() {
     return std::make_unique<QCryptographicHash>(QCryptographicHash::Sha256);
 }
@@ -453,9 +480,14 @@ void StorageService::serveRead(const uconnect::DevId& dev, const QJsonObject& re
     Outgoing o;
     o.dev  = dev;
     o.id   = *id;
+    // Resuming: the bytes before `offset` are hashed but not sent, so the
+    // digest at the end still covers the whole file.
+    qint64 offset = req.value("offset").toInteger(0);
+    if (offset < 0 || offset > info.size()) offset = 0;
     o.file = std::move(file);
     o.hash = newHash();
-    o.queue.push_back(encodeControl({{"t", "fs.read.r"}, {"id", qint64(*id)}, {"size", info.size()}}));
+    o.skip = offset;
+    o.queue.push_back(encodeControl({{"t", "fs.read.r"}, {"id", qint64(*id)}, {"size", info.size()}, {"offset", offset}}));
     outgoing_.emplace(key, std::move(o));
     if (!pumpTimer_->isActive()) pumpTimer_->start(0);
 }
@@ -508,6 +540,17 @@ void StorageService::pump() {
         for (auto it = outgoing_.begin(); it != outgoing_.end() && budget > 0;) {
             Outgoing& o = it->second;
             if (!o.ready) { ++it; continue; }
+            if (o.skip > 0) {
+                const QByteArray prefix = o.file->read(std::min(o.skip, 4 * kChunkSize));
+                if (prefix.isEmpty()) o.skip = 0;  // the file shrank; the digest will not match
+                o.hash->addData(prefix);
+                o.skip -= prefix.size();
+                o.sent += prefix.size();
+                budget -= prefix.size() / 8;  // reading to hash costs less than sending
+                progressed = true;
+                ++it;
+                continue;
+            }
             if (o.queue.empty() && !o.done) {
                 const QByteArray chunk = o.file->read(kChunkSize);
                 if (!chunk.isEmpty()) {
@@ -626,10 +669,10 @@ void StorageService::serveWrite(const uconnect::DevId& dev, const QJsonObject& r
     if (!in.file->open()) return failIncoming(dev, *id, QStringLiteral("io"));
     incoming_.emplace(key, std::move(in));
     updateTicker();
-    sendWriteReply(dev, {{"t", "fs.write.r"}, {"id", qint64(*id)}});
+    sendReliably(dev, {{"t", "fs.write.r"}, {"id", qint64(*id)}});
 }
 
-void StorageService::sendWriteReply(const uconnect::DevId& dev, const QJsonObject& reply) {
+void StorageService::sendReliably(const uconnect::DevId& dev, const QJsonObject& reply) {
     auto message = encodeControl(reply);
     if (send_(dev, message)) return;
     // Bound retries even if a peer keeps requesting while its queue is full.
@@ -641,7 +684,7 @@ void StorageService::sendWriteReply(const uconnect::DevId& dev, const QJsonObjec
 void StorageService::failIncoming(const uconnect::DevId& dev, quint32 id, const QString& code) {
     incoming_.erase(std::make_pair(dev, id));  // QTemporaryFile removes the partial file
     updateTicker();
-    sendWriteReply(dev, {{"t", "fs.write.err"}, {"id", qint64(id)}, {"code", code}});
+    sendReliably(dev, {{"t", "fs.write.err"}, {"id", qint64(id)}, {"code", code}});
 }
 
 void StorageService::onWriteData(const uconnect::DevId& dev, std::span<const uint8_t> message) {
@@ -706,7 +749,7 @@ void StorageService::onWriteEnd(const uconnect::DevId& dev, const QJsonObject& m
     incoming_.erase(it);
     cachedPath_.clear();
     updateTicker();
-    sendWriteReply(dev, {{"t", "fs.write.done"}, {"id", qint64(*id)}, {"path", remotePath}});
+    sendReliably(dev, {{"t", "fs.write.done"}, {"id", qint64(*id)}, {"path", remotePath}});
 }
 
 void StorageService::onWriteReply(const uconnect::DevId& dev, const QJsonObject& msg) {
@@ -801,7 +844,7 @@ void StorageService::serveRename(const uconnect::DevId& dev, const QJsonObject& 
     if (!QDir().rename(e->path, target)) return sendError(dev, *id, QStringLiteral("io"));
 
     cachedPath_.clear();
-    sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+    sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
                          {"path", e->virtualParent + QLatin1Char('/') + name}});
 }
 
@@ -819,7 +862,7 @@ void StorageService::serveDelete(const uconnect::DevId& dev, const QJsonObject& 
     if (!trashed && !removeEntry(QFileInfo(e->path))) return sendError(dev, *id, QStringLiteral("io"));
 
     cachedPath_.clear();
-    sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+    sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
                          {"path", e->virtualParent + QLatin1Char('/') + QFileInfo(e->path).fileName()},
                          {"trashed", trashed}});
 }
@@ -845,7 +888,7 @@ void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& r
         QString    ignored;
         const auto there = resolve(parent + QLatin1Char('/') + name, &ignored);
         if (there && QFileInfo(there->second).isDir())
-            return sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+            return sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
                                         {"path", parent + QLatin1Char('/') + name}, {"existed", true}});
     }
 
@@ -853,7 +896,7 @@ void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& r
     if (!QDir().mkdir(target)) return sendError(dev, *id, QStringLiteral("io"));
 
     cachedPath_.clear();
-    sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+    sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
                          {"path", parent + QLatin1Char('/') + QFileInfo(target).fileName()}});
 }
 
@@ -933,7 +976,7 @@ void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject
         return sendError(dev, *id, QStringLiteral("inside"));
     const QString destVirtual = virtualPath(to.split(QLatin1Char('/'), Qt::SkipEmptyParts));
     if (!copy && dest->second.compare(e->parent, kPathCase) == 0)  // already there
-        return sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
+        return sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
                                     {"path", destVirtual + QLatin1Char('/') + source.fileName()}});
     const QString target        = uniquePath(dest->second, source.fileName());
     const QString targetVirtual = destVirtual + QLatin1Char('/') + QFileInfo(target).fileName();
@@ -941,7 +984,7 @@ void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject
     if (!copy && !alwaysCopyMoves_ && sameVolume(e->parent, dest->second)) {
         if (!QDir().rename(e->path, target)) return sendError(dev, *id, QStringLiteral("io"));
         cachedPath_.clear();
-        return sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(*id)}, {"path", targetVirtual}});
+        return sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)}, {"path", targetVirtual}});
     }
 
     // A copy, or a move between drives (a copy and a delete), can take a
@@ -952,31 +995,24 @@ void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject
     const auto mine = std::count_if(jobs_.begin(), jobs_.end(), [&](const auto& kv) { return kv.first.first == dev; });
     if (static_cast<size_t>(mine) >= kMaxOutgoingPerPeer) return sendError(dev, *id, QStringLiteral("busy"));
 
-    auto state   = std::make_shared<JobState>();
-    auto promise = std::make_shared<QPromise<QString>>();
-    auto* watcher = new QFutureWatcher<QString>(this);
-    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, dev, id = *id] {
-        // No result: the job never ran (the pool was shutting down).
-        const QString result = watcher->future().resultCount() > 0 ? watcher->result() : QStringLiteral("io");
-        watcher->deleteLater();
-        finishJob(dev, id, result);
-    });
-    watcher->setFuture(promise->future());
+    auto state = std::make_shared<JobState>();
     jobs_.emplace(key, Job{state, targetVirtual, Clock::now()});
     updateTicker();
-    promise->start();
-    QThreadPool::globalInstance()->start([promise, state, from = e->path, target, move = !copy] {
-        state->total = treeSize(QFileInfo(from));
-        QString result;
-        if (!copyTree(QFileInfo(from), target, state->done, state->cancel)) {
-            removeEntry(QFileInfo(target));  // whatever was copied before it failed
-            result = QStringLiteral("io");
-        } else if (move && !removeEntry(QFileInfo(from))) {
-            result = QStringLiteral("io");  // copied, but not all of the original could be removed
-        }
-        promise->addResult(result);
-        promise->finish();
-    });
+    runOffThread<QString>(
+        this,
+        [state, from = e->path, target, move = !copy] {
+            state->total = treeSize(QFileInfo(from));
+            if (!copyTree(QFileInfo(from), target, state->done, state->cancel)) {
+                removeEntry(QFileInfo(target));  // whatever was copied before it failed
+                return QStringLiteral("io");
+            }
+            if (move && !removeEntry(QFileInfo(from)))
+                return QStringLiteral("io");  // copied, but not all of the original could be removed
+            return QString();
+        },
+        [this, dev, id = *id](std::optional<QString> result) {
+            finishJob(dev, id, result.value_or(QStringLiteral("io")));  // none: the pool was shutting down
+        });
 }
 
 void StorageService::finishJob(const uconnect::DevId& dev, quint32 id, const QString& code) {
@@ -985,9 +1021,9 @@ void StorageService::finishJob(const uconnect::DevId& dev, quint32 id, const QSt
     cachedPath_.clear();
     updateTicker();
     if (code.isEmpty())
-        sendWriteReply(dev, {{"t", "fs.done"}, {"id", qint64(id)}, {"path", node.mapped().target}});
+        sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(id)}, {"path", node.mapped().target}});
     else
-        sendWriteReply(dev, {{"t", "fs.err"}, {"id", qint64(id)}, {"code", code}, {"error", errorText(code)}});
+        sendReliably(dev, {{"t", "fs.err"}, {"id", qint64(id)}, {"code", code}, {"error", errorText(code)}});
 }
 
 void StorageService::operation(const uconnect::DevId& dev, QJsonObject request, quint32 id) {
@@ -1027,6 +1063,12 @@ void StorageService::download(const uconnect::DevId& dev, const QString& remoteP
     d.remotePath = remotePath;
     d.folder     = folder;
     d.name       = safeFileName(remotePath.section(QLatin1Char('/'), -1));
+    d.partPath   = partPathFor(folder, d.name, remotePath);
+    // Two downloads of one file into one folder cannot share a part file.
+    d.resumable  = std::none_of(downloads_.begin(), downloads_.end(), [&](const auto& kv) {
+        return kv.second.partPath.compare(d.partPath, kPathCase) == 0;
+    });
+    if (!d.resumable) d.partPath.clear();  // a unique one is picked when it starts
     downloads_.emplace(id, std::move(d));
     updateTicker();
     startQueuedDownloads(dev);
@@ -1036,29 +1078,67 @@ void StorageService::startQueuedDownloads(const uconnect::DevId& dev) {
     auto active = static_cast<size_t>(std::count_if(downloads_.begin(), downloads_.end(), [&](const auto& kv) {
         return kv.second.dev == dev && kv.second.requested;
     }));
-    std::vector<quint32> unreachable;
+    std::vector<quint32> start;
     for (auto& [id, d] : downloads_) {
         if (active >= kMaxOutgoingPerPeer) break;
         if (d.dev != dev || d.requested) continue;
-        if (!send_(dev, encodeControl({{"t", "fs.read"}, {"id", qint64(id)}, {"path", d.remotePath}}))) {
-            unreachable.push_back(id);
-            continue;
-        }
         d.requested = true;
         d.deadline  = Clock::now() + kRequestTimeout;
         ++active;
+        start.push_back(id);
     }
-    for (quint32 id : unreachable) finishDownload(id, tr("Could not reach the device."));
+    for (quint32 id : start) {
+        Download& d = downloads_.at(id);
+        const qint64 have = d.resumable ? QFileInfo(d.partPath).size() : 0;
+        if (have <= 0) {
+            sendRead(id);
+            continue;
+        }
+        // Part of it arrived before: hash that off this thread, then resume.
+        d.deadline = Clock::now() + std::chrono::hours(1);  // a large part takes a while
+        runOffThread<std::pair<std::shared_ptr<QCryptographicHash>, qint64>>(
+            this,
+            [path = d.partPath, have] {
+                auto  hash = std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
+                QFile part(path);
+                if (!part.open(QIODevice::ReadOnly)) return std::make_pair(hash, qint64(0));
+                qint64 read = 0;
+                while (read < have) {
+                    const QByteArray chunk = part.read(std::min<qint64>(have - read, 4 * kChunkSize));
+                    if (chunk.isEmpty()) break;
+                    hash->addData(chunk);
+                    read += chunk.size();
+                }
+                return std::make_pair(hash, read);
+            },
+            [this, id](auto result) {
+                const auto it = downloads_.find(id);
+                if (it == downloads_.end()) return;  // canceled or failed meanwhile
+                if (result && result->second > 0) {
+                    it->second.hash       = std::make_unique<QCryptographicHash>(std::move(*result->first));
+                    it->second.resumeFrom = result->second;
+                }
+                sendRead(id);
+            });
+    }
+}
+
+void StorageService::sendRead(quint32 id) {
+    Download& d = downloads_.at(id);
+    QJsonObject req{{"t", "fs.read"}, {"id", qint64(id)}, {"path", d.remotePath}};
+    if (d.resumeFrom > 0) req.insert("offset", d.resumeFrom);
+    d.deadline = Clock::now() + kRequestTimeout;
+    if (!send_(d.dev, encodeControl(req))) finishDownload(id, tr("Could not reach the device."), true);
 }
 
 void StorageService::cancel(quint32 id) {
     if (auto it = uploads_.find(id); it != uploads_.end()) {
         if (it->second.requested)
-            send_(it->second.dev, encodeControl({{"t", "fs.write.cancel"}, {"id", qint64(id)}}));
+            sendReliably(it->second.dev, {{"t", "fs.write.cancel"}, {"id", qint64(id)}});
         finishUpload(id, {}, tr("Canceled"));
     }
     if (auto it = downloads_.find(id); it != downloads_.end()) {
-        if (it->second.requested) send_(it->second.dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
+        if (it->second.requested) sendReliably(it->second.dev, {{"t", "fs.cancel"}, {"id", qint64(id)}});
         finishDownload(id, tr("Canceled"));
     }
     lists_.erase(id);
@@ -1104,21 +1184,31 @@ void StorageService::onReadStart(const uconnect::DevId& dev, const QJsonObject& 
     Download& d = it->second;
 
     if (!QDir().mkpath(d.folder)) {
-        send_(dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(*id)}}));
+        sendReliably(dev, {{"t", "fs.cancel"}, {"id", qint64(*id)}});
         return finishDownload(*id, tr("Cannot create the download folder."));
     }
-    d.partPath = uniquePath(d.folder, d.name + QStringLiteral(".part"));
-    d.file     = std::make_unique<QFile>(d.partPath);
-    if (!d.file->open(QIODevice::WriteOnly)) {
+    // The device resumes where asked, or from the start (offset 0).
+    const qint64 offset  = msg.value("offset").toInteger(0);
+    const bool   resumed = offset > 0 && offset == d.resumeFrom && d.hash;
+    if (!resumed) {
+        d.hash     = newHash();
+        d.received = 0;
+    } else {
+        d.received = offset;
+    }
+    if (d.partPath.isEmpty()) d.partPath = uniquePath(d.folder, d.name + QStringLiteral(".part"));
+    d.file = std::make_unique<QFile>(d.partPath);
+    // Exactly the bytes that were hashed, then append to them.
+    if ((resumed && !d.file->resize(offset)) ||
+        !d.file->open(resumed ? QIODevice::WriteOnly | QIODevice::Append : QIODevice::WriteOnly)) {
         d.file.reset();
-        send_(dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(*id)}}));
+        sendReliably(dev, {{"t", "fs.cancel"}, {"id", qint64(*id)}});
         return finishDownload(*id, tr("Cannot write to the download folder."));
     }
-    d.hash         = newHash();
     d.total        = msg.value("size").toInteger(-1);
     d.deadline     = Clock::now() + kStallTimeout;
     d.lastProgress = Clock::now();
-    emit downloadProgress(*id, 0, d.total);
+    emit downloadProgress(*id, d.received, d.total);
 }
 
 void StorageService::onReadData(const uconnect::DevId& dev, std::span<const uint8_t> message) {
@@ -1132,7 +1222,7 @@ void StorageService::onReadData(const uconnect::DevId& dev, std::span<const uint
     const auto   bytes = message.subspan(5);
     const qint64 n     = static_cast<qint64>(bytes.size());
     if (d.file->write(reinterpret_cast<const char*>(bytes.data()), n) != n) {
-        send_(dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
+        sendReliably(dev, {{"t", "fs.cancel"}, {"id", qint64(id)}});
         return finishDownload(id, tr("Could not write the file (is the disk full?)."));
     }
     d.hash->addData(QByteArrayView(reinterpret_cast<const char*>(bytes.data()), n));
@@ -1183,14 +1273,12 @@ void StorageService::finishList(quint32 id, const QString& error) {
     emit listFinished(id, node.mapped().path, error.isEmpty() ? node.mapped().entries : QVariantList{}, error);
 }
 
-void StorageService::finishDownload(quint32 id, const QString& error) {
+void StorageService::finishDownload(quint32 id, const QString& error, bool keepPart) {
     auto node = downloads_.extract(id);
     if (node.empty()) return;
     Download& d = node.mapped();
-    if (d.file) {
-        d.file->close();
-        QFile::remove(d.partPath);
-    }
+    if (d.file) d.file->close();
+    if ((!keepPart || !d.resumable) && !d.partPath.isEmpty()) QFile::remove(d.partPath);
     updateTicker();
     emit downloadFinished(id, {}, error);
     startQueuedDownloads(d.dev);
@@ -1282,7 +1370,7 @@ void StorageService::peerGone(const uconnect::DevId& dev) {
     for (const auto& [id, d] : downloads_)
         if (d.dev == dev) downloads.push_back(id);
     for (quint32 id : lists) finishList(id, tr("The device disconnected."));
-    for (quint32 id : downloads) finishDownload(id, tr("The device disconnected."));
+    for (quint32 id : downloads) finishDownload(id, tr("The device disconnected."), true);
     std::vector<quint32> ops;
     for (const auto& [id, op] : ops_)
         if (op.dev == dev) ops.push_back(id);
@@ -1304,7 +1392,7 @@ void StorageService::reset() {
     for (const auto& [id, p] : lists_) lists.push_back(id);
     for (const auto& [id, d] : downloads_) downloads.push_back(id);
     for (quint32 id : lists) finishList(id, tr("Disconnected."));
-    for (quint32 id : downloads) finishDownload(id, tr("Disconnected."));
+    for (quint32 id : downloads) finishDownload(id, tr("Disconnected."), true);
     while (!ops_.empty()) finishOperation(ops_.begin()->first, {}, tr("Disconnected."));
 }
 
@@ -1315,7 +1403,7 @@ void StorageService::checkDeadlines() {
     for (const auto& [id, u] : uploads_)
         if (now > u.deadline) uploads.push_back(id);
     for (quint32 id : uploads) {
-        send_(uploads_.at(id).dev, encodeControl({{"t", "fs.write.cancel"}, {"id", qint64(id)}}));
+        sendReliably(uploads_.at(id).dev, {{"t", "fs.write.cancel"}, {"id", qint64(id)}});
         finishUpload(id, {}, tr("The upload stalled or the device did not respond."));
     }
     std::vector<std::pair<uconnect::DevId, quint32>> incoming;
@@ -1339,8 +1427,8 @@ void StorageService::checkDeadlines() {
     }
     for (quint32 id : downloads) {
         const Download& d = downloads_.at(id);
-        send_(d.dev, encodeControl({{"t", "fs.cancel"}, {"id", qint64(id)}}));
-        finishDownload(id, d.file ? tr("The transfer stalled.") : tr("No response from the device."));
+        sendReliably(d.dev, {{"t", "fs.cancel"}, {"id", qint64(id)}});
+        finishDownload(id, d.file ? tr("The transfer stalled.") : tr("No response from the device."), true);
     }
 }
 

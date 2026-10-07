@@ -7,7 +7,8 @@
 //
 //   requester -> offerer, kind 1 (JSON)
 //     {"t":"fs.list",   "id":u32, "path":"/Docs/sub", "offset":n}
-//     {"t":"fs.read",   "id":u32, "path":"/Docs/file.txt"}
+//     {"t":"fs.read",   "id":u32, "path":"/Docs/file.txt", "offset":n}
+//       offset: resume; the requester already has the first n bytes
 //     {"t":"fs.cancel", "id":u32}
 //     {"t":"fs.write", "id":u32, "path":"/Docs", "name":"file.txt", "size":n,
 //      "replace":bool}   replace: overwrite a file of that name instead of
@@ -29,7 +30,9 @@
 //   offerer -> requester
 //     kind 1  {"t":"fs.list.r", "id", "path", "offset", "total",
 //              "entries":[{"name", "dir", "size", "mtime"}]}       mtime: ms since epoch
-//     kind 1  {"t":"fs.read.r", "id", "size"}       then the file as
+//     kind 1  {"t":"fs.read.r", "id", "size", "offset"}   then the file from
+//                                                    `offset` (0 if it could
+//                                                    not resume there) as
 //     kind 2  [u8 2][u32 id, big-endian][bytes]      frames, in order, then
 //     kind 1  {"t":"fs.read.end", "id", "sent", "sha256"}
 //     kind 1  {"t":"fs.err", "id", "code", "error"}
@@ -47,9 +50,12 @@
 //             not_a_file | busy | io | bad_request | exists | root | inside |
 //             corrupt
 //
-// "sha256" is the SHA-256 of the whole file, lowercase hex. The receiver
-// checks it when present and discards a file that does not match ("corrupt");
-// a sender that leaves it out is trusted on size alone.
+// "sha256" is the SHA-256 of the whole file, lowercase hex, also when a read
+// resumed part-way. The receiver checks it when present and discards a file
+// that does not match ("corrupt"); a sender that leaves it out is trusted on
+// size alone. A download that fails because the connection went keeps its
+// partial file, and downloading the same file into the same folder again
+// resumes from it.
 //
 // Permissions (see Permissions.hpp): fs.list and fs.watch need storage.observe, fs.read
 // needs storage.read, fs.write, fs.mkdir and fs.copy need storage.upload, and
@@ -158,6 +164,7 @@ private:
         quint32                          id = 0;
         std::unique_ptr<QFile>           file;
         qint64                           sent = 0;
+        qint64                           skip = 0;      // a resumed read: hashed, not sent
         bool                             done = false;  // nothing left to read
         bool                             upload = false;
         bool                             ready = true;  // uploads wait for the receiver
@@ -176,7 +183,9 @@ private:
         bool                   requested = false;  // false while queued locally
         QString                folder;
         QString                name;
-        QString                partPath;
+        QString                partPath;   // kept when the connection fails, to resume
+        bool                   resumable = true;  // false when another download has that part file
+        qint64                 resumeFrom = 0;     // bytes of partPath already hashed
         std::unique_ptr<QFile> file;
         std::unique_ptr<QCryptographicHash> hash;
         qint64                 total    = -1;
@@ -261,7 +270,9 @@ private:
     void onWriteEnd(const uconnect::DevId& dev, const QJsonObject& msg);
     void onWriteReply(const uconnect::DevId& dev, const QJsonObject& msg);
     void failIncoming(const uconnect::DevId& dev, quint32 id, const QString& code);
-    void sendWriteReply(const uconnect::DevId& dev, const QJsonObject& reply);
+    // Sends a control message now, or keeps retrying it for a while if the
+    // peer's queue is full; for messages that must not be lost.
+    void sendReliably(const uconnect::DevId& dev, const QJsonObject& message);
     void finishUpload(quint32 id, const QString& remotePath, const QString& error);
     void sendError(const uconnect::DevId& dev, quint32 id, const QString& code);
     QJsonArray listing(const QString& absolutePath, const SharedFolder& folder);
@@ -277,7 +288,10 @@ private:
     void onReadEnd(const uconnect::DevId& dev, const QJsonObject& msg);
     void onError(const uconnect::DevId& dev, const QJsonObject& msg);
     void finishList(quint32 id, const QString& error);
-    void finishDownload(quint32 id, const QString& error);
+    // `keepPart`: the connection failed; a later download of the same file
+    // resumes from what arrived.
+    void finishDownload(quint32 id, const QString& error, bool keepPart = false);
+    void sendRead(quint32 id);
     void finishOperation(quint32 id, const QString& path, const QString& error);
     // Sends queued fs.read requests while fewer than the offerer's limit are
     // in flight; it answers "busy" beyond that.

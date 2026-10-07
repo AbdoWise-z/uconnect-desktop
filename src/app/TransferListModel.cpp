@@ -22,6 +22,7 @@ QVariant TransferListModel::data(const QModelIndex& index, int role) const {
     case StateRole: return t.state;
     case ErrorRole: return t.error;
     case DirectionRole: return t.upload ? QStringLiteral("upload") : QStringLiteral("download");
+    case CanRetryRole: return t.state == QLatin1String("failed") && !t.folder.isEmpty();
     default: return {};
     }
 }
@@ -38,6 +39,7 @@ QHash<int, QByteArray> TransferListModel::roleNames() const {
         {StateRole, "transferState"},
         {ErrorRole, "error"},
         {DirectionRole, "direction"},
+        {CanRetryRole, "canRetry"},
     };
 }
 
@@ -47,9 +49,9 @@ int TransferListModel::rowOf(quint32 id) const {
 }
 
 void TransferListModel::add(quint32 id, const QString& devId, const QString& remotePath,
-                           const QString& localPath, bool upload) {
+                           const QString& localPath, bool upload, const QString& folder, bool replace) {
     beginInsertRows({}, static_cast<int>(rows_.size()), static_cast<int>(rows_.size()));
-    rows_.push_back({id, devId, remotePath, localPath, 0, -1, QStringLiteral("active"), {}, upload});
+    rows_.push_back({id, devId, remotePath, localPath, 0, -1, QStringLiteral("active"), {}, upload, folder, replace});
     endInsertRows();
     emit activeCountChanged();
     bump();
@@ -87,6 +89,24 @@ QString TransferListModel::fileName(quint32 id) const {
 QString TransferListModel::devId(quint32 id) const {
     const int row = rowOf(id);
     return row < 0 ? QString() : rows_.at(row).devId;
+}
+
+void TransferListModel::remove(quint32 id) {
+    const int row = rowOf(id);
+    if (row < 0) return;
+    beginRemoveRows({}, row, row);
+    rows_.removeAt(row);
+    endRemoveRows();
+    emit activeCountChanged();
+    bump();
+}
+
+std::optional<TransferListModel::Retry> TransferListModel::retryOf(quint32 id) const {
+    const int row = rowOf(id);
+    if (row < 0) return std::nullopt;
+    const Transfer& t = rows_.at(row);
+    if (t.state != QLatin1String("failed") || t.folder.isEmpty()) return std::nullopt;
+    return Retry{t.devId, t.remotePath, t.localPath, t.folder, t.upload, t.replace};
 }
 
 int TransferListModel::activeCount() const {

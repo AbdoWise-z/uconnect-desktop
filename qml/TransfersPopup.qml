@@ -227,6 +227,7 @@ Item {
                     required property string transferState
                     required property string error
                     required property string direction
+                    required property bool canRetry
 
                     readonly property bool mine: devId === popup.devId
                     readonly property bool active: transferState === "active"
@@ -300,6 +301,12 @@ Item {
                             text: qsTr("Cancel")
                             font.pixelSize: Theme.smallFontSize
                             onClicked: App.storageCancel(transfer.transferId)
+                        }
+                        ULink {
+                            visible: transfer.canRetry
+                            text: qsTr("Retry")
+                            font.pixelSize: Theme.smallFontSize
+                            onClicked: App.retryTransfer(transfer.transferId)
                         }
                         ULink {
                             visible: transfer.transferState === "done" && transfer.direction === "download"
