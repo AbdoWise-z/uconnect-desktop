@@ -137,6 +137,15 @@ ApplicationWindow {
         checked: true
     }
     Action {
+        id: storageActivityAction
+        text: qsTr("Storage Activity")
+        onTriggered: {
+            activityWindow.show()
+            activityWindow.raise()
+            activityWindow.requestActivate()
+        }
+    }
+    Action {
         id: debugAction
         text: qsTr("Debug Window")
         shortcut: "Ctrl+Shift+D"
@@ -198,6 +207,7 @@ ApplicationWindow {
             title: qsTr("View")
             UMenuItem { action: devicesPanelAction }
             UMenuItem { action: statusBarAction }
+            UMenuItem { action: storageActivityAction }
             UMenuSeparator {}
             UMenuItem { action: debugAction }
         }
@@ -236,6 +246,10 @@ ApplicationWindow {
 
     TrustDialog {
         id: trustDialog
+    }
+
+    StorageActivityWindow {
+        id: activityWindow
     }
 
     Popup {

@@ -70,6 +70,9 @@ class AppController : public QObject {
     Q_PROPERTY(QVariantList permissionDefinitions READ permissionDefinitions CONSTANT)
     Q_PROPERTY(QStringList defaultPermissions READ defaultPermissions NOTIFY trustChanged)
     Q_PROPERTY(QVariantList trustedDevices READ trustedDevices NOTIFY trustChanged)
+    // What other devices did in this device's shared folders, newest first:
+    // [{time, devId, device, fingerprint, action, path, detail}].
+    Q_PROPERTY(QVariantList storageActivity READ storageActivity NOTIFY storageActivityChanged)
 
 public:
     explicit AppController(const LaunchOptions& options, QObject* parent = nullptr);
@@ -109,6 +112,8 @@ public:
     QStringList  defaultPermissions() const { return defaultPermissions_; }
     // [{key, fingerprint, name, permissions, since}], by name.
     QVariantList trustedDevices() const;
+    QVariantList storageActivity() const { return activity_; }
+    Q_INVOKABLE void clearStorageActivity();
 
     PeerListModel*     peers() { return &peers_; }
     TransferListModel* transfers() { return &transfers_; }
@@ -209,6 +214,7 @@ signals:
     // `urls`: file URLs of the top-level items, as downloaded.
     void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);
     void trustChanged();
+    void storageActivityChanged();
 
 private:
     template <class F> void onSession(F&& f);
@@ -234,6 +240,8 @@ private:
     void loadTrust();
     void saveTrusted(const QString& key);
     void appendLog(const QString& line);
+    void addActivity(const QVariantMap& entry);
+    void loadActivity();
 
     bool     firstRun_ = false;
     QString  serverAddress_;
@@ -317,6 +325,7 @@ private:
     QHash<quint32, BatchFolder> batchFolders_;   // mkdir request id ->
     QHash<quint32, quint32>     batchOfUpload_;  // upload id -> batch
 
+    QVariantList        activity_;
     std::deque<QString> log_;
     QString             serverReport_;
 

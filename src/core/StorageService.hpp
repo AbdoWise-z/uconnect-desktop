@@ -165,6 +165,10 @@ signals:
     void uploadFinished(quint32 id, const QString& remotePath, const QString& error);
     void operationFinished(quint32 id, const QString& path, const QString& error);
     void folderChanged(quint32 watchId, const QString& path);
+    // Offerer: a device changed or took something here. `action` is one of
+    // download, upload, mkdir, rename, delete, move, copy; `path` is the
+    // virtual path acted on and `detail` the new name or destination, if any.
+    void activity(const uconnect::DevId& dev, const QString& action, const QString& path, const QString& detail);
     // A long fs.copy or fs.move; `total` is -1 until known.
     void operationProgress(quint32 id, qint64 done, qint64 total);
 
@@ -263,6 +267,8 @@ private:
         std::shared_ptr<JobState> state;
         QString                   target;  // virtual path of the result
         Clock::time_point         lastBeat;
+        QString                   source;  // virtual
+        bool                      copy = false;
     };
     struct Reply {
         uconnect::DevId dev{};

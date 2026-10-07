@@ -556,6 +556,39 @@ private slots:
         QVERIFY(QDir().rmdir(share_ + "/sub/keep"));
     }
 
+    // The offerer reports what was done in its folders, and by whom.
+    void reportsActivityInTheShares() {
+        link_->granted.insert(perm::StorageWrite);
+        QSignalSpy activity(link_->offerer.get(), &StorageService::activity);
+        auto last = [&] {
+            const auto args = activity.last();
+            return QStringList{args.at(1).toString(), args.at(2).toString(), args.at(3).toString()};
+        };
+        QVERIFY(download("/share/hello.txt").error.isEmpty());
+        QCOMPARE(last(), (QStringList{"download", "/share/hello.txt", ""}));
+        QCOMPARE(activity.last().at(0).value<uconnect::DevId>(), kRequester);
+        QFile::remove(downloads_ + "/hello.txt");
+
+        QCOMPARE(op({{"t", "fs.mkdir"}, {"path", "/share/sub"}, {"name", "act"}}).error, QString());
+        QCOMPARE(last(), (QStringList{"mkdir", "/share/sub/act", ""}));
+        write(outside_ + "/act.txt", "a");
+        QVERIFY(upload(outside_ + "/act.txt", "/share/sub/act").error.isEmpty());
+        QCOMPARE(last(), (QStringList{"upload", "/share/sub/act/act.txt", ""}));
+        QVERIFY(op({{"t", "fs.rename"}, {"path", "/share/sub/act/act.txt"}, {"name", "b.txt"}}).error.isEmpty());
+        QCOMPARE(last(), (QStringList{"rename", "/share/sub/act/act.txt", "b.txt"}));
+        QVERIFY(op({{"t", "fs.copy"}, {"path", "/share/sub/act/b.txt"}, {"to", "/share/sub"}}).error.isEmpty());
+        QCOMPARE(last(), (QStringList{"copy", "/share/sub/act/b.txt", "/share/sub/b.txt"}));
+        QVERIFY(op({{"t", "fs.move"}, {"path", "/share/sub/b.txt"}, {"to", "/share"}}).error.isEmpty());
+        QCOMPARE(last(), (QStringList{"move", "/share/sub/b.txt", "/share/b.txt"}));
+        QVERIFY(op({{"t", "fs.delete"}, {"path", "/share/b.txt"}}).error.isEmpty());
+        QCOMPARE(last(), (QStringList{"delete", "/share/b.txt", ""}));
+
+        const qsizetype before = activity.size();
+        QVERIFY(!op({{"t", "fs.delete"}, {"path", "/share/missing.txt"}}).error.isEmpty());
+        QCOMPARE(activity.size(), before);  // only what happened
+        QVERIFY(QDir(share_ + "/sub/act").removeRecursively());
+    }
+
     void refusesUploadsOverTheLimitOrTheFreeSpace() {
         write(outside_ + "/eleven.txt", "eleven byte");
         link_->offerer->setUploadLimit(10);

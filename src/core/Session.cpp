@@ -59,6 +59,14 @@ Session::Session(QObject* parent)
             return permissionsFor(dev).contains(permission);
         },
         this);
+    connect(storage_, &StorageService::activity, this,
+            [this](const uconnect::DevId& dev, const QString& action, const QString& path, const QString& detail) {
+                const auto it   = peers_.find(dev);
+                const bool have = it != peers_.end();
+                const QString name = have && it->second.hello ? it->second.hello->name : shortId(hex(dev));
+                const QString key  = have && it->second.identity ? keyToHex(*it->second.identity) : QString();
+                emit storageActivity(hex(dev), name, key, action, path, detail);
+            });
     pollTimer_->setInterval(kPollInterval);
     snapshotTimer_->setInterval(kSnapshotInterval);
     connect(pollTimer_, &QTimer::timeout, this, &Session::poll);

@@ -500,6 +500,7 @@ void StorageService::serveRead(const uconnect::DevId& dev, const QJsonObject& re
     o.queue.push_back(encodeControl({{"t", "fs.read.r"}, {"id", qint64(*id)}, {"size", info.size()}, {"offset", offset}}));
     outgoing_.emplace(key, std::move(o));
     if (!pumpTimer_->isActive()) pumpTimer_->start(0);
+    if (offset == 0) emit activity(dev, QStringLiteral("download"), req.value("path").toString(), {});  // not again on resume
 }
 
 void StorageService::sendError(const uconnect::DevId& dev, quint32 id, const QString& code) {
@@ -748,6 +749,7 @@ void StorageService::onWriteEnd(const uconnect::DevId& dev, const QJsonObject& m
         return failIncoming(dev, *id, QStringLiteral("denied"));
     if (!in.file->flush()) return failIncoming(dev, *id, QStringLiteral("io"));
     QString finalPath;
+    const bool replaced = in.replace && QFileInfo::exists(QDir(in.folder).filePath(in.name));
     if (in.replace) {
         if (!authorize_(dev, perm::StorageWrite)) return failIncoming(dev, *id, QStringLiteral("forbidden"));
         finalPath = QDir(in.folder).filePath(in.name);
@@ -772,6 +774,7 @@ void StorageService::onWriteEnd(const uconnect::DevId& dev, const QJsonObject& m
     cachedPath_.clear();
     updateTicker();
     sendReliably(dev, {{"t", "fs.write.done"}, {"id", qint64(*id)}, {"path", remotePath}});
+    emit activity(dev, QStringLiteral("upload"), remotePath, replaced ? tr("replaced the file there") : QString());
 }
 
 void StorageService::onWriteReply(const uconnect::DevId& dev, const QJsonObject& msg) {
@@ -869,6 +872,7 @@ void StorageService::serveRename(const uconnect::DevId& dev, const QJsonObject& 
     cachedPath_.clear();
     sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
                          {"path", e->virtualParent + QLatin1Char('/') + name}});
+    emit activity(dev, QStringLiteral("rename"), req.value("path").toString(), name);
 }
 
 void StorageService::serveDelete(const uconnect::DevId& dev, const QJsonObject& req) {
@@ -889,6 +893,8 @@ void StorageService::serveDelete(const uconnect::DevId& dev, const QJsonObject& 
     sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
                          {"path", e->virtualParent + QLatin1Char('/') + QFileInfo(e->path).fileName()},
                          {"trashed", trashed}});
+    emit activity(dev, QStringLiteral("delete"), e->virtualParent + QLatin1Char('/') + QFileInfo(e->path).fileName(),
+                  trashed ? tr("moved to the trash") : QString());
 }
 
 void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& req) {
@@ -923,6 +929,7 @@ void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& r
     cachedPath_.clear();
     sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)},
                          {"path", parent + QLatin1Char('/') + QFileInfo(target).fileName()}});
+    emit activity(dev, QStringLiteral("mkdir"), parent + QLatin1Char('/') + QFileInfo(target).fileName(), {});
 }
 
 size_t StorageService::watchSignature(const QString& virtualPath) const {
@@ -1010,7 +1017,9 @@ void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject
     if (!copy && !alwaysCopyMoves_ && sameVolume(e->parent, dest->second)) {
         if (!QDir().rename(e->path, target)) return sendError(dev, *id, QStringLiteral("io"));
         cachedPath_.clear();
-        return sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)}, {"path", targetVirtual}});
+        sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(*id)}, {"path", targetVirtual}});
+        emit activity(dev, QStringLiteral("move"), e->virtualParent + QLatin1Char('/') + source.fileName(), targetVirtual);
+        return;
     }
 
     // A copy, or a move between drives (a copy and a delete), can take a
@@ -1022,7 +1031,7 @@ void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject
     if (static_cast<size_t>(mine) >= kMaxOutgoingPerPeer) return sendError(dev, *id, QStringLiteral("busy"));
 
     auto state = std::make_shared<JobState>();
-    jobs_.emplace(key, Job{state, targetVirtual, Clock::now()});
+    jobs_.emplace(key, Job{state, targetVirtual, Clock::now(), e->virtualParent + QLatin1Char('/') + source.fileName(), copy});
     updateTicker();
     const qint64 available = QStorageInfo(dest->second).bytesAvailable() - minimumFree_;
     runOffThread<QString>(
@@ -1048,9 +1057,11 @@ void StorageService::finishJob(const uconnect::DevId& dev, quint32 id, const QSt
     if (node.empty()) return;
     cachedPath_.clear();
     updateTicker();
-    if (code.isEmpty())
-        sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(id)}, {"path", node.mapped().target}});
-    else
+    const Job& job = node.mapped();
+    if (code.isEmpty()) {
+        sendReliably(dev, {{"t", "fs.done"}, {"id", qint64(id)}, {"path", job.target}});
+        emit activity(dev, job.copy ? QStringLiteral("copy") : QStringLiteral("move"), job.source, job.target);
+    } else
         sendReliably(dev, {{"t", "fs.err"}, {"id", qint64(id)}, {"code", code}, {"error", errorText(code)}});
 }
 

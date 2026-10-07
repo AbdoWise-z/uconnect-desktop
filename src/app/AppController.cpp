@@ -8,6 +8,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMetaObject>
 #include <QRegularExpression>
 #include <QSettings>
@@ -48,6 +50,12 @@ constexpr auto Trust          = "trust";  // a group per trusted public key
 }  // namespace Key
 
 constexpr int kMaxBatchFiles = 10000;
+constexpr int kMaxActivity   = 1000;
+
+// Kept beside the identity, one JSON object per line, oldest first.
+QString activityFile() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/storage-activity.jsonl");
+}
 
 // Where drag-out batches are fetched to before they are dragged out, and
 // files opened from another device before they are opened.
@@ -127,6 +135,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
         &identityWarning);
     myFingerprint_ = fingerprint(identity_->publicKey());
     loadTrust();
+    loadActivity();
 
     session_ = new Session;
     session_->moveToThread(&worker_);
@@ -147,6 +156,19 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
         peers_.setPeers(p);
     });
     connect(session_, &Session::logMessage, this, &AppController::appendLog);
+    connect(session_, &Session::storageActivity, this,
+            [this](const QString& devId, const QString& device, const QString& key, const QString& action,
+                   const QString& path, const QString& detail) {
+                addActivity({
+                    {"time", QDateTime::currentDateTime().toString(Qt::ISODate)},
+                    {"devId", devId},
+                    {"device", device.left(64)},
+                    {"fingerprint", key.isEmpty() ? QString() : fingerprintOfHex(key)},
+                    {"action", action},
+                    {"path", path},
+                    {"detail", detail},
+                });
+            });
     connect(session_, &Session::serverReport, this, [this](const QString& text) {
         serverReport_ = text;
     });
@@ -980,6 +1002,40 @@ void AppController::pushUploadLimit() {
 void AppController::pushHello() {
     Hello h{deviceName_, localOsName(), services_};
     onSession([s = session_, h] { s->setLocalHello(h); });
+}
+
+void AppController::addActivity(const QVariantMap& entry) {
+    activity_.prepend(entry);
+    while (activity_.size() > kMaxActivity) activity_.removeLast();
+    emit storageActivityChanged();
+    QDir().mkpath(QFileInfo(activityFile()).absolutePath());
+    QFile file(activityFile());
+    if (file.open(QIODevice::Append | QIODevice::Text))
+        file.write(QJsonDocument(QJsonObject::fromVariantMap(entry)).toJson(QJsonDocument::Compact) + '\n');
+}
+
+void AppController::loadActivity() {
+    QFile file(activityFile());
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+    const QList<QByteArray> lines = file.readAll().split('\n');
+    file.close();
+    for (const QByteArray& line : lines) {
+        const QJsonDocument doc = QJsonDocument::fromJson(line);
+        if (doc.isObject()) activity_.prepend(doc.object().toVariantMap());
+    }
+    // Keep the file from growing without end.
+    if (activity_.size() > kMaxActivity) {
+        activity_ = activity_.mid(0, kMaxActivity);
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+            for (auto it = activity_.crbegin(); it != activity_.crend(); ++it)
+                file.write(QJsonDocument(QJsonObject::fromVariantMap(it->toMap())).toJson(QJsonDocument::Compact) + '\n');
+    }
+}
+
+void AppController::clearStorageActivity() {
+    activity_.clear();
+    QFile::remove(activityFile());
+    emit storageActivityChanged();
 }
 
 void AppController::appendLog(const QString& line) {

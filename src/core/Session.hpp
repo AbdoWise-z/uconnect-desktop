@@ -127,6 +127,10 @@ signals:
     void snapshotChanged(const ucd::NodeSnapshot& snapshot);
     void logMessage(const QString& line);
     void serverReport(const QString& text);
+    // Another device changed or took something in a shared folder; see
+    // StorageService::activity(). `identityKey` is empty if unproven.
+    void storageActivity(const QString& devId, const QString& deviceName, const QString& identityKey,
+                         const QString& action, const QString& path, const QString& detail);
 
 private:
     using Clock = std::chrono::steady_clock;
