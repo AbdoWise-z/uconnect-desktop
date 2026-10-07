@@ -5,7 +5,7 @@ repository and the separately maintained Flutter mobile app. An app that
 follows this document can talk to any other, whatever language it is
 written in.
 
-Revision: **storage 1.3** (2026-10). Changes are listed at the end.
+Revision: **storage 1.3, sync 1.0** (2026-10). Changes are listed at the end.
 
 The words MUST, SHOULD and MAY are used as in RFC 2119.
 
@@ -32,6 +32,7 @@ Every message is `[u8 kind][payload]`:
 | 1 | Control: one UTF-8 JSON object, compact, with a string field `"t"` naming its type |
 | 2 | Storage download data: `[u32 id, big-endian][bytes]` |
 | 3 | Storage upload data: `[u32 id, big-endian][bytes]` |
+| 4 | Sync block data: `[u32 id, big-endian][bytes]` (section 6) |
 
 A receiver MUST ignore message kinds and `"t"` types it does not know. It
 MUST also ignore fields it does not know. Numbers are JSON numbers:
@@ -348,6 +349,188 @@ requester:
 
 It also shows names as plain text only.
 
+## 6. Folder sync
+
+A synced folder stays the same on every device that takes part. No device
+is in charge: each keeps an index of what it has, sends it to the others,
+and fetches what it lacks from whichever device has it. Changes reach every
+member through any chain of members that are online.
+
+### 6.1 Members and permissions
+
+- **Folder id.** A folder has a random 128-bit id (32 hex digits), the same
+  on every member, and a label.
+- **Who takes part.** Only a peer that has proven its identity (`id`,
+  section 3) **and** that this device trusts. Any other peer gets no sync
+  messages, and its sync messages are ignored.
+- **Grants.** Each device decides two things, per folder and per peer key:
+  - **send:** give the peer this folder's index and blocks.
+  - **accept:** take the peer's changes into this device's copy.
+
+  A device that is sent a folder but not accepted from keeps a copy without
+  changing anyone else's.
+- **Member id.** A member's id in version vectors is the first 16 hex digits
+  of SHA-256(its 32-byte public key).
+
+### 6.2 Messages
+
+| message | meaning |
+|---|---|
+| `{"t":"sync.offers", "folders":[{"id","label"}]}` | the folders this device sends the peer; sent on connect and when that changes |
+| `{"t":"sync.hello", "folder", "epoch", "peerEpoch", "seen"}` | "I take part in this folder." `epoch`: the sender's index epoch. `peerEpoch`/`seen`: how much of the receiver's index the sender has (`""`/0 if none) |
+| `{"t":"sync.index", "folder", "epoch", "full", "entries":[...]}` | index entries. `full:true` on the first message of a complete resend: the receiver drops what it held of that index |
+| `{"t":"sync.get", "id", "folder", "path", "block", "offset", "size", "hash"}` | ask for one block of a file |
+| kind 4 `[4][u32 id][bytes]` | the block, in frames of at most 256 KiB |
+| `{"t":"sync.err", "id", "code"}` | the block cannot be given: `forbidden`, `not_found`, `changed` or `io` |
+
+Epochs are unsigned 64-bit numbers, sent as decimal strings.
+
+A device answers a `sync.hello` from a peer it sends the folder to by
+sending its index:
+
+- If `peerEpoch` is the device's current epoch, it sends only the entries
+  changed after `seen`.
+- Otherwise it sends everything, with `full:true`.
+
+After that, it sends each change as it happens. Index messages hold about
+256 KiB of JSON each.
+
+A device sends **its own** index: what it has, including versions it got
+from other members. That is how changes travel through a member to devices
+that never meet the author.
+
+### 6.3 Index entries
+
+```json
+{"p":"docs/plan.md", "v":{"3f2a...":2, "9c01...":1}, "q":118,
+ "s":4096, "m":1791338181302, "h":"<sha256 hex>", "bs":131072, "b":["<sha256 hex>", ...]}
+```
+
+| field | meaning |
+|---|---|
+| `p` | path relative to the folder, `/`-separated; every component valid as in 5.1, none starting with `.syncpart-`, and never `.syncskip` at the top |
+| `v` | version vector: member id -> how many changes that member made to this path |
+| `q` | the sender's sequence number for this change; receivers remember the highest seen |
+| `del` | `true`: deleted (a tombstone); no size or blocks |
+| `dir` | `true`: a folder; no size or blocks |
+| `skip` | `true`: the sender no longer takes part in this path (its `.syncskip`); others leave the entry out |
+| `s`, `m` | size, and modification time in ms |
+| `h` | SHA-256 of the whole file |
+| `bs`, `b` | block size, and the SHA-256 of each block in order |
+
+A receiver MUST drop an entry with an invalid path, or whose block list
+does not match its size.
+
+**Block size** starts at 128 KiB and doubles until a file has at most 2000
+blocks, up to 16 MiB. The last block is the remainder.
+
+### 6.4 Versions and decisions
+
+**Comparing versions.** Version X is *newer* than Y if every counter in X is
+at least Y's and one is larger. If each has a counter higher than the
+other's, they are *concurrent*. Clocks never decide anything.
+
+**Local changes.** When a device finds a local change by scanning its
+folder, it records a version: its current one, with its own counter raised
+by one. A deleted path becomes a tombstone the same way.
+
+**Choosing.** For each path, a device looks at its own entry and the entries
+of every peer it accepts from. It sets aside any entry that another entry
+is newer than, and groups what is left by content. Then:
+
+- **One content.** Take it.
+  - If the device already has that content, it adopts the merged version
+    (the highest counter of each member), with no change on disk.
+  - Otherwise it fetches the file, creates the folder, or deletes.
+- **Several contents: a conflict.** Nothing on disk is overwritten.
+  - **The device's own change is one of them** (it holds one, with its own
+    counter higher than in all the others): the conflict waits for the
+    user.
+  - **It holds one, but didn't make the change:** it stays on the chain it
+    is on.
+  - **It is behind all of them:** it follows the version held by the
+    connected peer it has been connected to longest. If none is connected,
+    it waits.
+
+  In every case it tells the user.
+
+**Resolving a conflict.** The user can:
+
+- keep their own version;
+- take a peer's version (fetched first);
+- stop syncing the file (adds it to `.syncskip`).
+
+Whatever is kept gets the merged version of every candidate, plus one for
+the resolving device. That makes it newer than all of them, so it settles
+the conflict on every device it reaches.
+
+### 6.5 .syncignore and .syncskip
+
+Both use gitignore patterns:
+
+- `*` and `?` stay within one name; `**` spans folders.
+- A pattern with a `/` is anchored at the top.
+- A trailing `/` matches folders only.
+- `!` brings a match back, except inside an excluded folder.
+
+**`.syncignore`** sits at the top of the folder and syncs like any file,
+unless it ignores itself.
+
+- Ignored paths are not synced.
+- A path that was synced and becomes ignored counts as deleted for sync:
+  its tombstone goes out, but the file on disk is left alone. Members that
+  also ignore it disregard that tombstone.
+- A receiver MUST NOT apply deletes while a newer `.syncignore` is still
+  being fetched.
+
+**`.syncskip`** belongs to one device and never syncs. Paths matching it
+keep their local contents: changes to them are neither sent nor applied.
+The device's entry for such a path carries `skip:true`.
+
+### 6.6 Fetching and applying
+
+**Assembling a file.** A file is assembled from blocks already at hand
+before any are requested:
+
+- a part file left by an earlier attempt;
+- any file in the folder with the same block hash (renames, copies, earlier
+  versions).
+
+**Fetching missing blocks.**
+
+- They are requested from any member whose entry has the same content, at
+  most 16 at a time per peer.
+- Each block is checked against its hash.
+- On `sync.err` or a 30-second timeout, another holder is tried.
+
+**Replacing the file.**
+
+- The file is assembled in `.syncpart-<first 8 hex of the file hash>-<name>`
+  beside its target. Scanners skip such files.
+- When it is complete, its modification time is set and it replaces the
+  target in one step.
+- Before replacing or deleting anything, the device checks that the disk
+  still holds what its own index says. If not, it rescans first, so a
+  local change becomes a conflict instead of being lost.
+
+**Deletes** come after every fetch has taken the blocks it needs from the
+files about to go.
+
+- Deleted files go to the trash where there is one.
+- A folder that still holds files that are not synced is left in place.
+
+### 6.7 Safety rules
+
+These are MUSTs for any implementation:
+
+- Every path written or read resolves, with links followed, to a place
+  inside the folder.
+- Links are never synced, and never written through.
+- A device serves a block only if all of these hold:
+  - the requester is a peer it sends the folder to;
+  - the path is live in its own index;
+  - the block's hash matches what is on disk now.
+
 ## Changes
 
 | revision | change |
@@ -356,6 +539,7 @@ It also shows names as plain text only.
 | storage 1.1 | uploads (`fs.write`…, kind 3); `fs.rename`, `fs.delete`, `fs.mkdir`; `replace`; `storage.download` folded into `storage.read` |
 | storage 1.2 | `fs.mkdir` `existing`; `fs.move`, `fs.copy`, `fs.progress`; `fs.watch`, `fs.unwatch`, `fs.changed` |
 | storage 1.3 | `sha256` on `fs.read.end` and `fs.write.end`; `fs.read` `offset`; codes `corrupt`, `too_large`, `no_space`, `read_only`; `readOnly` in listings |
+| sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello`, `sync.index`, `sync.get`, `sync.err`, kind 4 |
 
 Every change so far only adds messages, fields and codes, so an older peer
 ignores what it does not know. A request type that a peer does not
