@@ -155,6 +155,7 @@ QString errorText(const QString& code) {
     if (code == QLatin1String("corrupt")) return StorageService::tr("The file was damaged on the way; try again.");
     if (code == QLatin1String("too_large")) return StorageService::tr("The file is larger than the device accepts.");
     if (code == QLatin1String("no_space")) return StorageService::tr("The device does not have enough free space.");
+    if (code == QLatin1String("read_only")) return StorageService::tr("This shared folder is read-only.");
     return StorageService::tr("The request failed.");
 }
 
@@ -338,7 +339,7 @@ void StorageService::setOffered(bool offered) {
     }
 }
 
-void StorageService::setSharedFolders(const QStringList& folders) {
+void StorageService::setSharedFolders(const QStringList& folders, const QStringList& readOnly) {
     while (!incoming_.empty()) {
         const auto key = incoming_.begin()->first;
         failIncoming(key.first, key.second, QStringLiteral("denied"));
@@ -363,7 +364,7 @@ void StorageService::setSharedFolders(const QStringList& folders) {
                                [&](const SharedFolder& f) { return f.name.compare(n, kPathCase) == 0; });
         };
         for (int n = 2; taken(name); ++n) name = QStringLiteral("%1 (%2)").arg(base).arg(n);
-        folders_.push_back({name, canonical});
+        folders_.push_back({name, canonical, readOnly.contains(path)});
     }
 }
 
@@ -433,8 +434,13 @@ void StorageService::serveList(const uconnect::DevId& dev, const QJsonObject& re
     const qint64  offset = std::max<qint64>(0, req.value("offset").toInteger());
 
     QJsonArray all;
+    bool       readOnly = false;
     if (path == QLatin1String("/")) {
-        for (const SharedFolder& f : folders_) all.append(entryJson(QFileInfo(f.canonical), f.name));
+        for (const SharedFolder& f : folders_) {
+            QJsonObject entry = entryJson(QFileInfo(f.canonical), f.name);
+            if (f.readOnly) entry.insert("readOnly", true);
+            all.append(entry);
+        }
     } else {
         QString    code;
         const auto resolved = resolve(path, &code);
@@ -442,7 +448,8 @@ void StorageService::serveList(const uconnect::DevId& dev, const QJsonObject& re
         const QFileInfo info(resolved->second);
         if (!info.isDir()) return sendError(dev, *id, QStringLiteral("not_a_dir"));
         if (!info.isReadable()) return sendError(dev, *id, QStringLiteral("denied"));
-        all = listing(resolved->second, *resolved->first);
+        all      = listing(resolved->second, *resolved->first);
+        readOnly = resolved->first->readOnly;
     }
 
     QJsonArray page;
@@ -453,6 +460,7 @@ void StorageService::serveList(const uconnect::DevId& dev, const QJsonObject& re
                    {"path", path},
                    {"offset", offset},
                    {"total", qint64(all.size())},
+                   {"readOnly", readOnly},
                    {"entries", page},
                }));
 }
@@ -657,6 +665,7 @@ void StorageService::serveWrite(const uconnect::DevId& dev, const QJsonObject& r
     QString code;
     const auto resolved = resolve(path, &code);
     if (!resolved) return failIncoming(dev, *id, code);
+    if (resolved->first->readOnly) return failIncoming(dev, *id, QStringLiteral("read_only"));
     if (!QFileInfo(resolved->second).isDir()) return failIncoming(dev, *id, QStringLiteral("not_a_dir"));
     if (!hasRoomFor(resolved->second, total)) return failIncoming(dev, *id, QStringLiteral("no_space"));
 
@@ -846,6 +855,7 @@ void StorageService::serveRename(const uconnect::DevId& dev, const QJsonObject& 
     QString    code;
     const auto e = resolveEntry(req.value("path").toString(), &code);
     if (!e) return sendError(dev, *id, code);
+    if (e->folder->readOnly) return sendError(dev, *id, QStringLiteral("read_only"));
     const QString name = req.value("name").toString();
     if (!isAcceptableName(name)) return sendError(dev, *id, QStringLiteral("bad_request"));
 
@@ -870,6 +880,7 @@ void StorageService::serveDelete(const uconnect::DevId& dev, const QJsonObject& 
     QString    code;
     const auto e = resolveEntry(req.value("path").toString(), &code);
     if (!e) return sendError(dev, *id, code);
+    if (e->folder->readOnly) return sendError(dev, *id, QStringLiteral("read_only"));
 
     const bool trashed = useTrash_ && QFile::moveToTrash(e->path);
     if (!trashed && !removeEntry(QFileInfo(e->path))) return sendError(dev, *id, QStringLiteral("io"));
@@ -892,6 +903,7 @@ void StorageService::serveMkdir(const uconnect::DevId& dev, const QJsonObject& r
     QString    code;
     const auto resolved = resolve(path, &code);
     if (!resolved) return sendError(dev, *id, code);
+    if (resolved->first->readOnly) return sendError(dev, *id, QStringLiteral("read_only"));
     if (!QFileInfo(resolved->second).isDir()) return sendError(dev, *id, QStringLiteral("not_a_dir"));
 
     const QString parent = virtualPath(path.split(QLatin1Char('/'), Qt::SkipEmptyParts));
@@ -982,6 +994,7 @@ void StorageService::serveTransfer(const uconnect::DevId& dev, const QJsonObject
     const auto    dest = resolve(to, &code);
     if (!dest) return sendError(dev, *id, code);
     if (!QFileInfo(dest->second).isDir()) return sendError(dev, *id, QStringLiteral("not_a_dir"));
+    if ((!copy && e->folder->readOnly) || dest->first->readOnly) return sendError(dev, *id, QStringLiteral("read_only"));
 
     const QFileInfo source(e->path);
     const bool      link = source.isSymLink() || source.isJunction();
@@ -1165,6 +1178,7 @@ void StorageService::onListPage(const uconnect::DevId& dev, const QJsonObject& m
     const auto it = id ? lists_.find(*id) : lists_.end();
     if (it == lists_.end() || it->second.dev != dev) return;
     PendingList& p = it->second;
+    p.readOnly = msg.value("readOnly").toBool();
 
     const QJsonArray entries = msg.value("entries").toArray();
     for (const QJsonValue& v : entries) {
@@ -1178,6 +1192,7 @@ void StorageService::onListPage(const uconnect::DevId& dev, const QJsonObject& m
             {"dir", e.value("dir").toBool()},
             {"size", e.value("size").toDouble()},
             {"mtime", e.value("mtime").toDouble()},
+            {"readOnly", e.value("readOnly").toBool()},
         });
     }
     if (p.entries.size() > kMaxEntries) return finishList(*id, tr("This folder has too many entries to show."));
@@ -1285,7 +1300,8 @@ void StorageService::finishList(quint32 id, const QString& error) {
     auto node = lists_.extract(id);
     if (node.empty()) return;
     updateTicker();
-    emit listFinished(id, node.mapped().path, error.isEmpty() ? node.mapped().entries : QVariantList{}, error);
+    emit listFinished(id, node.mapped().path, error.isEmpty() ? node.mapped().entries : QVariantList{}, error,
+                      node.mapped().readOnly);
 }
 
 void StorageService::finishDownload(quint32 id, const QString& error, bool keepPart) {

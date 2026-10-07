@@ -40,6 +40,7 @@ constexpr auto RememberTopic  = "rememberTopic";
 constexpr auto Verbose        = "verboseLogging";
 constexpr auto DebugOnStartup = "debugOnStartup";
 constexpr auto SharedFolders  = "storage/sharedFolders";
+constexpr auto ReadOnly       = "storage/readOnlyFolders";
 constexpr auto DownloadFolder = "storage/downloadFolder";
 constexpr auto MaxUploadMB    = "storage/maxUploadMB";
 constexpr auto DefaultPerms   = "permissions/defaults";
@@ -105,6 +106,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     verbose_        = settings.value(Key::Verbose, false).toBool() || options.verbose;
     debugOnStartup_ = settings.value(Key::DebugOnStartup, false).toBool();
     sharedFolders_  = settings.value(Key::SharedFolders).toStringList();
+    readOnlyFolders_ = settings.value(Key::ReadOnly).toStringList();
     downloadFolder_ = settings.value(Key::DownloadFolder,
                                      QStandardPaths::writableLocation(QStandardPaths::DownloadLocation))
                           .toString();
@@ -151,9 +153,9 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
 
     StorageService* storage = session_->storage();
     connect(storage, &StorageService::listFinished, this,
-            [this](quint32 id, const QString& path, const QVariantList& entries, const QString& error) {
+            [this](quint32 id, const QString& path, const QVariantList& entries, const QString& error, bool readOnly) {
                 if (batchLists_.contains(id)) onBatchList(id, entries, error);
-                else emit storageListed(id, path, entries, error);
+                else emit storageListed(id, path, entries, error, readOnly);
             });
     connect(storage, &StorageService::downloadProgress, this, [this](quint32 id, qint64 received, qint64 total) {
         transfers_.progress(id, received, total);
@@ -290,6 +292,21 @@ void AppController::applySettings(const QVariantMap& values) {
         if (folders != sharedFolders_) {
             sharedFolders_ = folders;
             settings.setValue(Key::SharedFolders, folders);
+            emit settingsChanged();
+            pushSharedFolders();
+        }
+    }
+    if (values.contains(QStringLiteral("readOnlyFolders")) || values.contains(QStringLiteral("sharedFolders"))) {
+        // Only folders still shared; a removed one forgets the setting.
+        const QStringList asked = values.contains(QStringLiteral("readOnlyFolders"))
+                                      ? values.value(QStringLiteral("readOnlyFolders")).toStringList()
+                                      : readOnlyFolders_;
+        QStringList readOnly;
+        for (const QString& f : asked)
+            if (sharedFolders_.contains(f) && !readOnly.contains(f)) readOnly << f;
+        if (readOnly != readOnlyFolders_) {
+            readOnlyFolders_ = readOnly;
+            settings.setValue(Key::ReadOnly, readOnly);
             emit settingsChanged();
             pushSharedFolders();
         }
@@ -951,7 +968,9 @@ void AppController::pushAccessPolicy() {
 }
 
 void AppController::pushSharedFolders() {
-    onSession([s = session_, folders = sharedFolders_] { s->setSharedFolders(folders); });
+    onSession([s = session_, folders = sharedFolders_, readOnly = readOnlyFolders_] {
+        s->setSharedFolders(folders, readOnly);
+    });
 }
 
 void AppController::pushUploadLimit() {

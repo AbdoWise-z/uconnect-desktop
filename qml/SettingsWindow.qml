@@ -44,6 +44,7 @@ Window {
         property bool verboseLogging
         property bool debugOnStartup
         property var sharedFolders: []
+        property var readOnlyFolders: []
         property string downloadFolder
         property int maxUploadMB: 0
         property var defaultPermissions: []
@@ -65,6 +66,7 @@ Window {
                                      || draft.sharedFolders.join("
 ") !== App.sharedFolders.join("
 ")
+                                     || !sameServices(draft.readOnlyFolders, App.readOnlyFolders)
                                      || draft.downloadFolder !== App.downloadFolder
                                      || draft.maxUploadMB !== App.maxUploadMB
                                      || !sameServices(draft.defaultPermissions, App.defaultPermissions)
@@ -79,6 +81,7 @@ Window {
         draft.verboseLogging = App.verboseLogging
         draft.debugOnStartup = App.debugOnStartup
         draft.sharedFolders = App.sharedFolders.slice()
+        draft.readOnlyFolders = App.readOnlyFolders.slice()
         draft.downloadFolder = App.downloadFolder
         draft.maxUploadMB = App.maxUploadMB
         draft.defaultPermissions = App.defaultPermissions.slice()
@@ -95,6 +98,7 @@ Window {
             verboseLogging: draft.verboseLogging,
             debugOnStartup: draft.debugOnStartup,
             sharedFolders: draft.sharedFolders,
+            readOnlyFolders: draft.readOnlyFolders.filter(f => draft.sharedFolders.indexOf(f) >= 0),
             downloadFolder: draft.downloadFolder,
             maxUploadMB: draft.maxUploadMB,
             defaultPermissions: draft.defaultPermissions,
@@ -111,6 +115,12 @@ Window {
     function toggleUntrust(key) {
         draft.untrust = draft.untrust.indexOf(key) >= 0 ? draft.untrust.filter(k => k !== key)
                                                         : draft.untrust.concat([key])
+    }
+
+    function setReadOnly(folder, on) {
+        const next = draft.readOnlyFolders.filter(f => f !== folder)
+        if (on) next.push(folder)
+        draft.readOnlyFolders = next
     }
 
     function offers(service) {
@@ -424,7 +434,7 @@ Window {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             x: 10
-                            width: parent.width - 20
+                            width: parent.width - readOnlyBox.width - 30
                             text: folderRow.modelData
                             textFormat: Text.PlainText
                             elide: Text.ElideMiddle
@@ -435,6 +445,15 @@ Window {
                             anchors.fill: parent
                             hoverEnabled: true
                             onClicked: storage.selected = folderRow.index
+                        }
+                        UCheckBox {
+                            id: readOnlyBox
+                            anchors.right: parent.right
+                            anchors.rightMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Read-only")
+                            checked: draft.readOnlyFolders.indexOf(folderRow.modelData) >= 0
+                            onToggled: dlg.setReadOnly(folderRow.modelData, checked)
                         }
                     }
                     Text {
@@ -466,6 +485,7 @@ Window {
                 visible: dlg.offers("storage") && draft.sharedFolders.length > 0
                 kind: "error"
                 text: qsTr("Everything inside these folders, including hidden files and subfolders, can be read by every device that has this topic's invite link.")
+                      + " " + qsTr("Read-only folders cannot be changed by other devices, whatever you allow them.")
             }
             Help {
                 visible: dlg.offers("storage") && draft.sharedFolders.length === 0

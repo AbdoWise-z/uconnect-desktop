@@ -524,6 +524,38 @@ private slots:
         QVERIFY(!QFile::exists(part));
     }
 
+    void readOnlySharesRefuseEveryChange() {
+        QVERIFY(QDir().mkpath(share_ + "/sub/keep"));
+        link_->granted.insert(perm::StorageWrite);
+        link_->offerer->setSharedFolders({share_}, {share_});
+        QVariantList root;
+        {
+            QSignalSpy spy(link_->requester.get(), &StorageService::listFinished);
+            const quint32 id = nextId();
+            link_->requester->list(kOfferer, "/share/sub", id);
+            QVERIFY(spy.wait(5000));
+            QCOMPARE(spy.first().at(4).toBool(), true);
+            link_->requester->list(kOfferer, "/", nextId());
+            QVERIFY(spy.wait(5000));
+            root = spy.last().at(2).toList();
+        }
+        QCOMPARE(root.first().toMap().value("readOnly").toBool(), true);
+
+        write(outside_ + "/ro.txt", "ro");
+        QVERIFY(upload(outside_ + "/ro.txt").error.contains("read-only"));
+        auto refused = [&](const QJsonObject& request) { return op(request).error.contains("read-only"); };
+        QVERIFY(refused({{"t", "fs.mkdir"}, {"path", "/share/sub"}, {"name", "x"}}));
+        QVERIFY(refused({{"t", "fs.rename"}, {"path", "/share/sub/keep"}, {"name", "y"}}));
+        QVERIFY(refused({{"t", "fs.delete"}, {"path", "/share/sub/keep"}}));
+        QVERIFY(refused({{"t", "fs.move"}, {"path", "/share/sub/keep"}, {"to", "/share"}}));
+        QVERIFY(refused({{"t", "fs.copy"}, {"path", "/share/hello.txt"}, {"to", "/share/sub"}}));
+        QVERIFY(QFileInfo(share_ + "/sub/keep").isDir());
+        QVERIFY(!QFileInfo::exists(share_ + "/sub/x") && !QFileInfo::exists(share_ + "/sub/hello.txt"));
+        QVERIFY(download("/share/hello.txt").error.isEmpty());  // reading is unaffected
+        QFile::remove(downloads_ + "/hello.txt");
+        QVERIFY(QDir().rmdir(share_ + "/sub/keep"));
+    }
+
     void refusesUploadsOverTheLimitOrTheFreeSpace() {
         write(outside_ + "/eleven.txt", "eleven byte");
         link_->offerer->setUploadLimit(10);

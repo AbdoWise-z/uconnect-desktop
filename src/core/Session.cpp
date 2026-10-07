@@ -204,8 +204,8 @@ void Session::refreshNow() {
     if (topic_) poll();
 }
 
-void Session::setSharedFolders(const QStringList& folders) {
-    storage_->setSharedFolders(folders);
+void Session::setSharedFolders(const QStringList& folders, const QStringList& readOnly) {
+    storage_->setSharedFolders(folders, readOnly);
 }
 
 void Session::setUploadLimit(qint64 bytes) {

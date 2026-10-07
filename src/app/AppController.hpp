@@ -46,6 +46,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool verboseLogging READ verboseLogging NOTIFY settingsChanged)
     Q_PROPERTY(bool debugOnStartup READ debugOnStartup NOTIFY settingsChanged)
     Q_PROPERTY(QStringList sharedFolders READ sharedFolders NOTIFY settingsChanged)
+    // Those of sharedFolders that other devices may not change.
+    Q_PROPERTY(QStringList readOnlyFolders READ readOnlyFolders NOTIFY settingsChanged)
     Q_PROPERTY(QString downloadFolder READ downloadFolder NOTIFY settingsChanged)
     // Largest upload this device accepts, in MB; 0 for no limit.
     Q_PROPERTY(int maxUploadMB READ maxUploadMB NOTIFY settingsChanged)
@@ -84,6 +86,7 @@ public:
     bool        verboseLogging() const { return verbose_; }
     bool        debugOnStartup() const { return debugOnStartup_; }
     QStringList sharedFolders() const { return sharedFolders_; }
+    QStringList readOnlyFolders() const { return readOnlyFolders_; }
     QString     downloadFolder() const { return downloadFolder_; }
     int         maxUploadMB() const { return maxUploadMB_; }
 
@@ -114,7 +117,8 @@ public:
     Q_INVOKABLE bool isValidServer(const QString& address) const;
     Q_INVOKABLE void completeFirstRun(const QString& server, const QString& name);
     // Keys: server, deviceName, services, autoConnect, rememberTopic,
-    // verboseLogging, debugOnStartup, sharedFolders, downloadFolder, maxUploadMB,
+    // verboseLogging, debugOnStartup, sharedFolders, readOnlyFolders,
+    // downloadFolder, maxUploadMB,
     // defaultPermissions, and untrust (public keys to stop trusting).
     // Absent keys are left unchanged.
     Q_INVOKABLE void applySettings(const QVariantMap& values);
@@ -194,8 +198,9 @@ signals:
     void snapshotChanged();
     // A short, transient message for the status bar.
     void notify(const QString& message);
+    // `readOnly`: the folder is in a share its device keeps read-only.
     void storageListed(quint32 requestId, const QString& path, const QVariantList& entries,
-                       const QString& error);
+                       const QString& error, bool readOnly);
     void storageUploaded(const QString& devId, const QString& remotePath);
     void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
     void storageOperationProgress(quint32 requestId, const QString& devId, qint64 done, qint64 total);
@@ -240,6 +245,7 @@ private:
     bool     debugOnStartup_ = false;
     QString  topicLink_;
     QStringList sharedFolders_;
+    QStringList readOnlyFolders_;
     QString     downloadFolder_;
     int         maxUploadMB_ = 0;
 

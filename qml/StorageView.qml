@@ -25,6 +25,7 @@ Item {
     property string error: ""
     property alias transfersOpen: transfers.open
     property string shownPath: ""  // what the listing shows
+    property bool folderReadOnly: false  // the device keeps this share read-only
     // The device reports changes to the folder shown (live refresh).
     property real watchId: -1
     property string watchedPath: ""
@@ -34,7 +35,7 @@ Item {
         return peer.grantedToMe !== undefined && peer.grantedToMe.indexOf(permission) >= 0
     }
     readonly property bool canRead: granted("storage.read")
-    readonly property bool canWrite: granted("storage.write")
+    readonly property bool canWrite: granted("storage.write") && !folderReadOnly
     readonly property bool uploadGranted: granted("storage.upload")
     readonly property bool canUpload: canUploadTo(path)
 
@@ -73,7 +74,7 @@ Item {
         return "/" + text.split("/").filter(s => s.length > 0).join("/")
     }
     function canUploadTo(folder) {
-        return connected && uploadGranted && folder !== "/" && !loading && error.length === 0
+        return connected && uploadGranted && folder !== "/" && !loading && error.length === 0 && !folderReadOnly
     }
 
     function watch(folder) {
@@ -341,9 +342,10 @@ Item {
     Connections {
         target: App
         ignoreUnknownSignals: true
-        function onStorageListed(requestId, listedPath, list, err) {
+        function onStorageListed(requestId, listedPath, list, err, readOnly) {
             if (requestId !== view.pendingId) return
             view.loading = false
+            view.folderReadOnly = readOnly === true
             // A refresh of the same folder keeps the selection and the scroll position.
             const same = listedPath === view.shownPath && err.length === 0
             const kept = same ? view.selectedItems().map(i => i.name) : []
@@ -363,7 +365,7 @@ Item {
             let current = 0
             for (const e of list) {
                 const on = kept.indexOf(e.name) >= 0
-                entries.append(Object.assign({ selected: on }, e))
+                entries.append(Object.assign({ selected: on, readOnly: false }, e))
                 if (on) ++view.selectedCount
                 if (e.name === currentName) current = entries.count - 1
                 if (e.name === anchorName) view.anchorIndex = entries.count - 1
@@ -647,6 +649,7 @@ Item {
                     required property real size
                     required property real mtime
                     required property bool selected
+                    required property bool readOnly
 
                     readonly property bool hovered: index === view.hoveredIndex
                     width: ListView.view.width
@@ -713,11 +716,18 @@ Item {
                                 }
                             }
                             Text {
-                                Layout.fillWidth: true
+                                Layout.fillWidth: !row.readOnly
                                 text: row.name
                                 textFormat: Text.PlainText
                                 elide: Text.ElideRight
                                 color: Theme.text
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: row.readOnly
+                                text: qsTr("read-only")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.smallFontSize
                             }
                         }
                         Text {
@@ -965,6 +975,7 @@ Item {
                         text: !view.connected ? qsTr("Connect to this device first.")
                               : !view.uploadGranted ? qsTr("Ask this device to grant upload permission.")
                               : view.path === "/" ? qsTr("Drop onto one of the shared folders.")
+                      : view.folderReadOnly ? qsTr("%1 keeps this folder read-only.").arg(view.deviceName)
                               : !view.canUpload ? qsTr("Wait for the folder to load, or retry the listing.")
                               : qsTr("Upload to %1, or drop onto a folder to upload into it.").arg(view.path)
                     }
@@ -1006,6 +1017,8 @@ Item {
             Item { Layout.fillWidth: true }
             Text {
                 text: view.path === "/" ? qsTr("Open a shared folder to upload files.")
+                      : view.folderReadOnly && view.canRead ? qsTr("Read-only · drag items out to download")
+                      : view.folderReadOnly ? qsTr("Read-only")
                       : view.uploadGranted && view.canRead ? qsTr("Drop files here to upload · drag items out to download")
                       : view.uploadGranted ? qsTr("Drop files here to upload")
                       : view.canRead ? qsTr("Drag items out to download")

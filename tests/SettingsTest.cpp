@@ -128,6 +128,18 @@ private slots:
         QCOMPARE(restarted.defaultPermissions(), QStringList{QStringLiteral("storage.upload")});
     }
 
+    void keepsReadOnlyOnlyForSharedFolders() {
+        const QString a = QDir(temp_.path()).filePath("A"), b = QDir(temp_.path()).filePath("B");
+        controller_->applySettings({{"sharedFolders", QStringList{a, b}}, {"readOnlyFolders", QStringList{b, "C:/not/shared"}}});
+        QCOMPARE(controller_->readOnlyFolders(), QStringList{b});
+        controller_->applySettings({{"sharedFolders", QStringList{a}}});  // B no longer shared
+        QVERIFY(controller_->readOnlyFolders().isEmpty());
+        controller_->applySettings({{"readOnlyFolders", QStringList{a}}});
+        QSettings().sync();
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QCOMPARE(restarted.readOnlyFolders(), QStringList{a});
+    }
+
     void appliesTheUploadLimit() {
         QObject* settingsDraft = draft();
         QVERIFY(settingsDraft);

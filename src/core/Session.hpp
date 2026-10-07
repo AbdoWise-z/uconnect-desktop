@@ -108,7 +108,7 @@ public:
     void requestTopicListing();
 
     // Storage: this device's shared folders, and requests to other devices'.
-    void setSharedFolders(const QStringList& folders);
+    void setSharedFolders(const QStringList& folders, const QStringList& readOnly = {});
     void setUploadLimit(qint64 bytes);
     void storageList(const QString& devId, const QString& path, quint32 requestId);
     void storageDownload(const QString& devId, const QString& remotePath, const QString& folder, quint32 requestId);

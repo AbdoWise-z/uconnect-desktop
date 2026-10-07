@@ -33,6 +33,7 @@ public:
     bool replaced = false;
     quint32 requestId = 0;
     QVariantList listing;  // what every storageList() returns
+    bool listingReadOnly = false;
     QVariantList dragItems;
     QList<quint32> canceledBatches;
     QVariantList downloadedItems;
@@ -48,7 +49,7 @@ public:
 
     Q_INVOKABLE quint32 storageList(const QString&, const QString& path) {
         const quint32 id = ++requestId;
-        QTimer::singleShot(0, this, [this, id, path] { emit storageListed(id, path, listing, {}); });
+        QTimer::singleShot(0, this, [this, id, path] { emit storageListed(id, path, listing, {}, listingReadOnly); });
         return id;
     }
     Q_INVOKABLE int storageUpload(const QString&, const QString& folder, const QList<QUrl>& files,
@@ -94,7 +95,8 @@ public:
     Q_INVOKABLE void copyText(const QString&) {}
     Q_INVOKABLE void showInFolder(const QString&) {}
 signals:
-    void storageListed(quint32 requestId, const QString& path, const QVariantList& entries, const QString& error);
+    void storageListed(quint32 requestId, const QString& path, const QVariantList& entries, const QString& error,
+                       bool readOnly);
     void storageUploaded(const QString& devId, const QString& remotePath);
     void storageOperationFinished(quint32 requestId, const QString& devId, const QString& path, const QString& error);
     void storageOperationProgress(quint32 requestId, const QString& devId, qint64 done, qint64 total);
@@ -199,6 +201,7 @@ private slots:
         app_.destination.clear();
         app_.replaced = false;
         app_.listing.clear();
+        app_.listingReadOnly = false;
         app_.dragItems.clear();
         app_.canceledBatches.clear();
         app_.downloadedItems.clear();
@@ -334,6 +337,27 @@ private slots:
 
         QTest::mouseDClick(window_.get(), Qt::LeftButton, Qt::NoModifier, rowPoint(0));
         QCOMPARE(view_->property("path").toString(), QStringLiteral("/share/sub/docs"));
+    }
+
+    // In a read-only share nothing that changes it is offered or accepted.
+    void readOnlyFoldersOfferNoChanges() {
+        grant(true, {ucd::perm::StorageWrite, ucd::perm::StorageRead});
+        app_.listingReadOnly = true;
+        show({entry("docs", true), entry("a.txt")});
+        QVERIFY(!view_->property("canUpload").toBool());
+        QVERIFY(!view_->property("canWrite").toBool());
+        QVERIFY(!dropAt({QUrl::fromLocalFile("C:/tmp/notes.txt")}, rowPoint(5)));
+        QVERIFY(app_.uploaded.isEmpty());
+        click(1);
+        QTest::keyClick(window_.get(), Qt::Key_X, Qt::ControlModifier);
+        QVERIFY(view_->property("clipboard").toMap().value("paths").toList().isEmpty());
+        QTest::keyClick(window_.get(), Qt::Key_C, Qt::ControlModifier);  // copying out is fine
+        QCOMPARE(view_->property("clipboard").toMap().value("mode").toString(), QStringLiteral("copy"));
+
+        app_.listingReadOnly = false;
+        show({entry("docs", true), entry("a.txt")});
+        QVERIFY(view_->property("canUpload").toBool());
+        QVERIFY(view_->property("canWrite").toBool());
     }
 
     // The folder shown is watched; a change reloads it, keeping the selection.

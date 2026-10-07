@@ -28,8 +28,10 @@
 //       files or folders, into `to`; a name already there gets a suffix
 //
 //   offerer -> requester
-//     kind 1  {"t":"fs.list.r", "id", "path", "offset", "total",
+//     kind 1  {"t":"fs.list.r", "id", "path", "offset", "total", "readOnly",
 //              "entries":[{"name", "dir", "size", "mtime"}]}       mtime: ms since epoch
+//              readOnly: the listed folder is in a read-only share; at "/"
+//              each shared folder's entry carries its own "readOnly"
 //     kind 1  {"t":"fs.read.r", "id", "size", "offset"}   then the file from
 //                                                    `offset` (0 if it could
 //                                                    not resume there) as
@@ -48,7 +50,10 @@
 //             while a copy (or a move between drives) runs; bytes
 //       code: not_offered | forbidden | not_found | denied | not_a_dir |
 //             not_a_file | busy | io | bad_request | exists | root | inside |
-//             corrupt | too_large | no_space
+//             corrupt | too_large | no_space | read_only
+//
+// A shared folder can be read-only: nothing in it can be uploaded, created,
+// renamed, deleted or moved out (read_only), whatever the permissions.
 //
 // An offerer refuses an upload larger than its limit (too_large), and an
 // upload or copy that would leave its disk with less than a margin free
@@ -118,7 +123,8 @@ public:
 
     // --- offerer ---
     void setOffered(bool offered);
-    void setSharedFolders(const QStringList& folders);
+    // `readOnly`: those of `folders` that may not be changed.
+    void setSharedFolders(const QStringList& folders, const QStringList& readOnly = {});
 
     // --- requester ---
     void list(const uconnect::DevId& dev, const QString& path, quint32 id);
@@ -150,7 +156,9 @@ public:
     void reset();
 
 signals:
-    void listFinished(quint32 id, const QString& path, const QVariantList& entries, const QString& error);
+    // `readOnly`: the folder is in a share the device keeps read-only.
+    void listFinished(quint32 id, const QString& path, const QVariantList& entries, const QString& error,
+                      bool readOnly = false);
     void downloadProgress(quint32 id, qint64 received, qint64 total);
     void downloadFinished(quint32 id, const QString& localPath, const QString& error);
     void uploadProgress(quint32 id, qint64 sent, qint64 total);
@@ -166,6 +174,7 @@ private:
     struct SharedFolder {
         QString name;       // what requesters see
         QString canonical;  // where it is
+        bool    readOnly = false;
     };
     struct Outgoing {  // a file being sent
         uconnect::DevId                  dev{};
@@ -184,6 +193,7 @@ private:
         QString           path;
         QVariantList      entries;
         Clock::time_point deadline;
+        bool              readOnly = false;
     };
     struct Download {
         uconnect::DevId        dev{};
