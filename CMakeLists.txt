@@ -18,6 +18,7 @@ find_package(Qt6 6.5 REQUIRED
     COMPONENTS Core Gui Network Qml Quick QuickControls2 OpenGL Test
     HINTS ${_ucd_qt_hints})
 qt_standard_project_setup(REQUIRES 6.5)
+set(_ucd_deploy_qmldir "${CMAKE_SOURCE_DIR}/qml")
 
 # --- uconnect ----------------------------------------------------------------
 include(FetchContent)
@@ -109,8 +110,33 @@ add_library(uconnect_desktop_core STATIC
 target_include_directories(uconnect_desktop_core PUBLIC src)
 target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Core Qt6::Network uconnect PRIVATE monocypher)
 if (UCD_SCREEN_AVAILABLE)
+    target_sources(uconnect_desktop_core PRIVATE
+        src/core/screen/Codec.cpp src/core/screen/Codec.hpp
+        src/core/screen/ScreenService.cpp src/core/screen/ScreenService.hpp)
     target_compile_definitions(uconnect_desktop_core PUBLIC UCD_HAS_SCREEN)
     target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Multimedia ucd_ffmpeg_shared)
+endif ()
+if (NOT UCD_SCREEN_AVAILABLE)
+    # Do not ask deployment tools to import Qt Multimedia from unused views.
+    set(_ucd_deploy_qmldir "${CMAKE_BINARY_DIR}/deploy-qml")
+    file(MAKE_DIRECTORY "${_ucd_deploy_qmldir}")
+    file(GLOB _ucd_base_qml "${CMAKE_SOURCE_DIR}/qml/*.qml")
+    list(REMOVE_ITEM _ucd_base_qml "${CMAKE_SOURCE_DIR}/qml/ScreenView.qml" "${CMAKE_SOURCE_DIR}/qml/ScreenSafety.qml")
+    file(COPY ${_ucd_base_qml} DESTINATION "${_ucd_deploy_qmldir}")
+endif ()
+
+add_library(uconnect_desktop_screen_ui STATIC
+    src/app/ScreenController.cpp src/app/ScreenController.hpp
+    src/core/screen/StopShortcut.cpp src/core/screen/StopShortcut.hpp)
+target_link_libraries(uconnect_desktop_screen_ui PUBLIC uconnect_desktop_core Qt6::Gui)
+if (APPLE)
+    target_link_libraries(uconnect_desktop_screen_ui PRIVATE "-framework Carbon")
+elseif (UNIX)
+    find_package(X11 QUIET)
+    if (X11_FOUND)
+        target_compile_definitions(uconnect_desktop_screen_ui PRIVATE UCD_HAS_X11)
+        target_link_libraries(uconnect_desktop_screen_ui PRIVATE X11::X11)
+    endif ()
 endif ()
 if (NOT MSVC)
     target_compile_options(uconnect_desktop_core PRIVATE -Wall -Wextra)
@@ -131,6 +157,9 @@ if (QT_KNOWN_POLICY_QTP0004)
     qt_policy(SET QTP0004 NEW)
 endif ()
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+if (UCD_SCREEN_AVAILABLE)
+    set(_ucd_screen_qml qml/ScreenView.qml qml/ScreenSafety.qml)
+endif ()
 qt_add_qml_module(uconnect_desktop
     URI UConnectDesktop
     VERSION 1.0
@@ -155,6 +184,7 @@ qt_add_qml_module(uconnect_desktop
         qml/PreviewPopup.qml
         qml/SyncWindow.qml
         qml/TransfersPopup.qml
+        ${_ucd_screen_qml}
         # controls
         qml/UButton.qml
         qml/UToolButton.qml
@@ -173,6 +203,7 @@ qt_add_qml_module(uconnect_desktop
 
 target_link_libraries(uconnect_desktop PRIVATE
     uconnect_desktop_core
+    uconnect_desktop_screen_ui
     Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
 ucd_deploy_screen(uconnect_desktop)
 
@@ -206,7 +237,7 @@ if (APPLE)
         NO_DEFAULT_PATH REQUIRED)
     add_custom_command(TARGET uconnect_desktop POST_BUILD
         COMMAND "${UCD_MACDEPLOYQT}" "$<TARGET_BUNDLE_DIR:uconnect_desktop>"
-                "-qmldir=${CMAKE_CURRENT_SOURCE_DIR}/qml" -always-overwrite -codesign=-
+                "-qmldir=${_ucd_deploy_qmldir}" -always-overwrite -codesign=-
         COMMENT "Deploying Qt runtime inside the macOS app bundle"
         VERBATIM)
 endif ()
@@ -219,7 +250,7 @@ if (WIN32)
         HINTS "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}" NO_DEFAULT_PATH REQUIRED)
     add_custom_command(TARGET uconnect_desktop POST_BUILD
         COMMAND "${UCD_WINDEPLOYQT}" --no-translations --no-compiler-runtime --no-opengl-sw
-                --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml" "$<TARGET_FILE:uconnect_desktop>"
+                --qmldir "${_ucd_deploy_qmldir}" "$<TARGET_FILE:uconnect_desktop>"
         COMMENT "Deploying Qt runtime next to uconnect_desktop"
         VERBATIM)
 
@@ -254,7 +285,11 @@ if (UCD_BUILD_TESTS)
         qt_add_executable(${name} tests/${name}.cpp)
         set_target_properties(${name} PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
         target_link_libraries(${name} PRIVATE uconnect_desktop_core Qt6::Test)
-        add_test(NAME ${name} COMMAND ${name})
+        add_test(NAME ${name} COMMAND ${CMAKE_COMMAND}
+            "-DUCD_TEST_EXE=$<TARGET_FILE:${name}>" "-DUCD_TEST_LOG=${CMAKE_BINARY_DIR}/${name}.txt"
+            -P "${CMAKE_SOURCE_DIR}/cmake/RunTest.cmake")
+        set_tests_properties(${name} PROPERTIES TIMEOUT 120)
+        ucd_deploy_screen(${name})
         if (WIN32)
             set_tests_properties(${name} PROPERTIES ENVIRONMENT_MODIFICATION "${_ucd_test_path}")
         endif ()
@@ -265,7 +300,18 @@ if (UCD_BUILD_TESTS)
     ucd_add_test(ScreenTransportTest)
     add_subdirectory(${uconnect_SOURCE_DIR}/server ${uconnect_BINARY_DIR}/server)
     target_link_libraries(ScreenFoundationTest PRIVATE uconnect_rendezvous)
-    ucd_deploy_screen(ScreenFoundationTest)
+    if (UCD_SCREEN_AVAILABLE)
+        set(UCD_TEST_OPENH264 "" CACHE FILEPATH "Separately installed Cisco library for codec and integration tests")
+        ucd_add_test(ScreenCodecTest)
+        ucd_add_test(ScreenSessionTest)
+        ucd_add_test(ScreenCaptureTest)
+        target_link_libraries(ScreenSessionTest PRIVATE uconnect_rendezvous)
+        set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest PROPERTIES
+            ENVIRONMENT "UCD_TEST_OPENH264=${UCD_TEST_OPENH264}")
+        if (WIN32)
+            set_property(TEST ScreenCaptureTest APPEND PROPERTY ENVIRONMENT "QT_PLUGIN_PATH=${QT6_INSTALL_PREFIX}/plugins")
+        endif ()
+    endif ()
     ucd_add_test(StorageServiceTest)
     ucd_add_test(SyncLogicTest)
     ucd_add_test(SyncServiceTest)
@@ -290,6 +336,7 @@ if (UCD_BUILD_TESTS)
         src/app/PeerListModel.cpp src/app/PeerListModel.hpp
         src/app/TransferListModel.cpp src/app/TransferListModel.hpp)
     target_link_libraries(SettingsTest PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+    target_link_libraries(SettingsTest PRIVATE uconnect_desktop_screen_ui)
     target_compile_definitions(SettingsTest PRIVATE UCD_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
     get_property(_ucd_gui_test_environment TEST StorageViewTest PROPERTY ENVIRONMENT)
     set_tests_properties(SettingsTest PROPERTIES ENVIRONMENT "${_ucd_gui_test_environment}")

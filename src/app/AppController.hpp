@@ -24,6 +24,7 @@
 namespace ucd {
 
 class DebugWindow;
+class ScreenController;
 
 struct LaunchOptions {
     QString server;
@@ -38,6 +39,7 @@ class AppController : public QObject {
     Q_OBJECT
     // --- settings ---
     Q_PROPERTY(bool firstRun READ firstRun NOTIFY firstRunChanged)
+    Q_PROPERTY(QObject* screen READ screen CONSTANT)
     Q_PROPERTY(QString serverAddress READ serverAddress WRITE setServerAddress NOTIFY settingsChanged)
     Q_PROPERTY(QString deviceName READ deviceName WRITE setDeviceName NOTIFY settingsChanged)
     Q_PROPERTY(QStringList offeredServices READ offeredServices NOTIFY settingsChanged)
@@ -84,6 +86,7 @@ class AppController : public QObject {
     Q_PROPERTY(QVariantList syncEvents READ syncEvents NOTIFY syncChanged)
 
 public:
+    QObject* screen() const;
     explicit AppController(const LaunchOptions& options, QObject* parent = nullptr);
     ~AppController() override;
 
@@ -380,6 +383,7 @@ private:
 
     QThread  worker_;
     Session* session_ = nullptr;  // lives on worker_
+    ScreenController* screen_ = nullptr;
 
     std::unique_ptr<DebugWindow> debugWindow_;
 };

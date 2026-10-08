@@ -648,8 +648,42 @@ Loss above 2%, rising delay or excessive decode time reduces bitrate by 30%;
 clean reports increase it slowly. Persistent congestion at the bitrate floor
 reduces frame rate, then resolution. Configuration caps apply throughout.
 
-Session negotiation, capture, cursor and input messages are added in the
-following implementation phases.
+### 7.3 Screen sessions and consent
+
+Reliable control messages have these types:
+
+| type | fields / meaning |
+|---|---|
+| `scr.request` | nonzero u32 `request`, `wantControl`, `maxWidth`, `maxFps`, `codecs:["h264"]` |
+| `scr.wait` | `request`; host is asking its user |
+| `scr.err` | `request`, `code` (`forbidden`, `busy`, `codec`, `denied`, `transport`, `ended`) |
+| `scr.started` | matching `request`, nonzero u16 `session`, `codec:"h264"`, `width`, `height`, `fps`, `monitors`, `control` |
+| `scr.monitor` | `session`, zero-based `index` |
+| `scr.keyframe` | `session` |
+| `scr.nack` | `session`, `frame`, `indexes` |
+| `scr.report` | `session` plus the report fields in 7.2 |
+| `scr.error` | `session`, human-readable `detail`, followed by stop |
+| `scr.stop` | `session`; cancelling a pending request also carries `request` |
+
+Request IDs correlate approvals and responses; session tokens isolate media
+and live controls. A late approval/response cannot start a cancelled request.
+Tokens are scoped to an authenticated peer connection. Reliable operations
+must match that connection and its current token.
+
+Screen hosting must be offered, the requester must prove a trusted identity,
+and it must hold `screen.view`. A free viewer slot is reserved during consent.
+Without `screen.direct`, the host asks each time; the prompt expires in 30 s.
+Remembering approval grants the trusted identity `screen.direct`. A viewer
+also requires a trusted host. Revocation, disconnect, stop and absence of
+valid feedback for 5 s end hosting. Pending viewer requests expire in 35 s.
+
+H.264 is carried as Annex B access units with parameter sets in keyframes;
+there are no B frames. Capture and decode submissions are bounded and run
+on dedicated codec threads. The viewer reports decode time, loss, bitrate,
+frame rate and the transport path. `captureMs` is monotonic and cannot be
+interpreted as absolute cross-device latency without clock synchronization.
+
+In this phase control is always false. Cursor and input arrive in phase 3.
 
 ## Changes
 

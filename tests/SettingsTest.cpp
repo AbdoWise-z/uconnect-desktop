@@ -153,6 +153,29 @@ private slots:
         controller_->applySettings({{"defaultPermissions", QStringList{"control.direct"}}});
         QVERIFY(controller_->defaultPermissions().isEmpty());
     }
+    void screenSettingsSurviveApplyAndRestart() {
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "setScreenSetting",
+            Q_ARG(QVariant, QVariant("maxFps")), Q_ARG(QVariant, QVariant(24))));
+        QTRY_VERIFY(dialog_->property("modified").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QCOMPARE(controller_->screen()->property("settings").toMap().value("maxFps").toInt(), 24);
+        QVERIFY(!dialog_->property("modified").toBool());
+        QSettings().sync();
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QCOMPARE(restarted.screen()->property("settings").toMap().value("maxFps").toInt(), 24);
+    }
+#ifdef UCD_HAS_SCREEN
+    void loadsScreenViewerAndSafetyQml() {
+        QQmlComponent viewer(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/ScreenView.qml"));
+        QVERIFY2(viewer.isReady(), qPrintable(viewer.errorString()));
+        std::unique_ptr<QObject> view(viewer.createWithInitialProperties({{"devId", QString(32, 'a')}}));
+        QVERIFY2(view, qPrintable(viewer.errorString()));
+        QQmlComponent safety(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/ScreenSafety.qml"));
+        QVERIFY2(safety.isReady(), qPrintable(safety.errorString()));
+        std::unique_ptr<QObject> host(safety.create());
+        QVERIFY2(host, qPrintable(safety.errorString()));
+    }
+#endif
 
     void appliesTheUploadLimit() {
         QObject* settingsDraft = draft();

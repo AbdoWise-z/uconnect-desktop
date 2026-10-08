@@ -27,9 +27,21 @@ const std::vector<PermissionInfo>& permissionTable() {
         {perm::CameraView, "camera", tr("View"),
          tr("Watch this device's camera."), false},
         {perm::ScreenView, "screen", tr("View"),
-         tr("Watch this device's screen."), false, true},
+         tr("Watch this device's screen."),
+#ifdef UCD_HAS_SCREEN
+         true,
+#else
+         false,
+#endif
+         true},
         {perm::ScreenDirect, "screen", tr("Without asking"),
-         tr("View the screen without a consent prompt. Trusted devices only."), false, true},
+         tr("View the screen without a consent prompt. Trusted devices only."),
+#ifdef UCD_HAS_SCREEN
+         true,
+#else
+         false,
+#endif
+         true},
         {perm::ControlInput, "control", tr("Control"),
          tr("Use this device's mouse and keyboard."), false, true},
         {perm::ControlDirect, "control", tr("Without asking"),

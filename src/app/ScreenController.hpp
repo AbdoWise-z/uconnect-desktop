@@ -1,0 +1,59 @@
+#pragma once
+#include <QObject>
+#include <QPointer>
+#include <QVariantMap>
+#include "core/Session.hpp"
+#include "core/screen/StopShortcut.hpp"
+#ifdef UCD_HAS_SCREEN
+#include <QMediaCaptureSession>
+#include <QScreenCapture>
+#include <QVideoSink>
+#endif
+
+namespace ucd {
+class ScreenController : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool available READ available CONSTANT)
+    Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
+    Q_PROPERTY(QVariantList hosting READ hosting NOTIFY hostingChanged)
+    Q_PROPERTY(QVariantList consents READ consents NOTIFY consentChanged)
+    Q_PROPERTY(QString shortcutError READ shortcutError NOTIFY hostingChanged)
+public:
+    ScreenController(Session* session, QObject* parent = nullptr);
+    ~ScreenController() override;
+    bool available() const;
+    QVariantMap settings() const { return settings_; }
+    QVariantList hosting() const { return hosting_; }
+    QVariantList consents() const { return consents_; }
+    QString shortcutError() const { return shortcutError_; }
+    Q_INVOKABLE QVariantMap state(const QString& peer) const { return states_.value(peer); }
+    Q_INVOKABLE void configure(const QVariantMap& settings);
+    Q_INVOKABLE void request(const QString& peer, bool control = false);
+    Q_INVOKABLE void stop(const QString& peer);
+    Q_INVOKABLE void stopHosting();
+    Q_INVOKABLE void consent(const QString& peer, quint32 request, bool allow, bool remember);
+    Q_INVOKABLE void monitor(const QString& peer, int index);
+    Q_INVOKABLE void attachSink(const QString& peer, QObject* sink);
+signals:
+    void stateChanged(const QString& peer);
+    void hostingChanged();
+    void consentChanged();
+    void settingsChanged();
+    void rememberPermission(const QString& key, const QString& permission);
+    void notify(const QString& text);
+private:
+    void pushSettings();
+    Session* session_;
+    QVariantMap settings_;
+    QVariantList hosting_, consents_;
+    QHash<QString, QVariantMap> states_;
+    QString shortcutError_;
+    screen::StopShortcut shortcut_;
+#ifdef UCD_HAS_SCREEN
+    QScreenCapture capture_;
+    QMediaCaptureSession captureSession_;
+    QVideoSink captureSink_;
+    QHash<QString, QPointer<QVideoSink>> sinks_;
+#endif
+};
+}

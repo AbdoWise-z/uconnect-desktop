@@ -28,6 +28,9 @@
 #include "core/StorageService.hpp"
 #include "core/sync/SyncService.hpp"
 #include "core/screen/DatagramChannel.hpp"
+#ifdef UCD_HAS_SCREEN
+#include "core/screen/ScreenService.hpp"
+#endif
 #include <atomic>
 #include <QByteArray>
 #include "uconnect/uconnect.hpp"
@@ -113,6 +116,9 @@ public:
     bool openMedia(const uconnect::DevId& peer);
     void closeMedia(const uconnect::DevId& peer);
     bool sendMedia(const uconnect::DevId& peer, std::span<const uint8_t> bytes);
+#ifdef UCD_HAS_SCREEN
+    screen::ScreenService* screen() const { return screen_; }
+#endif
 
     // Storage: this device's shared folders, and requests to other devices'.
     void setSharedFolders(const QStringList& folders, const QStringList& readOnly = {});
@@ -207,6 +213,9 @@ private:
     SyncService*    sync_    = nullptr;
     screen::DatagramChannel media_;
     std::atomic_uint mediaPending_{0};  // bound loop-to-worker queues under overload
+#ifdef UCD_HAS_SCREEN
+    screen::ScreenService* screen_ = nullptr;
+#endif
 };
 
 QString shortId(const QString& devId);

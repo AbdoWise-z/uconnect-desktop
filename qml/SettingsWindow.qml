@@ -49,6 +49,7 @@ Window {
         property int maxUploadMB: 0
         property var defaultPermissions: []
         property var untrust: []  // public keys
+        property var screen: ({})
     }
 
     function sameServices(a, b) {
@@ -71,6 +72,7 @@ Window {
                                      || draft.maxUploadMB !== App.maxUploadMB
                                      || !sameServices(draft.defaultPermissions, App.defaultPermissions)
                                      || draft.untrust.length > 0
+                                     || JSON.stringify(draft.screen) !== JSON.stringify(App.screen.settings)
 
     function load() {
         draft.server = App.serverAddress
@@ -86,6 +88,7 @@ Window {
         draft.maxUploadMB = App.maxUploadMB
         draft.defaultPermissions = App.defaultPermissions.slice()
         draft.untrust = []
+        draft.screen = Object.assign({}, App.screen.settings)
     }
 
     function apply() {
@@ -102,7 +105,8 @@ Window {
             downloadFolder: draft.downloadFolder,
             maxUploadMB: draft.maxUploadMB,
             defaultPermissions: draft.defaultPermissions,
-            untrust: draft.untrust
+            untrust: draft.untrust,
+            screen: draft.screen
         })
         load()  // the draft now matches what was applied
     }
@@ -111,6 +115,11 @@ Window {
         const next = draft.defaultPermissions.filter(p => p !== permission)
         if (on) next.push(permission)
         draft.defaultPermissions = next
+    }
+    function setScreenSetting(key, value) {
+        const next = Object.assign({}, draft.screen)
+        next[key] = value
+        draft.screen = next
     }
     function toggleUntrust(key) {
         draft.untrust = draft.untrust.indexOf(key) >= 0 ? draft.untrust.filter(k => k !== key)
@@ -566,7 +575,43 @@ Window {
             }
             TitledSeparator { text: qsTr("Options") }
             Help {
+                visible: svcPage.service !== "screen"
                 text: qsTr("Options for this service will appear here once it is implemented.")
+            }
+            ColumnLayout {
+                visible: svcPage.service === "screen"
+                Layout.fillWidth: true
+                Help { text: App.screen.available ? qsTr("Only trusted devices may request your screen. Each request asks for consent unless you grant view without asking.") : qsTr("This build needs Qt Multimedia and a shared LGPL FFmpeg SDK for screen sharing.") }
+                RowLayout {
+                    Text { text: qsTr("Default monitor (0 = first)"); color: Theme.text }
+                    SpinBox { from: 0; to: 15; value: draft.screen.monitor || 0; onValueModified: dlg.setScreenSetting("monitor", value) }
+                    Text { text: qsTr("Maximum FPS"); color: Theme.text }
+                    SpinBox { from: 1; to: 60; value: draft.screen.maxFps || 30; onValueModified: dlg.setScreenSetting("maxFps", value) }
+                }
+                RowLayout {
+                    Text { text: qsTr("Maximum width"); color: Theme.text }
+                    SpinBox { from: 320; to: 3840; stepSize: 160; value: draft.screen.maxWidth || 1920; onValueModified: dlg.setScreenSetting("maxWidth", value) }
+                    Text { text: qsTr("Maximum bitrate (Mbit/s)"); color: Theme.text }
+                    SpinBox { from: 1; to: 20; value: (draft.screen.maxBitrate || 8000000) / 1000000; onValueModified: dlg.setScreenSetting("maxBitrate", value * 1000000) }
+                }
+                RowLayout {
+                    Text { text: qsTr("Stop sharing shortcut"); color: Theme.text }
+                    UTextField { text: draft.screen.stopShortcut || "Ctrl+Alt+Shift+S"; onTextEdited: dlg.setScreenSetting("stopShortcut", text) }
+                }
+                Help { text: qsTr("Maximum viewers: 1") }
+                UCheckBox {
+                    text: qsTr("Enable software fallback")
+                    checked: draft.screen.softwareCodec || false
+                    onToggled: dlg.setScreenSetting("softwareCodec", checked)
+                }
+                Help { text: "OpenH264 Video Codec provided by Cisco Systems, Inc." }
+                UTextField {
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Path to separately installed Cisco OpenH264 2.6 library")
+                    text: draft.screen.codecLibrary || ""
+                    onTextEdited: dlg.setScreenSetting("codecLibrary", text)
+                }
+                Help { text: qsTr("Use scripts/install-openh264.py to download the Cisco binary separately. Its license is in docs/OpenH264-BINARY-LICENSE.txt.") }
             }
         }
     }

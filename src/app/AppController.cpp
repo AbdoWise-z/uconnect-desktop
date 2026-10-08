@@ -1,4 +1,5 @@
 #include "AppController.hpp"
+#include "ScreenController.hpp"
 
 #include <algorithm>
 
@@ -143,6 +144,11 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
 
     session_ = new Session;
     session_->moveToThread(&worker_);
+    screen_ = new ScreenController(session_, this);
+    connect(screen_, &ScreenController::rememberPermission, this, [this](const QString& key, const QString& permission) {
+        setDevicePermission(key, permission, true);
+    });
+    connect(screen_, &ScreenController::notify, this, &AppController::notify);
     connect(&worker_, &QThread::finished, session_, &QObject::deleteLater);
 
     connect(session_, &Session::statusChanged, this, [this](Session::Status s, const QString& detail) {
@@ -262,6 +268,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
 }
 
 AppController::~AppController() {
+    delete screen_; screen_ = nullptr;
     QMetaObject::invokeMethod(session_, [s = session_] { s->stop(); }, Qt::BlockingQueuedConnection);
     worker_.quit();
     worker_.wait();
@@ -321,6 +328,7 @@ void AppController::completeFirstRun(const QString& server, const QString& name)
 }
 
 void AppController::applySettings(const QVariantMap& values) {
+    if (values.contains("screen")) screen_->configure(values.value("screen").toMap());
     QSettings settings;
     if (values.contains(Key::Server) && isValidServer(values.value(Key::Server).toString()))
         setServerAddress(values.value(Key::Server).toString());
@@ -413,6 +421,8 @@ void AppController::applySettings(const QVariantMap& values) {
         else settings.remove(Key::TopicLink);
     }
 }
+
+QObject* AppController::screen() const { return screen_; }
 
 // --- topic ---------------------------------------------------------------------
 

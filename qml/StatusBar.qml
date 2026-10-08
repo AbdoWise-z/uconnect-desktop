@@ -103,6 +103,13 @@ Rectangle {
             text: qsTr("%1 of %2 devices connected").arg(App.peers.connectedCount).arg(App.peers.count)
         }
         Segment {
+            visible: App.screen.hosting.length > 0
+            showDot: true
+            dotColor: Theme.warning
+            text: qsTr("Sharing screen · Stop")
+            onClicked: App.screen.stopHosting()
+        }
+        Segment {
             visible: bar.inWorkspace && App.topicId.length > 0
             text: qsTr("Topic %1").arg(App.topicId.substring(0, 8))
             tip: qsTr("Click to copy the topic ID")

@@ -28,3 +28,33 @@ For real-desktop acceptance, use two trusted devices with screen permissions.
 The later phases require measuring 1080p30 capture-to-display latency on a
 LAN, recovery under loss, monitor switching, stop paths and native input.
 Windows automation here cannot establish macOS or Linux runtime results.
+
+`ScreenCodecTest` round-trips H.264 through each encoder that can initialize,
+requires PSNR above 28 dB, and exercises bitrate and size changes. Enable the
+Cisco row and real-session test with CMake's `UCD_TEST_OPENH264=<library-path>`.
+Missing hardware is reported as skipped, not passed.
+
+`ScreenSessionTest` checks trust, denial, busy slots, consent timeout, stale
+approval, cancellation, revocation and feedback timeout. It also starts two
+actual Sessions with proven identities, requests consent, sends synthetic
+frames over their datagram channel, decodes them, and stops from the viewer.
+
+`ScreenCaptureTest` is opt-in on a real desktop:
+`UCD_TEST_DESKTOP_CAPTURE=1 ctest --test-dir <build> -R ScreenCaptureTest`.
+It captures the primary desktop and round-trips its image through H.264.
+On Windows PowerShell set `$env:UCD_TEST_DESKTOP_CAPTURE='1'` first.
+
+Manual phase-2 acceptance:
+
+1. Offer Screen Sharing on the host, trust both devices and grant the viewer
+   `screen.view`. Open its Screen service; deny once, then allow once.
+2. Confirm the always-on-top sharing bar remains visible, and that its Stop
+   action and Ctrl+Alt+Shift+S both stop capture immediately.
+3. Switch monitors, resize/Fit/100%, and enter/leave full screen. Check the
+   shown path and stats; revoke the permission while sharing.
+4. Animate a 1080p desktop on a LAN and measure actual visible frame latency
+   with a common-clock high-speed recording. The acceptance target is 30 fps
+   and <150 ms. Reported decode time is not this measurement.
+5. Introduce 5% packet loss and verify picture recovery within about a second.
+6. On macOS grant Screen Recording; on Linux test X11 and the desktop portal
+   separately. An OS/backend capture error must stop hosting and explain why.

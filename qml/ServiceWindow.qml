@@ -21,6 +21,7 @@ Window {
     minimumHeight: 380
     color: Theme.canvas
     title: Theme.serviceLabel(service) + " – " + deviceName
+    onClosing: if (service === "screen" || service === "control") App.screen.stop(devId)
 
     component Separator: Rectangle {
         implicitWidth: 1
@@ -108,6 +109,12 @@ Window {
             }
         }
     }
+    Component {
+        id: screenContent
+        Loader {
+            Component.onCompleted: setSource(Qt.resolvedUrl("ScreenView.qml"), {devId: win.devId, wantControl: win.service === "control"})
+        }
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -143,8 +150,6 @@ Window {
                 // Storage keeps its navigation bar inside StorageView.
                 Loader {
                     sourceComponent: win.service === "camera" ? cameraToolbar
-                                   : win.service === "screen" ? screenToolbar
-                                   : win.service === "control" ? controlToolbar
                                    : null
                 }
                 Item { Layout.fillWidth: true }
@@ -176,7 +181,8 @@ Window {
         Loader {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            sourceComponent: win.service === "storage" ? storageContent : videoContent
+            sourceComponent: win.service === "storage" ? storageContent
+                             : (win.service === "screen" || win.service === "control") && App.screen.available ? screenContent : videoContent
         }
     }
 }

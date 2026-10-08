@@ -41,6 +41,7 @@ ApplicationWindow {
 
     // Closing this window also closes the debug and service windows.
     onClosing: Qt.quit()
+    Loader { source: App.screen.available ? Qt.resolvedUrl("ScreenSafety.qml") : "" }
 
     function openSettings(pageId) {
         settingsWindow.openAt(pageId)

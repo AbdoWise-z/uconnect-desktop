@@ -32,7 +32,7 @@ foreach ($directory in @('generic', 'iconengines', 'imageformats', 'networkinfor
         Copy-Item -LiteralPath $sourcePath -Destination $packagePath -Recurse
     }
 }
-foreach ($notice in @('third-party-screen.md', 'FFmpeg-LICENSE.txt')) {
+foreach ($notice in @('third-party-screen.md', 'FFmpeg-LICENSE.txt', 'OpenH264-BINARY-LICENSE.txt')) {
     $sourcePath = Join-Path $buildPath $notice
     if (Test-Path -LiteralPath $sourcePath) {
         Copy-Item -LiteralPath $sourcePath -Destination $packagePath

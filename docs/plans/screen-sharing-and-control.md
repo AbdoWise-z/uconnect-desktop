@@ -14,6 +14,17 @@ Execution notes:
   NACKs, keyframe gating, feedback and AIMD implemented. Synthetic tests cover
   5% seeded loss, reordering, duplicates, delay spikes, TCP backpressure,
   timestamp/frame wrap and malformed/oversized inputs. Transport tests pass.
+- Phase 2: Qt screen capture, hardware H.264 selection and a separately loaded
+  Cisco fallback, off-thread codec work, consent/timeout/direct grants,
+  cancellation/revocation/disconnect handling, sharing bar and native stop
+  shortcut, monitor selection and viewer stats implemented. Automated Windows
+  tests verify two real authenticated sessions carrying synthetic video, codec
+  PSNR above 28 dB (NVENC, Media Foundation and Cisco), settings and QML loading.
+  A real 1920×1080 Windows desktop capture/codec smoke test passed. QSV and AMF
+  were unavailable on this machine. LAN 30 fps / <150 ms glass-to-glass and
+  macOS/Linux acceptance remain manual tests, not established by this run.
+  All 11 CTest suites pass. The app also builds with `UCD_WITH_SCREEN=OFF`;
+  its foundation and settings tests pass in that separate build.
 - Hardware, macOS/Linux capture, and glass-to-glass latency require real
   desktops; automated synthetic tests cannot establish those acceptance values.
 - The pinned BtbN build embeds source-built OpenH264. Its software encoder
