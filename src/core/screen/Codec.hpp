@@ -43,4 +43,11 @@ private:
 
 bool lgplCodecBuild();
 
+// Whether a hardware encoder running at `applied` should move to `wanted`,
+// `sinceMs` after its last change. Hardware encoders behind FFmpeg (NVENC at
+// least) restart with a keyframe on any bitrate change, so the congestion
+// control's small steps are batched: cuts go through at most once a second,
+// raises in larger steps every few seconds, and small drift waits.
+bool bitrateWorthChanging(int applied, int wanted, qint64 sinceMs);
+
 }  // namespace ucd::screen

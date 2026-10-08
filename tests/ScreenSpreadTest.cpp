@@ -97,6 +97,27 @@ private slots:
         QVERIFY2(!image.isNull(), qPrintable(decoder.error())); QCOMPARE(image.width(), 640);
         const auto screen = QGuiApplication::primaryScreen();
         QCOMPARE(image.height(), int(qint64(screen->size().height()) * 640 / screen->size().width()) & ~1);
+        // A small bitrate step right away is held back (it would cost a
+        // keyframe): frames keep coming, the unchanged desktop encoded again.
+        options.bitrate = 2400000;
+        int frames = 0; bool keyframes = false;
+        for (quint32 i = 100; i < 110; ++i) {
+            const auto result = native->encode(monitor, options, i, quint32(ScreenService::monotonicMs()), false);
+            QVERIFY(result.active);
+            if (result.frame) { ++frames; keyframes |= result.frame->keyframe; image = decoder.decode(*result.frame); }
+            QTest::qWait(35);
+        }
+        QVERIFY(frames > 0); QVERIFY(!image.isNull());
+        QVERIFY(!keyframes);
+        // A new width reopens only the encoder: the duplicated desktop is
+        // reused, so a picture comes at once even if nothing moves.
+        options.width = 480; image = {};
+        for (quint32 i = 200; i < 205 && image.isNull(); ++i) {
+            const auto result = native->encode(monitor, options, i, quint32(ScreenService::monotonicMs()), false);
+            QVERIFY(result.active);
+            if (result.frame) image = decoder.decode(*result.frame);
+        }
+        QCOMPARE(image.width(), 480);
         qInfo().noquote() << "Verified native pipeline:" << pipeline;
     }
 };

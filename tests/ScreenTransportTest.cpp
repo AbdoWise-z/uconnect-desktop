@@ -49,9 +49,12 @@ private slots:
         QVERIFY(receiver.expire(100).nacks.isEmpty());
         QVERIFY(sender.retransmit(0, {2}, 501).isEmpty());
         QVERIFY(sender.retransmit(0, {-1, MaxFragments + 1}, 70).isEmpty());
-        // Losing a delta gates all future deltas until the next complete keyframe.
+        // A delta frame with lost fragments is asked for once too...
         receiver.receive(fragment(frame(1)).first(), 100);
-        QVERIFY(receiver.expire(167).keyframe);
+        recovery = receiver.expire(167);
+        QCOMPARE(recovery.nacks.size(), 1); QCOMPARE(recovery.nacks[0].frame, 1u);
+        // ...and if the repair does not come, deltas wait for the next keyframe.
+        QVERIFY(receiver.expire(167 + 40).keyframe);
         for (const auto& packet : fragment(frame(2))) QVERIFY(receiver.receive(packet, 168).isEmpty());
         QVector<EncodedFrame> healed;
         for (const auto& packet : fragment(frame(3, true))) healed += receiver.receive(packet, 170);
@@ -60,21 +63,46 @@ private slots:
 
     void pacingAndTcpBackpressure() {
         PacedSender sender;
+        const int fragments = fragment(frame(0, true, 100000)).size();
         QVERIFY(sender.enqueue(frame(0, true, 100000), 0, 33));
-        QVERIFY(!sender.enqueue(frame(1), 1, 33));
+        // A frame arriving while the previous one still goes out waits its turn.
+        QVERIFY(sender.enqueue(frame(1), 1, 33));
+        QCOMPARE(sender.queuedFrames(), 2);
         int sent = 0;
         QVERIFY(sender.pump(0, [&](const QByteArray&) { ++sent; return true; }));
-        QVERIFY(sent <= 3);
+        QVERIFY(sent <= 4);
         QVERIFY(sender.pump(10, [&](const QByteArray&) { ++sent; return true; }));
-        QVERIFY(sent < 40);
-        QVERIFY(!sender.pump(11, [&](const QByteArray&) { return false; }));
-        QVERIFY(!sender.busy()); QCOMPARE(sender.dropped(), 2u);
-        QVERIFY(sender.enqueue(frame(2), 20, 33));
-        QVERIFY(!sender.pump(87, [](const QByteArray&) { return true; }));
-        QCOMPARE(sender.dropped(), 3u);
-        QVERIFY(sender.enqueue(frame(3), 100, 33));
-        for (int time = 100; time <= 133; ++time) sender.pump(time, [](const QByteArray&) { return true; });
+        QVERIFY2(sent > 20 && sent < fragments, qPrintable(QString::number(sent)));  // spread, not a burst
+        // A refused datagram (TCP fallback full, path still opening) is kept.
+        QVERIFY(sender.pump(11, [&](const QByteArray&) { return false; }));
+        QCOMPARE(sender.dropped(), 0u);
+        // Half an interval later both frames are out, nothing lost.
+        for (int time = 12; time <= 40; ++time) sender.pump(time, [&](const QByteArray&) { ++sent; return true; });
         QVERIFY(!sender.busy());
+        QCOMPARE(sent, fragments + fragment(frame(1)).size());
+
+        // At most three frames wait; a fourth is dropped.
+        for (quint32 n = 2; n < 5; ++n) QVERIFY(sender.enqueue(frame(n), 100, 33));
+        QVERIFY(!sender.enqueue(frame(5), 100, 33));
+        QCOMPARE(sender.dropped(), 1u);
+        // Frames too old to be worth showing go, with all behind them.
+        QVERIFY(!sender.pump(251, [](const QByteArray&) { return false; }));
+        QVERIFY(!sender.busy()); QCOMPARE(sender.dropped(), 4u);
+        QVERIFY(sender.enqueue(frame(6), 300, 33));
+        for (int time = 300; time <= 320; ++time) sender.pump(time, [](const QByteArray&) { return true; });
+        QVERIFY(!sender.busy());
+    }
+
+    // 60 fps with frames that take most of an interval to send: none dropped.
+    void sixtyFramesPerSecondKeepUp() {
+        PacedSender sender;
+        int frames = 0;
+        for (qint64 time = 0; time < 5000; time += 2) {
+            if (time % 16 == 0 && sender.enqueue(frame(quint32(time / 16), time == 0, 30000), time, 16)) ++frames;
+            QVERIFY(sender.pump(time + qint64(time % 3), [](const QByteArray&) { return true; }));
+        }
+        QCOMPARE(sender.dropped(), 0u);
+        QVERIFY(frames >= 312);
     }
 
     void boundedMalformedAndSessionIsolation() {
@@ -154,7 +182,7 @@ private slots:
         }
         QVERIFY2(delivered > 100, qPrintable(QString::number(delivered)));
         QVERIFY(recoveredKeys > 5);
-        QVERIFY(controller.bitrate() >= 150000); QVERIFY(controller.bitrate() < 4000000);
+        QVERIFY(controller.bitrate() >= CongestionController::MinBitrate); QVERIFY(controller.bitrate() <= 8000000);
         qInfo() << "5% loss:" << delivered << "frames," << recoveredKeys << "keyframe recoveries,"
                 << controller.bitrate() << "bit/s";
     }
@@ -162,10 +190,19 @@ private slots:
     void congestionAndReportValidation() {
         CongestionController controller; controller.reset("relayed", 30, 1920, 2000000);
         QCOMPARE(controller.bitrate(), 1500000);
+        // Sustained loss: the bitrate falls (not more than once per few
+        // reports) to its floor, then the frame rate gives.
+        controller.update({100, 10, 0, 5, 10, 2});
+        QCOMPARE(controller.bitrate(), 1200000);
+        controller.update({100, 10, 0, 5, 10, 2});
+        QCOMPARE(controller.bitrate(), 1200000);  // same bad patch: no second cut yet
         for (int i = 0; i < 40; ++i) controller.update({100, 10, 0, 5, 10, 2});
-        QCOMPARE(controller.bitrate(), 150000); QVERIFY(controller.fps() <= 10); QVERIFY(controller.width() < 1920);
+        QCOMPARE(controller.bitrate(), CongestionController::MinBitrate); QVERIFY(controller.fps() < 30);
         for (int i = 0; i < 200; ++i) controller.update({100, 0, 0, 0, 0, 2});
         QCOMPARE(controller.bitrate(), 2000000); QCOMPARE(controller.fps(), 30); QCOMPARE(controller.width(), 1920);
+        // A viewer that decodes slowly gets fewer frames, not a worse picture.
+        for (int i = 0; i < 6; ++i) controller.update({100, 0, 0, 0, 0, 80});
+        QVERIFY(controller.fps() < 30); QCOMPARE(controller.bitrate(), 2000000);
         QVERIFY(Feedback::parse(Feedback{100, 2, 0, 4, -3, 5}.json()));
         auto bad = Feedback{}.json(); bad["lost"] = -1; QVERIFY(!Feedback::parse(bad));
         bad["lost"] = "100"; QVERIFY(!Feedback::parse(bad));

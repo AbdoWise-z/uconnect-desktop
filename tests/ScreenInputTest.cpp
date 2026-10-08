@@ -148,7 +148,8 @@ private slots:
         for (bool camera : {false, true}) {
             QVector<QJsonObject> sent;
             ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
-                [](const auto&) { return PeerAccess{"key", "Host", "fp", {}, true}; },
+                // Watching needs the host's identity proven, not trusted.
+                [](const auto&) { return PeerAccess{"key", "Host", "fp", {}, false, true}; },
                 [](const auto&) { return true; }, [](const auto&) {}, [](const auto&, const auto&) { return true; }, nullptr, {}, {}, camera);
             QSignalSpy state(&service, &ScreenService::viewerChanged);
             service.request(peer());
@@ -164,6 +165,14 @@ private slots:
             service.handle(peer(), {{"t", "scr.controlled"}, {"request", id}, {"session", 14}, {"on", true}});
             QVERIFY(state.back()[1].toMap().value("control").toBool());
         }
+        // A device whose identity is not proven cannot be watched.
+        QVector<QJsonObject> sent;
+        ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
+            [](const auto&) { return PeerAccess{}; },
+            [](const auto&) { return true; }, [](const auto&) {}, [](const auto&, const auto&) { return true; });
+        QSignalSpy state(&service, &ScreenService::viewerChanged);
+        service.request(peer());
+        QVERIFY(sent.isEmpty()); QCOMPARE(state.back()[1].toMap().value("state"), "denied");
     }
     void cursorWire() {
         const CursorPosition source{65535, 0xffffffff, {-1920, 100}, true};

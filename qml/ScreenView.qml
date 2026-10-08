@@ -12,6 +12,12 @@ ColumnLayout {
     property bool wantControl: false
     property var session: view.controller.state(devId)
     property bool fit: true
+    property bool showStats: false
+    readonly property string phase: view.session.state || ""
+    readonly property bool active: view.phase === "live" || view.phase === "waiting" || view.phase === "requesting"
+    // Live, but no frame decoded yet.
+    readonly property bool starting: view.phase === "live" && view.session.pictured !== true
+    readonly property bool fullScreen: view.Window.window !== null && view.Window.window.visibility === Window.FullScreen
     spacing: 0
 
     Component.onCompleted: {
@@ -30,9 +36,10 @@ ColumnLayout {
         UToolButton { text: qsTr("Fit"); checkable: true; checked: view.fit; onClicked: view.fit = true }
         UToolButton { text: "100%"; checkable: true; checked: !view.fit; onClicked: view.fit = false }
         UToolButton {
-            text: qsTr("Full Screen")
-            onClicked: view.Window.window.visibility = view.Window.window.visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
+            text: view.fullScreen ? qsTr("Exit Full Screen") : qsTr("Full Screen")
+            onClicked: view.Window.window.visibility = view.fullScreen ? Window.Windowed : Window.FullScreen
         }
+        UToolButton { text: qsTr("Stats"); checkable: true; checked: view.showStats; onClicked: view.showStats = !view.showStats }
         UComboBox {
             Layout.preferredWidth: 180
             Layout.maximumWidth: 220
@@ -44,10 +51,9 @@ ColumnLayout {
         }
         Item { Layout.fillWidth: true }
         UButton {
-            text: view.session.state === "live" || view.session.state === "waiting" || view.session.state === "requesting"
-                  ? qsTr("Stop") : qsTr("Connect")
+            text: view.active ? qsTr("Stop") : qsTr("Connect")
             onClicked: {
-                if (view.session.state === "live" || view.session.state === "waiting" || view.session.state === "requesting") view.controller.stop(view.devId)
+                if (view.active) view.controller.stop(view.devId)
                 else view.controller.request(view.devId, view.wantControl)
             }
         }
@@ -122,30 +128,45 @@ ColumnLayout {
         }
         ColumnLayout {
             anchors.centerIn: parent
-            visible: view.session.state !== "live"
+            visible: view.phase !== "live" || view.starting
             spacing: 8
             Text {
                 Layout.alignment: Qt.AlignHCenter
                 color: Theme.text
-                text: view.session.state === "requesting" ? qsTr("Requesting screen sharing…")
-                    : view.session.state === "waiting" ? qsTr("Waiting for consent…")
-                    : view.session.state === "busy" ? qsTr("This screen is already shared")
-                    : view.session.state === "denied" ? qsTr("Screen request denied") : qsTr("Screen sharing ended")
+                font.pixelSize: Theme.fontSize + 2
+                text: view.starting ? qsTr("Waiting for the first picture…")
+                    : view.phase === "requesting" ? (view.camera ? qsTr("Requesting the camera…") : qsTr("Requesting screen sharing…"))
+                    : view.phase === "waiting" ? qsTr("Waiting for the other device to allow it…")
+                    : view.phase === "busy" ? (view.camera ? qsTr("This camera is already shared") : qsTr("This screen is already shared"))
+                    : view.phase === "denied" ? qsTr("Request denied")
+                    : view.camera ? qsTr("Camera sharing ended") : qsTr("Screen sharing ended")
             }
             Text {
                 Layout.maximumWidth: 480
                 Layout.alignment: Qt.AlignHCenter
-                text: view.session.detail || ""
+                horizontalAlignment: Text.AlignHCenter
+                text: view.starting
+                      ? (view.session.hostStatus
+                         || (view.session.stalled ? qsTr("Nothing has arrived yet. The other device may be unable to capture, or the connection may be blocking video.") : ""))
+                      : (view.session.detail || "")
+                visible: text.length > 0
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: Theme.textSecondary
+            }
+            UButton {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: 4
+                visible: !view.active || (view.starting && view.session.stalled === true)
+                text: qsTr("Try Again")
+                onClicked: view.controller.request(view.devId, view.wantControl)
             }
         }
         Rectangle {
             anchors.left: parent.left
             anchors.bottom: parent.bottom
             anchors.margins: 12
-            visible: view.session.state === "live"
+            visible: view.showStats && view.phase === "live" && !view.starting
             color: "#CC2B2D30"
             width: stats.implicitWidth + 20
             height: stats.implicitHeight + 12

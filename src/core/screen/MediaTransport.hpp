@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include <QVector>
+#include <deque>
 #include <functional>
 #include <map>
 #include <optional>
@@ -25,22 +26,43 @@ struct EncodedFrame {
 // Network-byte-order wire encoding. No native structs are put on the wire.
 QVector<QByteArray> fragment(const EncodedFrame& frame);
 
+// Sends encoded frames as datagrams, spread out so a large frame does not
+// leave in one burst. Frames wait in a short queue: a frame arriving while the
+// previous one is still going out is queued, not dropped. Datagrams the path
+// refuses (still opening, or the TCP fallback's queue is full) are retried on
+// the next pump. Only frames that would arrive too late to be worth showing
+// are dropped; the caller then forces a keyframe, since the frames after a
+// dropped one cannot be decoded.
 class PacedSender {
 public:
+    static constexpr int MaxQueuedFrames = 3;
+    // False if the queue is full: the frame is dropped.
     bool enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs);
-    // At most 64 fragments per tick. A failed send drops the remainder rather
-    // than accumulating old video behind a blocked TCP fallback.
+    // False if queued frames were dropped for being too old.
     bool pump(qint64 nowMs, const std::function<bool(const QByteArray&)>& send);
+    // Fragments of a frame sent in the last half second, marked as repairs.
     QVector<QByteArray> retransmit(quint32 frame, const QVector<int>& indexes, qint64 nowMs) const;
     void reset();
-    bool busy() const { return !pending_.isEmpty(); }
+    bool busy() const { return !queue_.empty(); }
+    int queuedFrames() const { return int(queue_.size()); }
     quint64 dropped() const { return dropped_; }
 private:
-    QVector<QByteArray> pending_, keyframe_;
-    int next_ = 0;
-    qint64 start_ = 0, deadline_ = 0, keyExpires_ = 0;
+    // Each frame goes out on a straight line from `start` to `due`, about
+    // half a frame interval, starting when the one before it is due.
+    struct Queued {
+        QVector<QByteArray> packets;
+        int next = 0;
+        qint64 enqueued = 0, start = 0, due = 0;
+    };
+    std::deque<Queued> queue_;
+    // Recent frames, kept a short while so lost fragments can be sent again.
+    struct Sent {
+        quint32 number = 0;
+        QVector<QByteArray> packets;
+        qint64 expires = 0;
+    };
+    std::deque<Sent> history_;
     int interval_ = 33;
-    quint32 keyNumber_ = 0;
     quint64 dropped_ = 0;
 };
 
@@ -88,6 +110,12 @@ private:
     double trend_ = 0;
 };
 
+// Adjusts bitrate, frame rate and width from the viewer's reports (one every
+// ~300 ms). Network trouble (loss, rising delay) lowers the bitrate, at most
+// once per few reports so one bad patch is not punished repeatedly. A viewer
+// that cannot decode fast enough lowers the frame rate instead: a smaller
+// bitrate would not help it. Clean reports raise the bitrate gradually, then
+// the frame rate and width.
 class CongestionController {
 public:
     void reset(const QString& path, int maxFps = 30, int maxWidth = 1920, int maxBitrate = 8000000);
@@ -95,9 +123,10 @@ public:
     int bitrate() const { return bitrate_; }
     int fps() const { return fps_; }
     int width() const { return width_; }
+    static constexpr int MinBitrate = 300000;
 private:
     int bitrate_ = 4000000, cap_ = 8000000, fps_ = 30, maxFps_ = 30;
-    int width_ = 1920, maxWidth_ = 1920, bad_ = 0, good_ = 0;
+    int width_ = 1920, maxWidth_ = 1920, bad_ = 0, good_ = 0, slowDecode_ = 0, cooldown_ = 0;
 };
 
 }  // namespace ucd::screen

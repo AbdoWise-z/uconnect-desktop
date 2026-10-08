@@ -34,40 +34,60 @@ QVector<QByteArray> fragment(const EncodedFrame& frame) {
 }
 
 bool PacedSender::enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs) {
-    if (busy()) { ++dropped_; return false; }
-    pending_ = fragment(frame);
-    if (pending_.isEmpty()) return false;
-    next_ = 0; start_ = nowMs; interval_ = std::clamp(intervalMs, 8, 1000);
-    deadline_ = nowMs + interval_ * 2;
-    if (frame.keyframe) { keyframe_ = pending_; keyNumber_ = frame.number; keyExpires_ = nowMs + 500; }
+    if (int(queue_.size()) >= MaxQueuedFrames) { ++dropped_; return false; }
+    Queued queued{fragment(frame), 0, nowMs, nowMs, nowMs};
+    if (queued.packets.isEmpty()) return false;
+    interval_ = std::clamp(intervalMs, 8, 1000);
+    queued.start = queue_.empty() ? nowMs : std::max(nowMs, queue_.back().due);
+    queued.due   = queued.start + std::max(4, interval_ / 2);
+    while (!history_.empty() && (history_.front().expires < nowMs || history_.size() >= 16)) history_.pop_front();
+    history_.push_back({frame.number, queued.packets, nowMs + 500});
+    queue_.push_back(std::move(queued));
     return true;
 }
 
 bool PacedSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)>& send) {
-    if (!busy()) return true;
-    if (nowMs > deadline_) { pending_.clear(); ++dropped_; return false; }
-    for (int sent = 0; sent < 64 && next_ < pending_.size(); ++sent) {
-        if (nowMs < start_ + qint64(next_) * interval_ / pending_.size()) break;
-        if (!send(pending_[next_])) { pending_.clear(); ++dropped_; return false; }
-        ++next_;
+    if (queue_.empty()) return true;
+    // Too late to be worth showing: drop it and everything queued behind it
+    // (which depends on it). The caller asks the encoder for a keyframe.
+    const qint64 budget = std::max<qint64>(150, qint64(interval_) * 4);
+    if (nowMs - queue_.front().enqueued > budget) {
+        dropped_ += queue_.size(); queue_.clear();
+        return false;
     }
-    if (next_ == pending_.size()) pending_.clear();
+    while (!queue_.empty()) {
+        auto& front = queue_.front();
+        if (nowMs < front.start) break;
+        // How many of its datagrams should be out by now; the first few go at once.
+        const qint64 size = front.packets.size();
+        const qint64 span = std::max<qint64>(1, front.due - front.start);
+        const qint64 target = std::min(size, std::max(std::min<qint64>(4, size),
+                                                      (size * (nowMs - front.start) + span - 1) / span));
+        while (front.next < target) {
+            if (!send(front.packets[front.next])) return true;  // refused for now: retry next pump
+            ++front.next;
+        }
+        if (front.next < size) break;
+        queue_.pop_front();
+    }
     return true;
 }
 
 QVector<QByteArray> PacedSender::retransmit(quint32 frame, const QVector<int>& indexes, qint64 nowMs) const {
     QVector<QByteArray> result;
-    if (frame != keyNumber_ || nowMs > keyExpires_ || indexes.size() > MaxFragments) return result;
+    if (indexes.size() > MaxFragments) return result;
+    const auto sent = std::find_if(history_.begin(), history_.end(), [&](const Sent& s) { return s.number == frame; });
+    if (sent == history_.end() || nowMs > sent->expires) return result;
     std::set<int> seen;
     for (int index : indexes) {
-        if (index < 0 || index >= keyframe_.size() || !seen.insert(index).second) continue;
-        auto packet = keyframe_[index]; packet[1] = char(quint8(packet[1]) | 2);
+        if (index < 0 || index >= sent->packets.size() || !seen.insert(index).second) continue;
+        auto packet = sent->packets[index]; packet[1] = char(quint8(packet[1]) | 2);
         result.push_back(std::move(packet));
     }
     return result;
 }
 
-void PacedSender::reset() { pending_.clear(); keyframe_.clear(); next_ = 0; dropped_ = 0; }
+void PacedSender::reset() { queue_.clear(); history_.clear(); dropped_ = 0; }
 
 QJsonObject Feedback::json() const {
     return {{"received", double(received)}, {"lost", double(lost)}, {"late", double(late)},
@@ -172,7 +192,9 @@ Recovery Reassembler::expire(qint64 nowMs) {
     for (auto it = frames_.begin(); it != frames_.end();) {
         auto& assembly = it->second;
         if (nowMs < assembly.deadline) { ++it; continue; }
-        if (!assembly.complete && assembly.frame.keyframe && !assembly.nacked) {
+        // Ask once for what is missing, unless it could not be decoded anyway
+        // (a delta while waiting for a keyframe).
+        if (!assembly.complete && !assembly.nacked && (assembly.frame.keyframe || !waiting_)) {
             Recovery::Nack nack{it->first, {}};
             for (int i = 0; i < assembly.parts.size(); ++i) if (assembly.parts[i].isEmpty()) nack.indexes.push_back(i);
             recovery.nacks.push_back(std::move(nack));
@@ -197,29 +219,39 @@ Feedback Reassembler::report(double decodeMs) {
 }
 
 void CongestionController::reset(const QString& path, int maxFps, int maxWidth, int maxBitrate) {
-    cap_ = std::clamp(maxBitrate, 150000, 20000000);
+    cap_ = std::clamp(maxBitrate, MinBitrate, 20000000);
     maxFps_ = fps_ = std::clamp(maxFps, 1, 60);
     maxWidth_ = width_ = std::clamp(maxWidth, 320, 3840);
     bitrate_ = std::min(cap_, path == "direct" ? 4000000 : path == "relayed" ? 1500000 : 1000000);
-    bad_ = good_ = 0;
+    bad_ = good_ = slowDecode_ = cooldown_ = 0;
 }
 
 void CongestionController::update(const Feedback& report) {
+    if (cooldown_ > 0) --cooldown_;
+    // Decoding slower than frames arrive: fewer frames, same quality.
+    if (report.decodeMs > 1000. / fps_ * 1.2) {
+        if (++slowDecode_ >= 3 && fps_ > 5) { fps_ = std::max(5, fps_ * 3 / 4); slowDecode_ = 0; }
+    } else {
+        slowDecode_ = 0;
+    }
     const double loss = double(report.lost) / std::max(1., double(report.received + report.lost));
-    if (loss > .02 || report.owdTrendMs > 8 || report.decodeMs > 1000. / fps_ * 1.5) {
-        bitrate_ = std::max(150000, int(bitrate_ * .7)); ++bad_; good_ = 0;
-        if (bad_ >= 3 && bitrate_ <= 300000) {
-            if (fps_ > 10) fps_ = std::max(10, fps_ - 5);
+    if (loss > .05 || report.owdTrendMs > 15) {
+        good_ = 0;
+        if (cooldown_ > 0) return;  // already eased off for this patch
+        bitrate_ = std::max(MinBitrate, int(bitrate_ * .8)); cooldown_ = 3;
+        if (++bad_ >= 3 && bitrate_ <= MinBitrate * 2) {
+            if (fps_ > 15) fps_ = std::max(15, fps_ - 5);
             else width_ = std::max(320, width_ * 3 / 4);
             bad_ = 0;
         }
-    } else {
-        bad_ = 0; ++good_;
-        if (report.received > 0) bitrate_ = std::min(cap_, bitrate_ + std::max(25000, bitrate_ / 30));
-        if (good_ >= 10 && bitrate_ > 1000000) {
-            width_ = std::min(maxWidth_, width_ + 160);
-            fps_ = std::min(maxFps_, fps_ + 5); good_ = 0;
-        }
+        return;
+    }
+    bad_ = 0; ++good_;
+    if (report.received > 0) bitrate_ = std::min(cap_, bitrate_ + std::max(50000, bitrate_ / 20));
+    if (good_ >= 10) {
+        width_ = std::min(maxWidth_, width_ + 160);
+        if (slowDecode_ == 0) fps_ = std::min(maxFps_, fps_ + 5);
+        good_ = 0;
     }
 }
 

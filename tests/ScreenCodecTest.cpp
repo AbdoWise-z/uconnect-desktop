@@ -6,6 +6,16 @@ using namespace ucd::screen;
 class ScreenCodecTest : public QObject {
     Q_OBJECT
 private slots:
+    void bitrateChangesAreBatched() {
+        QVERIFY(!bitrateWorthChanging(4000000, 4000000, 60000));
+        // Cuts: soon, but not twice within a second.
+        QVERIFY(bitrateWorthChanging(4000000, 3200000, 1000)); QVERIFY(!bitrateWorthChanging(4000000, 3200000, 500));
+        // Raises: in larger steps, every few seconds.
+        QVERIFY(!bitrateWorthChanging(4000000, 4400000, 6000)); QVERIFY(!bitrateWorthChanging(4000000, 6000000, 3000));
+        QVERIFY(bitrateWorthChanging(4000000, 6000000, 5000));
+        // Small drift catches up eventually.
+        QVERIFY(bitrateWorthChanging(4000000, 4400000, 15000)); QVERIFY(!bitrateWorthChanging(4000000, 4100000, 60000));
+    }
     void roundTrip_data() {
         QTest::addColumn<QString>("name");
         for (const auto& name : Encoder::candidates()) QTest::newRow(qPrintable(name)) << name;

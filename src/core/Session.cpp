@@ -70,6 +70,7 @@ Session::Session(QObject* parent)
                 access.key = keyToHex(*it->second.identity);
                 access.fingerprint = fingerprint(*it->second.identity);
                 access.name = it->second.hello ? it->second.hello->name : shortId(hex(peer));
+                access.verified = true;
                 access.trusted = policy_.trusted.contains(access.key);
                 access.permissions = permissionsFor(peer);
             }
@@ -89,6 +90,7 @@ Session::Session(QObject* parent)
                 access.key = keyToHex(*it->second.identity);
                 access.fingerprint = fingerprint(*it->second.identity);
                 access.name = it->second.hello ? it->second.hello->name : shortId(hex(peer));
+                access.verified = true;
                 access.trusted = policy_.trusted.contains(access.key);
                 access.permissions = permissionsFor(peer);
             }
@@ -267,9 +269,10 @@ void Session::setIdentity(const Identity& identity) {
 }
 
 bool Session::openMedia(const uconnect::DevId& peer) {
+    // A proven identity is enough here: whether this device may share with
+    // the peer (which needs trust) is the screen service's decision.
     const auto it = peers_.find(peer);
-    if (it == peers_.end() || !it->second.identity || !policy_.trusted.contains(keyToHex(*it->second.identity)))
-        return false;
+    if (it == peers_.end() || !it->second.identity) return false;
     if (!mediaUsers_.contains(peer) && !media_.open(peer)) return false;
     ++mediaUsers_[peer];
     emit mediaPathChanged(hex(peer), QString::fromLatin1(uconnect::to_string(media_.path(peer))));
@@ -299,10 +302,6 @@ void Session::setAccessPolicy(const AccessPolicy& policy) {
         for (const uconnect::DevId& dev : topic_->connected()) {
             sendGrants(dev);
             sync_->peerUp(dev);  // trust may have changed
-            const auto it = peers_.find(dev);
-            if (it == peers_.end() || !it->second.identity || !policy_.trusted.contains(keyToHex(*it->second.identity))) {
-                media_.close(dev); mediaUsers_.erase(dev);
-            }
         }
     emitPeers();
 }

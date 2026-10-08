@@ -1,4 +1,5 @@
 #include "DesktopEncoder.hpp"
+#include <QElapsedTimer>
 #include <algorithm>
 #include <windows.h>
 #include <d3d11.h>
@@ -36,14 +37,22 @@ class D3DDesktop : public DesktopEncoder {
     QSize input_, output_;
     CodecOptions options_;
     qint64 pts_ = 0;
+    int openedBitrate_ = 0;
+    QElapsedTimer bitrateChanged_;
     std::map<qint64, quint32> times_;
     bool haveSource_ = false, forceKey_ = true;
+    // The encoder side: what depends on the output size and frame rate.
+    void closeCodec() {
+        avcodec_free_context(&codec_); av_buffer_unref(&qsvFrames_); av_buffer_unref(&frames_);
+        processor_.reset(); enumerator_.reset();
+        forceKey_ = true; pts_ = 0; times_.clear();
+    }
     void close() {
-        avcodec_free_context(&codec_); av_buffer_unref(&qsvFrames_); av_buffer_unref(&qsvDevice_);
-        av_buffer_unref(&frames_); av_buffer_unref(&deviceRef_);
-        source_.reset(); processor_.reset(); enumerator_.reset(); videoContext_.reset(); videoDevice_.reset();
+        closeCodec();
+        av_buffer_unref(&qsvDevice_); av_buffer_unref(&deviceRef_);
+        source_.reset(); videoContext_.reset(); videoDevice_.reset();
         duplication_.reset(); context_.reset(); device_.reset();
-        haveSource_ = false; forceKey_ = true; pts_ = 0; times_.clear();
+        haveSource_ = false; monitor_.clear();
     }
     bool open(const QString& monitor, const CodecOptions& options) {
         if (!lgplCodecBuild()) return false;
@@ -69,19 +78,8 @@ class D3DDesktop : public DesktopEncoder {
         DXGI_OUTDUPL_DESC desktop{}; duplication_->GetDesc(&desktop);
         input_ = {int(desktop.ModeDesc.Width), int(desktop.ModeDesc.Height)};
         if (input_.width() < 2 || input_.height() < 2) return false;
-        output_ = {std::max(2, std::min(input_.width(), options.width) & ~1), 0};
-        output_.setHeight(std::max(2, int(qint64(input_.height()) * output_.width() / input_.width()) & ~1));
-        if (output_.width() > 3840 || output_.height() > 4320) return false;
         if (FAILED(device_->QueryInterface(__uuidof(ID3D11VideoDevice), reinterpret_cast<void**>(videoDevice_.put()))) ||
             FAILED(context_->QueryInterface(__uuidof(ID3D11VideoContext), reinterpret_cast<void**>(videoContext_.put())))) return false;
-        D3D11_VIDEO_PROCESSOR_CONTENT_DESC content{};
-        content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
-        content.InputWidth = input_.width(); content.InputHeight = input_.height();
-        content.OutputWidth = output_.width(); content.OutputHeight = output_.height();
-        content.InputFrameRate = content.OutputFrameRate = {UINT(options.fps), 1};
-        content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
-        if (FAILED(videoDevice_->CreateVideoProcessorEnumerator(&content, enumerator_.put())) ||
-            FAILED(videoDevice_->CreateVideoProcessor(enumerator_.get(), 0, processor_.put()))) return false;
         D3D11_TEXTURE2D_DESC texture{};
         texture.Width = input_.width(); texture.Height = input_.height(); texture.MipLevels = texture.ArraySize = 1;
         texture.Format = DXGI_FORMAT_B8G8R8A8_UNORM; texture.SampleDesc.Count = 1;
@@ -91,6 +89,21 @@ class D3DDesktop : public DesktopEncoder {
         auto* hardware = static_cast<AVD3D11VADeviceContext*>(reinterpret_cast<AVHWDeviceContext*>(deviceRef_->data)->hwctx);
         hardware->device = device_.get(); hardware->device->AddRef();
         if (av_hwdevice_ctx_init(deviceRef_) < 0) return false;
+        monitor_ = monitor;
+        return openCodec(options);
+    }
+    bool openCodec(const CodecOptions& options) {
+        output_ = {std::max(2, std::min(input_.width(), options.width) & ~1), 0};
+        output_.setHeight(std::max(2, int(qint64(input_.height()) * output_.width() / input_.width()) & ~1));
+        if (output_.width() > 3840 || output_.height() > 4320) return false;
+        D3D11_VIDEO_PROCESSOR_CONTENT_DESC content{};
+        content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+        content.InputWidth = input_.width(); content.InputHeight = input_.height();
+        content.OutputWidth = output_.width(); content.OutputHeight = output_.height();
+        content.InputFrameRate = content.OutputFrameRate = {UINT(options.fps), 1};
+        content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+        if (FAILED(videoDevice_->CreateVideoProcessorEnumerator(&content, enumerator_.put())) ||
+            FAILED(videoDevice_->CreateVideoProcessor(enumerator_.get(), 0, processor_.put()))) return false;
         frames_ = av_hwframe_ctx_alloc(deviceRef_); if (!frames_) return false;
         auto* pool = reinterpret_cast<AVHWFramesContext*>(frames_->data);
         pool->format = AV_PIX_FMT_D3D11; pool->sw_format = AV_PIX_FMT_NV12;
@@ -126,25 +139,45 @@ class D3DDesktop : public DesktopEncoder {
             avcodec_free_context(&codec_);
         }
         if (!codec_) return false;
-        monitor_ = monitor; options_ = options; return true;
+        options_ = options; openedBitrate_ = options.bitrate; bitrateChanged_.start(); return true;
     }
 public:
     ~D3DDesktop() override { close(); }
     DesktopResult encode(const QString& monitor, const CodecOptions& options, quint32 number, quint32 captureMs, bool keyframe) override {
         forceKey_ |= keyframe;
-        if (monitor_ != monitor || options.width != options_.width || options.fps != options_.fps ||
-            options.encoder != options_.encoder || std::abs(options.bitrate - options_.bitrate) > options_.bitrate / 5) close();
-        if (!codec_ && !open(monitor, options)) { close(); return {false, {}, {}, "D3D11 capture/encode unavailable; using Qt capture."}; }
+        // Another monitor needs a new duplication; another size, frame rate or
+        // encoder only a new encoder. The bitrate changes on the fly, batched
+        // (see bitrateWorthChanging) since each change costs a keyframe.
+        if (monitor_ != monitor) close();
+        else if (codec_ && (options.width != options_.width || options.fps != options_.fps || options.encoder != options_.encoder ||
+                            options.bitrate > openedBitrate_ * 2 || options.bitrate < openedBitrate_ / 2)) closeCodec();
+        if ((!duplication_.get() && !open(monitor, options)) || (!codec_ && !openCodec(options))) {
+            close(); return {false, {}, {}, "D3D11 capture/encode unavailable; using Qt capture."};
+        }
+        if (bitrateWorthChanging(options_.bitrate, options.bitrate, bitrateChanged_.elapsed())) {
+            codec_->bit_rate = codec_->rc_max_rate = options.bitrate; codec_->rc_buffer_size = options.bitrate / 8;
+            options_.bitrate = options.bitrate; bitrateChanged_.start();
+        }
         const auto pipeline = "DXGI / D3D11 NV12 / " + name_;
         Com<IDXGIResource> resource; DXGI_OUTDUPL_FRAME_INFO info{};
-        const auto acquired = duplication_->AcquireNextFrame(0, &info, resource.put());
+        // Until the first image arrives, wait for it a little rather than
+        // reporting nothing captured over and over.
+        auto acquired = duplication_->AcquireNextFrame(haveSource_ ? 0 : 50, &info, resource.put());
+        if (acquired == DXGI_ERROR_ACCESS_LOST) {
+            // A mode change, a UAC prompt or the lock screen: duplicate afresh.
+            close();
+            if (!open(monitor, options)) { close(); return {false, {}, {}, "DXGI capture was interrupted; using Qt capture for now."}; }
+            acquired = duplication_->AcquireNextFrame(50, &info, resource.put());
+        }
         if (acquired == S_OK) {
             Com<ID3D11Texture2D> texture;
             if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(texture.put())))) {
                 context_->CopyResource(source_.get(), texture.get()); haveSource_ = true;
             }
             duplication_->ReleaseFrame();
-        } else if (acquired != DXGI_ERROR_WAIT_TIMEOUT) { close(); return {false, {}, {}, "DXGI capture ended; using Qt capture."}; }
+        } else if (acquired != DXGI_ERROR_WAIT_TIMEOUT && acquired != DXGI_ERROR_ACCESS_LOST) {
+            close(); return {false, {}, {}, "DXGI capture ended; using Qt capture."};
+        }
         if (!haveSource_) return {true, {}, pipeline, {}};
         auto* frame = av_frame_alloc();
         if (av_hwframe_get_buffer(frames_, frame, 0) < 0) { av_frame_free(&frame); close(); return {}; }

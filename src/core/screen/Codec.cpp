@@ -1,5 +1,6 @@
 #include "Codec.hpp"
 
+#include <QElapsedTimer>
 #include <QLibrary>
 #include <algorithm>
 #include <map>
@@ -32,6 +33,13 @@ bool supports(const AVCodec* codec, AVPixelFormat format) {
 }
 }
 
+bool bitrateWorthChanging(int applied, int wanted, qint64 sinceMs) {
+    if (wanted == applied || applied <= 0) return wanted != applied;
+    if (wanted < applied * 0.85) return sinceMs >= 1000;
+    if (wanted > applied * 1.25) return sinceMs >= 5000;
+    return sinceMs >= 15000 && std::abs(wanted - applied) > applied / 20;
+}
+
 bool lgplCodecBuild() {
     const QByteArray configuration(avcodec_configuration());
     return !configuration.contains("--enable-gpl") && !configuration.contains("--enable-nonfree");
@@ -47,7 +55,8 @@ struct Encoder::Impl {
     Destroy destroy = nullptr;
     QString name, error, library;
     QSize size;
-    int fps = 0, bitrate = 0;
+    int fps = 0, bitrate = 0, openedBitrate = 0;
+    QElapsedTimer bitrateChanged;
     qint64 pts = 0;
     std::map<qint64, quint32> captureTimes;
     ~Impl() {
@@ -129,7 +138,7 @@ struct Encoder::Impl {
             error = "No usable H.264 hardware encoder. Install and enable the Cisco OpenH264 fallback. " + error;
             return false;
         }
-        size = {width, height}; fps = options.fps; bitrate = options.bitrate;
+        size = {width, height}; fps = options.fps; bitrate = openedBitrate = options.bitrate; bitrateChanged.start();
         frame = av_frame_alloc(); frame->width = width; frame->height = height;
         frame->format = context ? context->pix_fmt : AV_PIX_FMT_YUV420P;
         const int result = av_frame_get_buffer(frame, 32);
@@ -162,17 +171,21 @@ std::optional<EncodedFrame> Encoder::encode(const QImage& input, const CodecOpti
     if (impl_->size != target || impl_->fps != options.fps || (impl_->software && impl_->library != options.ciscoLibrary)) reset();
     if (!impl_->frame && !impl_->open(input.size(), options)) return std::nullopt;
     auto& p = *impl_;
-    if (p.bitrate != options.bitrate && (p.software || std::abs(p.bitrate - options.bitrate) > p.bitrate / 5)) {
+    if (p.bitrate != options.bitrate && (p.software || bitrateWorthChanging(p.bitrate, options.bitrate, p.bitrateChanged.elapsed()))) {
         if (p.software) {
             SBitrateInfo rate{SPATIAL_LAYER_ALL, options.bitrate};
             p.software->SetOption(ENCODER_OPTION_BITRATE, &rate);
-        } else {
-            // Reopening is portable across hardware implementations which do
-            // not support live AVCodecContext bitrate changes.
+        } else if (options.bitrate > p.openedBitrate * 2 || options.bitrate < p.openedBitrate / 2) {
+            // A large change reopens the encoder, which every implementation
+            // honours. Smaller ones are applied live (NVENC and QSV pick them
+            // up; others keep their rate until a large change).
             reset(); if (!impl_->open(input.size(), options)) return std::nullopt;
             return encode(input, options, session, number, captureMs, true);
+        } else {
+            p.context->bit_rate = p.context->rc_max_rate = options.bitrate;
+            p.context->rc_buffer_size = options.bitrate / 8;
         }
-        p.bitrate = options.bitrate;
+        p.bitrate = options.bitrate; p.bitrateChanged.start();
     }
     const QImage image = input.convertToFormat(QImage::Format_RGBA8888);
     if (av_frame_make_writable(p.frame) < 0) return std::nullopt;

@@ -48,6 +48,30 @@ private slots:
         time += 5001; service.tick(); QVERIFY(hosting.back()[0].toList().isEmpty());
     }
 
+    // A session whose capture never delivers says so, once, to both sides.
+    void hostSaysWhenNothingIsCaptured() {
+        qint64 time = 0;
+        PeerAccess access{"key", "Viewer", "fp", {perm::ScreenView, perm::ScreenDirect}, true};
+        QVector<QJsonObject> sent;
+        ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
+            [&](const auto&) { return access; }, [](const auto&) { return true; }, [](const auto&) {},
+            [](const auto&, const auto&) { return true; }, nullptr, [&] { return time; });
+        ScreenSettings settings; settings.gpuCapture = false;
+        settings.monitors = {QVariantMap{{"name", "Synthetic"}, {"width", 256}, {"height", 128}}};
+        service.configure(settings); service.setOffered(true);
+        QSignalSpy activity(&service, &ScreenService::activity);
+        service.handle(peer(1), request());
+        const int token = sent.back().value("session").toInt(); QVERIFY(token > 0);
+        const auto statuses = [&] { return std::count_if(sent.begin(), sent.end(), [](const auto& m) { return m.value("t") == "scr.status"; }); };
+        const QJsonObject report{{"t", "scr.report"}, {"session", token}, {"received", 0}, {"lost", 0}, {"late", 0},
+                                 {"jitterMs", 0}, {"owdTrendMs", 0}, {"decodeMs", 0}};
+        time = 4000; service.handle(peer(1), report); service.tick(); QCOMPARE(statuses(), 0);
+        time = 5001; service.tick(); QCOMPARE(statuses(), 1);
+        QVERIFY(sent.back().value("detail").toString().contains("not produced a picture"));
+        QVERIFY(std::any_of(activity.begin(), activity.end(), [](const auto& a) { return a[0].toString().contains("not produced a picture"); }));
+        time = 6000; service.handle(peer(1), report); service.tick(); QCOMPARE(statuses(), 1);
+    }
+
     void twoRealSessionsSyntheticVideo() {
         if (qEnvironmentVariableIsEmpty("UCD_TEST_OPENH264")) QSKIP("Install Cisco OpenH264 for synthetic end-to-end test");
         uconnect::server::RendezvousConfig config; config.port = 0;
@@ -58,7 +82,7 @@ private slots:
         host.setIdentity(ih); viewer.setIdentity(iv);
         AccessPolicy hp, vp;
         hp.trusted.insert(keyToHex(iv.publicKey()), {perm::ScreenView, perm::CameraView});
-        vp.trusted.insert(keyToHex(ih.publicKey()), {});
+        // Only the host trusts: the viewer watching it needs no trust of its own.
         host.setAccessPolicy(hp); viewer.setAccessPolicy(vp);
         host.setLocalHello({"Host", "test", ServiceScreen | ServiceCamera}); viewer.setLocalHello({"Viewer", "test", 0});
         ScreenSettings settings; settings.ciscoLibrary = qEnvironmentVariable("UCD_TEST_OPENH264");
@@ -69,7 +93,7 @@ private slots:
         connect(&viewer, &Session::snapshotChanged, this, [&](const auto& s) { if (!s.selfId.isEmpty()) viewerId = s.selfId; });
         bool proven = false;
         connect(&viewer, &Session::peersChanged, this, [&](const auto& peers) {
-            for (const auto& p : peers) if (p.trusted && p.stateCode == 3) proven = true;
+            for (const auto& p : peers) if (p.identityState == "verified" && p.stateCode == 3) proven = true;
         });
         const auto creds = uconnect::TopicCreds::generate_keyed();
         Session::Options options{QString::fromStdString("127.0.0.1:" + std::to_string(server.port())), QString::fromStdString(creds.to_uri())};

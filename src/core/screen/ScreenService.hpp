@@ -18,7 +18,8 @@ namespace ucd::screen {
 struct PeerAccess {
     QString key, name, fingerprint;
     PermissionSet permissions;
-    bool trusted = false;
+    bool trusted = false;   // this device trusts it: needed to share with it
+    bool verified = false;  // its identity is proven: enough to watch what it shares
 };
 struct ScreenSettings {
     bool offered = false;
@@ -88,6 +89,9 @@ private:
         quint32 controlRequest = 0;
         qint64 controlExpires = 0;
         quint32 cursorVersion = 0;
+        qint64 startedAt = 0;
+        quint64 framesSent = 0;
+        bool stalledTold = false;
         std::optional<quint32> nackedFrame;
         QString path = "opening";
         PacedSender sender;
@@ -104,6 +108,9 @@ private:
         int decoded = 0;
         double decodeMs = 0;
         bool decoding = false, channel = false;
+        QVector<EncodedFrame> toDecode;  // complete frames waiting for the decoder
+        qint64 liveAt = 0;
+        bool pictured = false, stalledTold = false;
         bool wantControl = false;
         bool control = false;
         quint32 controlRequest = 0;
@@ -119,6 +126,7 @@ private:
     void showViewer(const Peer& peer, const QString& state, const QString& detail = {}, const QVariantMap& extra = {});
     void showHosting();
     void encodeCapture(const QVideoFrame& frame, const QImage& image, quint32 captureMs);
+    void decodeNext(const Peer& peer);
     Send send_;
     Authorize authorize_;
     Open open_;
@@ -140,6 +148,10 @@ private:
     std::unique_ptr<Encoder> encoder_;
     std::unique_ptr<DesktopEncoder> desktop_;
     bool nativeActive_ = false, nativeDisabled_ = false;
+    // A failed native path is tried again later (desktop duplication is lost
+    // on display changes, UAC prompts, the lock screen), backing off each time.
+    qint64 nativeRetryAt_ = 0;
+    int nativeFailures_ = 0;
     QString lastPipeline_;
     std::map<Peer, std::unique_ptr<Decoder>> decoders_;
     std::atomic_bool capturePending_{false};

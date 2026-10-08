@@ -601,10 +601,10 @@ These are MUSTs for any implementation:
 
 Media uses uConnect's encrypted datagram channel (maximum 1100 bytes),
 separate from reliable message kinds. A channel is delivered to the screen
-service only while a consented session is active. Untrusted identities cannot
-open media sessions. `screen.view`, `screen.direct`, `control.input`, and
-`control.direct`, and `camera.view` are trusted-device grants, never default
-permissions. Datagram kinds are separate from the reliable envelope in section
+service only while a consented session is active. A media channel needs a
+proven identity; sharing additionally needs the host's trust (7.3).
+`screen.view`, `screen.direct`, `control.input`, `control.direct`, and
+`camera.view` are trusted-device grants, never default permissions. Datagram kinds are separate from the reliable envelope in section
 2: 1 = screen video, 2 = screen cursor, 3 = camera video.
 
 ### 7.1 Video fragments
@@ -628,12 +628,20 @@ Duplicate fragments do not affect feedback. Mismatched tokens, metadata,
 unknown flags, oversized counts and malformed lengths are discarded.
 
 Frames normally expire after two frame intervals plus measured jitter
-(capped at 60 ms). An incomplete keyframe receives one `scr.nack` with its
+(capped at 60 ms). An incomplete frame receives one `scr.nack` with its
 `frame` and missing `indexes`; its deadline is extended by one interval
-(at least 30 ms). The sender caches the last keyframe for 500 ms. Delta
-frames are not retransmitted. Lost references gate delta delivery until a
-complete keyframe; `scr.keyframe` requests are rate limited to once per
-200 ms. Delivery follows frame sequence order, including sequence wrap.
+(at least 30 ms). While deltas are gated (below), only keyframes are
+nacked. The sender keeps the fragments of frames sent in the last 500 ms
+(at most 16 frames) and resends requested ones with the retransmission
+flag. A frame that still cannot complete is a lost reference: delta delivery
+is gated until a complete keyframe; `scr.keyframe` requests are rate limited
+to once per 200 ms. Delivery follows frame sequence order, including
+sequence wrap.
+
+The viewer decodes complete frames in order on its decoder thread. Frames
+completing while a decode runs wait for it (none can be skipped: each is a
+reference for the next); if more than a second of video (at least 8 frames)
+waits, they are dropped and a keyframe requested.
 
 ### 7.2 Reports and pacing
 
@@ -641,14 +649,29 @@ complete keyframe; `scr.keyframe` requests are rate limited to once per
 `jitterMs`, `owdTrendMs`, `decodeMs`. Transit differences estimate delay trend
 without assuming synchronized clocks. They are not glass-to-glass latency.
 
-Packets are spread over a frame interval, with at most 64 sends per tick.
-The sender holds one queued frame. A blocked send or an expired send deadline
-drops the remainder so TCP fallback cannot accumulate stale video.
+Each frame's datagrams are spread over about half a frame interval
+(the first few at once), starting when the previous frame's are due. Up to 3
+frames may wait; a further frame is dropped. A datagram the path refuses
+(still opening, or the TCP fallback's queue full) is retried on the next
+pump, not dropped. Frames older than four frame intervals (at least 150 ms)
+are dropped with every frame queued behind them, and the next frame is a
+keyframe, so a blocked path cannot accumulate stale video.
 
-Bitrate starts at 4 Mbit/s on direct UDP, 1.5 Mbit/s on relay, 1 Mbit/s on TCP.
-Loss above 2%, rising delay or excessive decode time reduces bitrate by 30%;
-clean reports increase it slowly. Persistent congestion at the bitrate floor
-reduces frame rate, then resolution. Configuration caps apply throughout.
+Bitrate starts at 4 Mbit/s on direct UDP, 1.5 Mbit/s on relay, 1 Mbit/s on
+TCP, and never goes below 300 kbit/s. Loss above 5% or a delay trend above
+15 ms cuts it by 20%, at most once per three reports; persistent congestion
+at the floor lowers the frame rate (not below 15), then the width. Decoding
+slower than the frame interval (by 20%, three reports running) lowers only
+the frame rate, by a quarter (not below 5). Clean reports raise the bitrate
+by 5% (at least 50 kbit/s) each; every 10 clean reports widen the picture by
+160 pixels and, unless decoding is slow, add 5 fps. Configuration caps apply
+throughout.
+
+Hardware encoders restart with a keyframe on a bitrate change, so the host
+applies the controller's bitrate in batches: cuts of more than 15% at most
+once a second, raises of more than 25% at most every 5 s, smaller drift after
+15 s. Changes beyond 2x reopen the encoder. Software OpenH264 follows every
+change.
 
 ### 7.3 Screen sessions and consent
 
@@ -667,6 +690,7 @@ Reliable control messages have these types:
 | `scr.nack` | `session`, `frame`, `indexes` |
 | `scr.report` | `session` plus the report fields in 7.2 |
 | `scr.error` | `session`, human-readable `detail`, followed by stop |
+| `scr.status` | `session`, human-readable `detail`; the host has had nothing to send 5 s after starting (sent once) |
 | `scr.stop` | `session`; cancelling a pending request also carries `request` |
 
 Request IDs correlate approvals and responses; session tokens isolate media
@@ -678,8 +702,11 @@ Screen hosting must be offered, the requester must prove a trusted identity,
 and it must hold `screen.view`. A free viewer slot is reserved during consent.
 Without `screen.direct`, the host asks each time; the prompt expires in 30 s.
 Remembering approval grants the trusted identity `screen.direct`. A viewer
-also requires a trusted host. Revocation, disconnect, stop and absence of
-valid feedback for 5 s end hosting. Pending viewer requests expire in 35 s.
+requires only that the host has proven its identity: trust is the sharing
+device's decision, not the watching one's. Revocation, disconnect, stop and
+absence of valid feedback for 5 s end hosting. Pending viewer requests expire
+in 35 s. A viewer with no decoded picture 8 s after `scr.started` tells its
+user, along with any `scr.status` detail.
 
 H.264 is carried as Annex B access units with parameter sets in keyframes;
 there are no B frames. Capture and decode submissions are bounded and run
@@ -692,7 +719,7 @@ interpreted as absolute cross-device latency without clock synchronization.
 Screen hosting allows 1-8 viewers, including reserved consent slots. One
 encoder serves every viewer; its width, frame rate and bitrate honor the
 lowest requested/adaptive limits. Each peer has independent tokens, pacing,
-keyframe caches and reports. A blocked peer cannot queue unbounded video.
+retransmission history and reports. A blocked peer cannot queue unbounded video.
 Stopping one viewer leaves capture running until the last live viewer stops.
 Only one viewer may hold or await control. Source selection is shared; while
 controlled, only that controlling viewer may switch it.
