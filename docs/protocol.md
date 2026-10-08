@@ -597,6 +597,60 @@ These are MUSTs for any implementation:
   - the path is live in its own index;
   - the block's hash matches what is on disk now.
 
+## 7. Screen media transport
+
+Media uses uConnect's encrypted datagram channel (maximum 1100 bytes),
+separate from reliable message kinds. A channel is delivered to the screen
+service only while a consented session is active. Untrusted identities cannot
+open media sessions. `screen.view`, `screen.direct`, `control.input`, and
+`control.direct` are trusted-device grants, never default permissions.
+
+### 7.1 Video fragments
+
+All multibyte integers are unsigned, big endian. Header (16 bytes):
+
+| offset | field |
+|---|---|
+| 0 | u8 kind = 1 |
+| 1 | u8 flags: bit 0 keyframe, bit 1 retransmission |
+| 2 | u16 nonzero session token |
+| 4 | u32 frame sequence (wraps) |
+| 8 | u16 fragment index (zero based) |
+| 10 | u16 fragment count |
+| 12 | u32 capture timestamp in monotonic milliseconds (wraps) |
+| 16 | encoded payload, 1–1084 bytes |
+
+Nonfinal fragments have exactly 1084 payload bytes. Frames are bounded to
+4 MiB, at most 8 assemblies and 8 MiB of buffered payload per viewer.
+Duplicate fragments do not affect feedback. Mismatched tokens, metadata,
+unknown flags, oversized counts and malformed lengths are discarded.
+
+Frames normally expire after two frame intervals plus measured jitter
+(capped at 60 ms). An incomplete keyframe receives one `scr.nack` with its
+`frame` and missing `indexes`; its deadline is extended by one interval
+(at least 30 ms). The sender caches the last keyframe for 500 ms. Delta
+frames are not retransmitted. Lost references gate delta delivery until a
+complete keyframe; `scr.keyframe` requests are rate limited to once per
+200 ms. Delivery follows frame sequence order, including sequence wrap.
+
+### 7.2 Reports and pacing
+
+`scr.report` carries window counters `received`, `lost`, `late`, and numeric
+`jitterMs`, `owdTrendMs`, `decodeMs`. Transit differences estimate delay trend
+without assuming synchronized clocks. They are not glass-to-glass latency.
+
+Packets are spread over a frame interval, with at most 64 sends per tick.
+The sender holds one queued frame. A blocked send or an expired send deadline
+drops the remainder so TCP fallback cannot accumulate stale video.
+
+Bitrate starts at 4 Mbit/s on direct UDP, 1.5 Mbit/s on relay, 1 Mbit/s on TCP.
+Loss above 2%, rising delay or excessive decode time reduces bitrate by 30%;
+clean reports increase it slowly. Persistent congestion at the bitrate floor
+reduces frame rate, then resolution. Configuration caps apply throughout.
+
+Session negotiation, capture, cursor and input messages are added in the
+following implementation phases.
+
 ## Changes
 
 | revision | change |

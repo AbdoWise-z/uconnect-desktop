@@ -10,6 +10,10 @@ Execution notes:
   Foundation tests cover real direct UDP, UDP relay and TCP fallback, codec
   round trip, and default-grant filtering. **Validated:** Windows Debug build
   and all 7 CTest suites pass, including the three real network paths.
+- Phase 1: paced fragmentation, bounded ordered reassembly, one-shot keyframe
+  NACKs, keyframe gating, feedback and AIMD implemented. Synthetic tests cover
+  5% seeded loss, reordering, duplicates, delay spikes, TCP backpressure,
+  timestamp/frame wrap and malformed/oversized inputs. Transport tests pass.
 - Hardware, macOS/Linux capture, and glass-to-glass latency require real
   desktops; automated synthetic tests cannot establish those acceptance values.
 - The pinned BtbN build embeds source-built OpenH264. Its software encoder

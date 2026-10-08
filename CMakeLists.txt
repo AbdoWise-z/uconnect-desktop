@@ -91,6 +91,8 @@ add_library(uconnect_desktop_core STATIC
     src/core/Session.hpp
     src/core/screen/DatagramChannel.cpp
     src/core/screen/DatagramChannel.hpp
+    src/core/screen/MediaTransport.cpp
+    src/core/screen/MediaTransport.hpp
     src/core/StorageService.cpp
     src/core/StorageService.hpp
     src/core/sync/SyncFolder.cpp
@@ -260,6 +262,7 @@ if (UCD_BUILD_TESTS)
 
     ucd_add_test(IdentityTest)
     ucd_add_test(ScreenFoundationTest)
+    ucd_add_test(ScreenTransportTest)
     add_subdirectory(${uconnect_SOURCE_DIR}/server ${uconnect_BINARY_DIR}/server)
     target_link_libraries(ScreenFoundationTest PRIVATE uconnect_rendezvous)
     ucd_deploy_screen(ScreenFoundationTest)
