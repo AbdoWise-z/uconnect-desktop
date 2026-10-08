@@ -71,12 +71,18 @@ private slots:
         (void)ta.peers(); (void)tb.peers();
         ta.connect(idb); tb.connect(ida);
         QTRY_VERIFY_WITH_TIMEOUT(ta.state(idb) == PeerState::Connected && tb.state(ida) == PeerState::Connected, 20000);
-        const std::array<uint8_t, 3> video{1, 4, 5}, cursor{2, 4, 5}, unknown{3, 4, 5};
+        const std::array<uint8_t, 3> video{1, 4, 5}, cursor{2, 4, 5}, unknown{255, 4, 5};
         {
             std::lock_guard lock(mutex);
             QVERIFY(!channelA.send(idb, video));
             QVERIFY(!channelA.receive(idb, video));
             QVERIFY(channelA.open(idb, DatagramFallback(fallback)));
+        }
+        // Let the remote node process the open first: its application has not
+        // authorized media yet, but a subsequent consented open must adopt it.
+        QTest::qWait(100);
+        { std::lock_guard lock(mutex);
+            QVERIFY(!channelB.receive(ida, video));
             QVERIFY(channelB.open(ida, DatagramFallback(fallback)));
         }
         QTRY_VERIFY_WITH_TIMEOUT(int(ta.datagram_path(idb)) == path && int(tb.datagram_path(ida)) == path, 15000);

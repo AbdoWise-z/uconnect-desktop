@@ -3,6 +3,8 @@ project(uconnect_desktop VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_OBJCXX_STANDARD 20)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 
 option(UCD_DEBUG_UI "Build the Dear ImGui debug window" ON)
 option(UCD_BUILD_TESTS "Build the test suite" ON)
@@ -112,12 +114,20 @@ target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Core Qt6::Network uconne
 if (UCD_SCREEN_AVAILABLE)
     target_sources(uconnect_desktop_core PRIVATE
         src/core/screen/Codec.cpp src/core/screen/Codec.hpp
-        src/core/screen/ScreenService.cpp src/core/screen/ScreenService.hpp)
+        src/core/screen/ScreenService.cpp src/core/screen/ScreenService.hpp
+        src/core/screen/DesktopEncoder.cpp src/core/screen/DesktopEncoder.hpp)
     target_sources(uconnect_desktop_core PRIVATE src/core/screen/Input.cpp src/core/screen/Input.hpp src/core/screen/NativeInput.cpp)
     target_sources(uconnect_desktop_core PRIVATE src/core/screen/Cursor.cpp src/core/screen/Cursor.hpp)
     target_compile_definitions(uconnect_desktop_core PUBLIC UCD_HAS_SCREEN)
     target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Multimedia ucd_ffmpeg_shared)
-    if (APPLE)
+    if (WIN32)
+        target_sources(uconnect_desktop_core PRIVATE src/core/screen/DesktopEncoder_win.cpp)
+        target_link_libraries(uconnect_desktop_core PRIVATE d3d11 dxgi)
+    elseif (APPLE)
+        enable_language(OBJCXX)
+        set_source_files_properties(src/core/screen/DesktopEncoder_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_sources(uconnect_desktop_core PRIVATE src/core/screen/DesktopEncoder_mac.mm)
+        target_link_libraries(uconnect_desktop_core PRIVATE "-framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreVideo")
         target_link_libraries(uconnect_desktop_core PRIVATE "-framework ApplicationServices")
     elseif (UNIX)
         find_package(X11 QUIET)
@@ -255,12 +265,20 @@ if (APPLE)
     set_target_properties(uconnect_desktop PROPERTIES
         MACOSX_BUNDLE_GUI_IDENTIFIER "dev.uconnect.desktop"
         MACOSX_BUNDLE_BUNDLE_NAME "uConnect"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
     find_program(UCD_MACDEPLOYQT macdeployqt
         HINTS "${QT6_INSTALL_PREFIX}/bin" "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}"
         NO_DEFAULT_PATH REQUIRED)
     add_custom_command(TARGET uconnect_desktop POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:uconnect_desktop>/Contents/Resources"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/docs/third-party-screen.md"
+                "${CMAKE_SOURCE_DIR}/docs/OpenH264-BINARY-LICENSE.txt"
+                "${CMAKE_SOURCE_DIR}/docs/licenses/LGPL-2.1.txt"
+                "${CMAKE_SOURCE_DIR}/docs/licenses/GPL-3.0.txt"
+                "$<TARGET_BUNDLE_DIR:uconnect_desktop>/Contents/Resources"
         COMMAND "${UCD_MACDEPLOYQT}" "$<TARGET_BUNDLE_DIR:uconnect_desktop>"
                 "-qmldir=${_ucd_deploy_qmldir}" -always-overwrite -codesign=-
         COMMENT "Deploying Qt runtime inside the macOS app bundle"
@@ -331,9 +349,10 @@ if (UCD_BUILD_TESTS)
         ucd_add_test(ScreenSessionTest)
         ucd_add_test(ScreenCaptureTest)
         ucd_add_test(ScreenInputTest)
+        ucd_add_test(ScreenSpreadTest)
         target_link_libraries(ScreenInputTest PRIVATE uconnect_desktop_screen_ui)
         target_link_libraries(ScreenSessionTest PRIVATE uconnect_rendezvous)
-        set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest PROPERTIES
+        set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest ScreenSpreadTest PROPERTIES
             ENVIRONMENT "UCD_TEST_OPENH264=${UCD_TEST_OPENH264}")
         if (WIN32)
             set_property(TEST ScreenCaptureTest APPEND PROPERTY ENVIRONMENT "QT_PLUGIN_PATH=${QT6_INSTALL_PREFIX}/plugins")

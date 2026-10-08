@@ -156,8 +156,11 @@ private slots:
     void screenSettingsSurviveApplyAndRestart() {
         QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "setScreenSetting",
             Q_ARG(QVariant, QVariant("maxFps")), Q_ARG(QVariant, QVariant(24))));
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "setScreenSetting", Q_ARG(QVariant, QVariant("maxViewers")), Q_ARG(QVariant, QVariant(3))));
         QTRY_VERIFY(dialog_->property("modified").toBool());
         QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QCOMPARE(controller_->screen()->property("settings").toMap().value("maxViewers").toInt(), 3);
+        QCOMPARE(controller_->camera()->property("settings").toMap().value("maxViewers").toInt(), 3);
         QCOMPARE(controller_->screen()->property("settings").toMap().value("maxFps").toInt(), 24);
         QVERIFY(!dialog_->property("modified").toBool());
         QSettings().sync();

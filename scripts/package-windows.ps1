@@ -24,7 +24,7 @@ if ((Test-Path -LiteralPath $packagePath) -or (Test-Path -LiteralPath $archivePa
 New-Item -ItemType Directory -Path $packagePath -Force | Out-Null
 Copy-Item -LiteralPath $executable -Destination (Join-Path $packagePath 'uConnect.exe')
 Get-ChildItem -LiteralPath $buildPath -Filter '*.dll' -File |
-    Where-Object Name -NotMatch '^Qt6Test' |
+    Where-Object Name -NotMatch '^(Qt6Test|openh264-|libopenh264-)' |
     Copy-Item -Destination $packagePath
 foreach ($directory in @('generic', 'iconengines', 'imageformats', 'networkinformation', 'platforms', 'qml', 'tls', 'multimedia')) {
     $sourcePath = Join-Path $buildPath $directory
@@ -32,7 +32,7 @@ foreach ($directory in @('generic', 'iconengines', 'imageformats', 'networkinfor
         Copy-Item -LiteralPath $sourcePath -Destination $packagePath -Recurse
     }
 }
-foreach ($notice in @('third-party-screen.md', 'FFmpeg-LICENSE.txt', 'OpenH264-BINARY-LICENSE.txt')) {
+foreach ($notice in @('third-party-screen.md', 'FFmpeg-LICENSE.txt', 'GPL-3.0.txt', 'OpenH264-BINARY-LICENSE.txt')) {
     $sourcePath = Join-Path $buildPath $notice
     if (Test-Path -LiteralPath $sourcePath) {
         Copy-Item -LiteralPath $sourcePath -Destination $packagePath

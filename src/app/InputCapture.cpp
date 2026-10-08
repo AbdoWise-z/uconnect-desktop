@@ -14,7 +14,7 @@ void InputCapture::setCaptured(bool captured) {
 }
 void InputCapture::release() {
     if (!captured_) return;
-    captured_ = false; textKeys_.clear(); emit input({{"t", "in.release"}}); emit captureChanged(false);
+    captured_ = false; altGr_ = false; textKeys_.clear(); emit input({{"t", "in.release"}}); emit captureChanged(false);
 }
 bool InputCapture::eventFilter(QObject* watched, QEvent* event) {
     if (!captured_ || watched != window_) return false;
@@ -32,9 +32,21 @@ bool InputCapture::eventFilter(QObject* watched, QEvent* event) {
     const auto usage = screen::hidUsage(*key, screen::keyboardPlatform());
     const bool down = event->type() == QEvent::KeyPress;
     if (usage == releaseUsage_) { if (down) release(); event->accept(); return true; }
+    if (key->key() == Qt::Key_AltGr) {
+        altGr_ = down;
+        // Windows may precede AltGr with a synthesized left Ctrl press.
+        // The resulting character is sent as text, without remote modifiers.
+        if (down) emit input({{"t", "in.key"}, {"usage", 0xe0}, {"down", false}});
+        event->accept(); return true;
+    }
+    if (key->key() >= Qt::Key_Dead_Grave && key->key() <= Qt::Key_Dead_Longsolidusoverlay) {
+        if (down && usage) textKeys_.insert(usage);
+        event->accept(); return true;
+    }
     if (!down && key->isAutoRepeat()) return true;
     const bool printable = !key->text().isEmpty() && key->text().front().isPrint() &&
-        !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
+        (altGr_ || (key->modifiers() & Qt::GroupSwitchModifier) ||
+         !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)));
     if (down && printable) {
         emit input({{"t", "in.text"}, {"text", key->text().left(256)}});
         if (usage) textKeys_.insert(usage);

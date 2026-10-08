@@ -10,6 +10,7 @@ Window {
 
     required property string service
     required property string devId
+    readonly property var media: service === "camera" ? App.camera : App.screen
     readonly property var peer: { App.peers.revision; return App.peers.get(devId) }
     readonly property string deviceName: peer.displayName !== undefined ? peer.displayName : qsTr("Unknown device")
     readonly property int stateCode: peer.stateCode !== undefined ? peer.stateCode : Theme.stateUnknown
@@ -21,8 +22,8 @@ Window {
     minimumHeight: 380
     color: Theme.canvas
     title: Theme.serviceLabel(service) + " – " + deviceName
-    onClosing: if (service === "screen" || service === "control") App.screen.stop(devId)
-    onActiveChanged: if (!active && (service === "screen" || service === "control")) App.screen.releaseInput(devId)
+    onClosing: if (service === "screen" || service === "control" || service === "camera") media.stop(devId)
+    onActiveChanged: if (!active && (service === "screen" || service === "control")) media.releaseInput(devId)
 
     component Separator: Rectangle {
         implicitWidth: 1
@@ -113,7 +114,7 @@ Window {
     Component {
         id: screenContent
         Loader {
-            Component.onCompleted: setSource(Qt.resolvedUrl("ScreenView.qml"), {devId: win.devId, wantControl: win.service === "control"})
+            Component.onCompleted: setSource(Qt.resolvedUrl("ScreenView.qml"), {devId: win.devId, controller: win.media, camera: win.service === "camera", wantControl: win.service === "control"})
         }
     }
 
@@ -150,8 +151,7 @@ Window {
                 Separator {}
                 // Storage keeps its navigation bar inside StorageView.
                 Loader {
-                    sourceComponent: win.service === "camera" ? cameraToolbar
-                                   : null
+                    sourceComponent: null
                 }
                 Item { Layout.fillWidth: true }
                 StatusDot {
@@ -183,7 +183,7 @@ Window {
             Layout.fillWidth: true
             Layout.fillHeight: true
             sourceComponent: win.service === "storage" ? storageContent
-                             : (win.service === "screen" || win.service === "control") && App.screen.available ? screenContent : videoContent
+                             : (win.service === "screen" || win.service === "control" || win.service === "camera") && win.media.available ? screenContent : videoContent
         }
     }
 }

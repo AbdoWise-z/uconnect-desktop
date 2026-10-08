@@ -51,6 +51,8 @@ function(ucd_deploy_screen target)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/docs/OpenH264-BINARY-LICENSE.txt" "$<TARGET_FILE_DIR:${target}>"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/docs/licenses/GPL-3.0.txt" "$<TARGET_FILE_DIR:${target}>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${UCD_FFMPEG_ROOT}/LICENSE.txt" "$<TARGET_FILE_DIR:${target}>/FFmpeg-LICENSE.txt"
             VERBATIM)
     endif ()

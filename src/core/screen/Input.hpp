@@ -24,6 +24,8 @@ public:
     virtual bool mouse(const QPoint& point, int previousButtons, int buttons) = 0;
     virtual bool wheel(int dx, int dy) = 0;
     virtual bool text(const QString& text) = 0;
+    virtual void releaseText() {}
+    virtual int pendingText() const { return 0; }
 };
 std::unique_ptr<InputBackend> nativeInputBackend();
 
@@ -37,7 +39,7 @@ public:
     void setBounds(const QRect& bounds) { bounds_ = bounds; }
     bool apply(const QJsonObject& message);
     void release();
-    int pressedCount() const { return keys_.size() + (buttons_ != 0); }
+    int pressedCount() const { return keys_.size() + (buttons_ != 0) + backend_->pendingText(); }
 private:
     std::unique_ptr<InputBackend> backend_;
     QRect bounds_;

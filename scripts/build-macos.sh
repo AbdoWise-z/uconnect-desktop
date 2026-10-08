@@ -19,9 +19,12 @@ command -v ninja >/dev/null
 xcrun --find clang++ >/dev/null
 
 build_dir="$project_dir/build/macos"
+ffmpeg_prefix="${UCD_FFMPEG_ROOT:-$project_dir/build/deps/ffmpeg-lgpl}"
+media_args=()
+if [[ -d "$ffmpeg_prefix/lib" ]]; then media_args+=("-DUCD_FFMPEG_ROOT=$ffmpeg_prefix"); fi
 cmake -S "$project_dir" -B "$build_dir" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$qt_prefix" \
-    -DUCD_DEBUG_UI=ON -DUCD_BUILD_TESTS=ON
+    -DUCD_DEBUG_UI=ON -DUCD_BUILD_TESTS=ON "${media_args[@]}"
 cmake --build "$build_dir" --parallel
 ctest --test-dir "$build_dir" --output-on-failure
 

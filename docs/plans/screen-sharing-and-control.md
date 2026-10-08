@@ -1,6 +1,6 @@
 # Plan: screen sharing and remote control
 
-Status: **implementation in progress** (2026-10-08). Each phase is implemented,
+Status: **phases 0-4 implemented; Windows verification complete, native platform/manual acceptance pending** (2026-10-08). Each phase is implemented,
 tested and committed before the next phase. Wire details land in `docs/protocol.md`.
 
 Execution notes:
@@ -30,6 +30,20 @@ Execution notes:
   channels implemented. Recording-backend tests cover invalid input and held
   key/button release on all principal stop paths. Windows app build and all
   12 suites pass. Cross-layout/native desktop acceptance remains manual.
+- Phase 4: 1-8 viewers share an encoder, with independent pacing and one
+  control owner. Camera sharing runs alongside screen sessions on its own
+  datagram kind and always asks consent. Native DXGI/D3D11 NV12 encoding,
+  ScreenCaptureKit/VideoToolbox surfaces, hardware decoding, Wayland portal
+  selection, configurable keyboard release, platform installers and protocol
+  7 are implemented. Windows tests verify real GPU capture via NVENC, shared
+  access units and simultaneous screen/camera over two real Sessions. QSV/AMF
+  remain unverified on unavailable hardware; macOS/Linux sources require native
+  builds and manual tests. XOR parity is conditional on field-loss evidence,
+  which has not been provided, so it remains deferred.
+  All 13 suites pass in Windows Debug and Release, including real desktop
+  capture and NVENC. The screen-disabled build and its foundation/settings
+  tests also pass. The datagram-opening race regression passed 15 consecutive
+  runs of both foundation and session tests.
 - Hardware, macOS/Linux capture, and glass-to-glass latency require real
   desktops; automated synthetic tests cannot establish those acceptance values.
 - The pinned BtbN build embeds source-built OpenH264. Its software encoder
@@ -43,7 +57,7 @@ Execution notes:
 | 1 | Codec library | **FFmpeg** (libavcodec, libswscale), LGPL shared builds only; no GPL or non-free parts. |
 | 2 | Consent | Only **trusted** devices may send a request. The host is asked each time, unless the device holds a "without asking" permission (`screen.direct` / `control.direct`). Those are only grantable to trusted devices. |
 | 3 | Unattended access | **Out of scope.** No system service, so no lock screen, UAC prompts or Ctrl+Alt+Del. |
-| 4 | Viewers | **One at a time** for now. The design allows N (one encoder shared by all viewers), and a "maximum viewers" setting comes later. |
+| 4 | Viewers | Phase 2 starts with one viewer; phase 4 implements a configurable **1-8 viewers**, sharing one encoder and one control owner. |
 | 5 | Transport | **Datagrams from the start** (uconnect's datagram channel), no TCP-first version. |
 
 Also settled while drafting:
@@ -330,7 +344,8 @@ default permissions say. They are answered with `scr.err {code:"forbidden"}`.
   stop hotkey. One viewer.
 - Monitor switching, viewer-driven `maxWidth`, and the stats overlay.
 - **Done when:** a 1080p desktop is viewable at 30 fps on a LAN, with
-  under 150 ms glass-to-glass latency measured via `capture-ms`, and it
+  under 150 ms glass-to-glass latency measured with a common-clock recording
+  (`capture-ms` alone cannot measure cross-device latency), and it
   recovers from induced loss within about a second.
 
 ### Phase 3: remote control

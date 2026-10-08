@@ -5,7 +5,7 @@ repository and the separately maintained Flutter mobile app. An app that
 follows this document can talk to any other, whatever language it is
 written in.
 
-Revision: **storage 1.3, sync 1.0** (2026-10). Changes are listed at the end.
+Revision: **storage 1.3, sync 1.0, screen/camera 1.0** (2026-10). Changes are listed at the end.
 
 The words MUST, SHOULD and MAY are used as in RFC 2119.
 
@@ -597,13 +597,15 @@ These are MUSTs for any implementation:
   - the path is live in its own index;
   - the block's hash matches what is on disk now.
 
-## 7. Screen media transport
+## 7. Screen, camera and remote control
 
 Media uses uConnect's encrypted datagram channel (maximum 1100 bytes),
 separate from reliable message kinds. A channel is delivered to the screen
 service only while a consented session is active. Untrusted identities cannot
 open media sessions. `screen.view`, `screen.direct`, `control.input`, and
-`control.direct` are trusted-device grants, never default permissions.
+`control.direct`, and `camera.view` are trusted-device grants, never default
+permissions. Datagram kinds are separate from the reliable envelope in section
+2: 1 = screen video, 2 = screen cursor, 3 = camera video.
 
 ### 7.1 Video fragments
 
@@ -659,6 +661,8 @@ Reliable control messages have these types:
 | `scr.err` | `request`, `code` (`forbidden`, `busy`, `codec`, `denied`, `transport`, `ended`) |
 | `scr.started` | matching `request`, nonzero u16 `session`, `codec:"h264"`, `width`, `height`, `fps`, `monitors`, `control` |
 | `scr.monitor` | `session`, zero-based `index` |
+| `scr.monitorChanged` | `session`, `index`; shared source changed for all viewers |
+| `scr.pipeline` | `session`, `name`, `cursorEmbedded`; capture/encoder path changed |
 | `scr.keyframe` | `session` |
 | `scr.nack` | `session`, `frame`, `indexes` |
 | `scr.report` | `session` plus the report fields in 7.2 |
@@ -683,7 +687,35 @@ on dedicated codec threads. The viewer reports decode time, loss, bitrate,
 frame rate and the transport path. `captureMs` is monotonic and cannot be
 interpreted as absolute cross-device latency without clock synchronization.
 
-### 7.4 Remote control and cursor
+### 7.4 Shared sources and camera
+
+Screen hosting allows 1-8 viewers, including reserved consent slots. One
+encoder serves every viewer; its width, frame rate and bitrate honor the
+lowest requested/adaptive limits. Each peer has independent tokens, pacing,
+keyframe caches and reports. A blocked peer cannot queue unbounded video.
+Stopping one viewer leaves capture running until the last live viewer stops.
+Only one viewer may hold or await control. Source selection is shared; while
+controlled, only that controlling viewer may switch it.
+
+Camera hosting uses `cam.*` counterparts of the `scr.*` view messages, and
+video fragment kind 3 with the same header as 7.1. It needs offered `camera`
+and a trusted `camera.view` grant. Every request needs host consent; screen
+and control direct grants do not bypass camera consent. There is no camera
+input or cursor channel. `monitors` lists cameras and `cam.monitor` selects
+one. Screen and camera streams may coexist; stopping either must preserve
+the other's datagram connection. Camera quality/viewer limits share the
+screen settings. There is no audio.
+
+Windows native capture converts DXGI textures to NV12 on D3D11 and supplies
+hardware surfaces to NVENC/QSV/AMF. macOS uses ScreenCaptureKit IOSurfaces
+and VideoToolbox. Unsupported adapters, rotated displays or native failures
+fall back to Qt capture and CPU color conversion. Hardware decoder output is
+mapped for the Qt video sink, with software decoding when unavailable. On
+Wayland the OS ScreenCast portal chooses the source; remote monitor selection
+and input are unavailable. XOR parity is not part of version 1; no field-loss
+evidence currently warrants adding it.
+
+### 7.5 Remote control and cursor
 
 An initial `wantControl:true` request needs `control.input` and explicit control
 consent, unless both direct grants exist. During a view session,
@@ -722,6 +754,7 @@ desktop and clipboard synchronization are outside this protocol version.
 | storage 1.1 | uploads (`fs.write`…, kind 3); `fs.rename`, `fs.delete`, `fs.mkdir`; `replace`; `storage.download` folded into `storage.read` |
 | storage 1.2 | `fs.mkdir` `existing`; `fs.move`, `fs.copy`, `fs.progress`; `fs.watch`, `fs.unwatch`, `fs.changed` |
 | storage 1.3 | `sha256` on `fs.read.end` and `fs.write.end`; `fs.read` `offset`; codes `corrupt`, `too_large`, `no_space`, `read_only`; `readOnly` in listings |
+| screen/camera 1.0 | consented screen/camera sessions, H.264 datagrams, feedback/recovery, trusted control, cursor, shared sources (section 7) |
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
 
 Every change so far only adds messages, fields and codes, so an older peer

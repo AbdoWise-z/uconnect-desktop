@@ -395,7 +395,7 @@ Window {
             Banner {
                 Layout.fillWidth: true
                 Layout.topMargin: 12
-                text: qsTr("Camera, screen sharing and remote control are not implemented yet; offering one of them only advertises it.")
+                text: qsTr("Screen and camera requests need a trusted device and host consent. Remote control also requires a control grant.")
             }
         }
     }
@@ -575,7 +575,11 @@ Window {
             }
             TitledSeparator { text: qsTr("Options") }
             Help {
-                visible: svcPage.service !== "screen"
+                visible: svcPage.service === "camera" || svcPage.service === "control"
+                text: qsTr("Quality, viewer limits and keyboard release are configured under Screen Sharing.")
+            }
+            Help {
+                visible: svcPage.service !== "screen" && svcPage.service !== "camera" && svcPage.service !== "control"
                 text: qsTr("Options for this service will appear here once it is implemented.")
             }
             ColumnLayout {
@@ -598,7 +602,24 @@ Window {
                     Text { text: qsTr("Stop sharing shortcut"); color: Theme.text }
                     UTextField { text: draft.screen.stopShortcut || "Ctrl+Alt+Shift+S"; onTextEdited: dlg.setScreenSetting("stopShortcut", text) }
                 }
-                Help { text: qsTr("Maximum viewers: 1") }
+                RowLayout {
+                    Text { text: qsTr("Maximum viewers"); color: Theme.text }
+                    SpinBox { from: 1; to: 8; value: draft.screen.maxViewers || 1; onValueModified: dlg.setScreenSetting("maxViewers", value) }
+                }
+                Help { text: qsTr("Viewers share one source and encoder. One viewer may control it at a time. Camera sharing uses these quality limits too.") }
+                RowLayout {
+                    Text { text: qsTr("Release keyboard"); color: Theme.text }
+                    ComboBox {
+                        model: ["Right Ctrl", "Escape", "F12"]
+                        currentIndex: [228, 41, 69].indexOf(draft.screen.releaseUsage || 228)
+                        onActivated: index => dlg.setScreenSetting("releaseUsage", [228, 41, 69][index])
+                    }
+                }
+                UCheckBox {
+                    text: qsTr("Use native GPU capture when available")
+                    checked: draft.screen.gpuCapture !== false
+                    onToggled: dlg.setScreenSetting("gpuCapture", checked)
+                }
                 UCheckBox {
                     text: qsTr("Enable software fallback")
                     checked: draft.screen.softwareCodec || false

@@ -24,6 +24,7 @@ private:
     void release();
     QPointer<QObject> window_;
     bool captured_ = false;
+    bool altGr_ = false;
     quint16 releaseUsage_ = 0xe4;  // Right Ctrl
     QSet<quint16> textKeys_;
 };

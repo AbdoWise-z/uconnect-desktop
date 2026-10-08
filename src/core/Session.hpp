@@ -118,6 +118,7 @@ public:
     bool sendMedia(const uconnect::DevId& peer, std::span<const uint8_t> bytes);
 #ifdef UCD_HAS_SCREEN
     screen::ScreenService* screen() const { return screen_; }
+    screen::ScreenService* camera() const { return camera_; }
 #endif
 
     // Storage: this device's shared folders, and requests to other devices'.
@@ -212,9 +213,11 @@ private:
     StorageService* storage_ = nullptr;
     SyncService*    sync_    = nullptr;
     screen::DatagramChannel media_;
+    std::map<uconnect::DevId, unsigned> mediaUsers_;
     std::atomic_uint mediaPending_{0};  // bound loop-to-worker queues under overload
 #ifdef UCD_HAS_SCREEN
     screen::ScreenService* screen_ = nullptr;
+    screen::ScreenService* camera_ = nullptr;
 #endif
 };
 

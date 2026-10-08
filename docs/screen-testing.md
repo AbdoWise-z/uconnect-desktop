@@ -74,3 +74,36 @@ Right Ctrl, stop, permission withdrawal and the sharing bar's Stop control.
 macOS needs Accessibility authorization; X11 text is limited to the host keymap.
 System-reserved shortcuts can remain local. Secure/elevated desktops, file
 drag-in and clipboard sync are outside this version's scope.
+
+`ScreenSpreadTest` verifies two viewers receive identical encoded access units,
+independent stop behavior, camera consent and datagram-kind isolation. With
+`UCD_TEST_DESKTOP_CAPTURE=1`, it also captures and decodes native GPU desktop
+surfaces. This machine verified DXGI -> D3D11 NV12 -> NVENC; QSV/AMF were skipped
+because their hardware could not initialize. `ScreenSessionTest` additionally
+runs screen and synthetic camera streams simultaneously over real authenticated
+sessions and proves stopping camera leaves screen delivery running.
+
+Manual phase-4 acceptance: connect two viewers, change the configured limit,
+stop one, and congest one link. Confirm one control owner and one shared monitor.
+Compare native GPU and Qt fallback using the GPU capture setting. Test camera
+permission denial/approval, selection and Stop, with screen running concurrently.
+On Wayland install the desktop's ScreenCast portal and PipeWire, use Qt's FFmpeg
+backend (`QT_MEDIA_BACKEND=ffmpeg`), and confirm the OS source picker appears.
+There is no Wayland input. Test macOS native ScreenCaptureKit/VideoToolbox and
+Accessibility on the Mac; those native sources were not compiled on Windows.
+
+For a macOS LGPL SDK (the stock Homebrew FFmpeg formula may enable GPL):
+
+```sh
+brew install cmake ninja pkg-config nasm
+bash scripts/build-ffmpeg-lgpl.sh
+python3 scripts/install-openh264.py ~/Library/Application\ Support/uConnect/codecs
+bash scripts/build-macos.sh ~/Qt/6.8.3/macos
+```
+
+The FFmpeg helper downloads a pinned source archive and builds shared libraries.
+The macOS build script picks that local SDK up automatically. Enable the separate
+Cisco library in Settings when software fallback is wanted. Camera privacy usage
+text is embedded in the app's Info.plist. Packages never include the Cisco binary.
+Native macOS/Linux builds, cross-layout input, physical camera capture, induced
+network loss and common-clock glass-to-glass latency remain manual acceptance.

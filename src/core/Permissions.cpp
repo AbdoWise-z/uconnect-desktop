@@ -25,7 +25,13 @@ const std::vector<PermissionInfo>& permissionTable() {
         {perm::StorageUpload, "storage", tr("Upload"),
          tr("Add new files and folders, and copy what is already there."), true},
         {perm::CameraView, "camera", tr("View"),
-         tr("Watch this device's camera."), false},
+         tr("Watch this device's camera."),
+#ifdef UCD_HAS_SCREEN
+         true,
+#else
+         false,
+#endif
+         true},
         {perm::ScreenView, "screen", tr("View"),
          tr("Watch this device's screen."),
 #ifdef UCD_HAS_SCREEN

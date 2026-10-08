@@ -8,6 +8,8 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
+#include <libavutil/hwcontext.h>
 #include <libswscale/swscale.h>
 }
 
@@ -18,10 +20,14 @@ QString avError(int code) {
     return QString::fromUtf8(text);
 }
 bool supports(const AVCodec* codec, AVPixelFormat format) {
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100)
     const void* values = nullptr; int count = 0;
     if (avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &values, &count) < 0) return false;
     const auto* formats = static_cast<const AVPixelFormat*>(values);
     for (int i = 0; i < count; ++i) if (formats[i] == format) return true;
+#else
+    if (codec->pix_fmts) for (const auto* f = codec->pix_fmts; *f != AV_PIX_FMT_NONE; ++f) if (*f == format) return true;
+#endif
     return false;
 }
 }
@@ -213,9 +219,17 @@ std::optional<EncodedFrame> Encoder::encode(const QImage& input, const CodecOpti
 
 struct Decoder::Impl {
     AVCodecContext* context = nullptr;
+    AVBufferRef* device = nullptr;
+    AVPixelFormat hardwareFormat = AV_PIX_FMT_NONE;
     SwsContext* scale = nullptr;
     QString error;
-    ~Impl() { avcodec_free_context(&context); sws_freeContext(scale); }
+    ~Impl() { avcodec_free_context(&context); av_buffer_unref(&device); sws_freeContext(scale); }
+    static AVPixelFormat selectFormat(AVCodecContext* codec, const AVPixelFormat* formats) {
+        const auto* self = static_cast<Impl*>(codec->opaque);
+        for (auto* f = formats; *f != AV_PIX_FMT_NONE; ++f) if (*f == self->hardwareFormat) return *f;
+        for (auto* f = formats; *f != AV_PIX_FMT_NONE; ++f) if (!av_pix_fmt_desc_get(*f) || !(av_pix_fmt_desc_get(*f)->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *f;
+        return AV_PIX_FMT_NONE;
+    }
 };
 Decoder::Decoder() : impl_(std::make_unique<Impl>()) {}
 Decoder::~Decoder() = default;
@@ -228,6 +242,20 @@ QImage Decoder::decode(const EncodedFrame& encoded) {
         const auto* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
         if (!codec) { p.error = "H.264 decoder unavailable"; return {}; }
         p.context = avcodec_alloc_context3(codec); p.context->thread_count = 1;
+        p.context->opaque = &p; p.context->get_format = Impl::selectFormat;
+#ifdef Q_OS_WIN
+        const auto type = AV_HWDEVICE_TYPE_D3D11VA;
+#elif defined(Q_OS_MACOS)
+        const auto type = AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
+#else
+        const auto type = AV_HWDEVICE_TYPE_VAAPI;
+#endif
+        for (int i = 0; const auto* hardware = avcodec_get_hw_config(codec, i); ++i) {
+            if (hardware->device_type == type && (hardware->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
+                av_hwdevice_ctx_create(&p.device, type, nullptr, nullptr, 0) >= 0) {
+                p.hardwareFormat = hardware->pix_fmt; p.context->hw_device_ctx = av_buffer_ref(p.device); break;
+            }
+        }
         p.context->max_pixels = 3840 * 4320;
         p.context->err_recognition = AV_EF_EXPLODE;
         p.context->flags |= AV_CODEC_FLAG_LOW_DELAY;
@@ -241,6 +269,11 @@ QImage Decoder::decode(const EncodedFrame& encoded) {
     if (status < 0) { p.error = avError(status); return {}; }
     auto* frame = av_frame_alloc(); QImage image;
     while ((status = avcodec_receive_frame(p.context, frame)) >= 0) {
+        if (frame->format == p.hardwareFormat && p.hardwareFormat != AV_PIX_FMT_NONE) {
+            auto* mapped = av_frame_alloc();
+            if (av_hwframe_transfer_data(mapped, frame, 0) < 0) { av_frame_free(&mapped); break; }
+            av_frame_unref(frame); av_frame_move_ref(frame, mapped); av_frame_free(&mapped);
+        }
         if (frame->width < 2 || frame->height < 2 || frame->width > 3840 || frame->height > 4320) break;
         image = QImage(frame->width, frame->height, QImage::Format_RGBA8888);
         p.scale = sws_getCachedContext(p.scale, frame->width, frame->height, AVPixelFormat(frame->format),

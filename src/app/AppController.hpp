@@ -20,6 +20,7 @@
 #include "app/PeerListModel.hpp"
 #include "app/TransferListModel.hpp"
 #include "core/Session.hpp"
+#include "core/screen/StopShortcut.hpp"
 
 namespace ucd {
 
@@ -40,6 +41,7 @@ class AppController : public QObject {
     // --- settings ---
     Q_PROPERTY(bool firstRun READ firstRun NOTIFY firstRunChanged)
     Q_PROPERTY(QObject* screen READ screen CONSTANT)
+    Q_PROPERTY(QObject* camera READ camera CONSTANT)
     Q_PROPERTY(QString serverAddress READ serverAddress WRITE setServerAddress NOTIFY settingsChanged)
     Q_PROPERTY(QString deviceName READ deviceName WRITE setDeviceName NOTIFY settingsChanged)
     Q_PROPERTY(QStringList offeredServices READ offeredServices NOTIFY settingsChanged)
@@ -87,6 +89,7 @@ class AppController : public QObject {
 
 public:
     QObject* screen() const;
+    QObject* camera() const;
     explicit AppController(const LaunchOptions& options, QObject* parent = nullptr);
     ~AppController() override;
 
@@ -384,6 +387,10 @@ private:
     QThread  worker_;
     Session* session_ = nullptr;  // lives on worker_
     ScreenController* screen_ = nullptr;
+    ScreenController* camera_ = nullptr;
+    std::unique_ptr<screen::StopShortcut> mediaStop_;
+    QString mediaShortcutSequence_, mediaShortcutError_;
+    bool mediaShortcutActive_ = false;
 
     std::unique_ptr<DebugWindow> debugWindow_;
 };

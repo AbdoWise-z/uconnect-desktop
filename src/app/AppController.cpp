@@ -145,6 +145,23 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     session_ = new Session;
     session_->moveToThread(&worker_);
     screen_ = new ScreenController(session_, this);
+    camera_ = new ScreenController(session_, this, true);
+    connect(camera_, &ScreenController::notify, this, &AppController::notify);
+    auto stopMedia = [this] { screen_->stopHosting(); camera_->stopHosting(); };
+    mediaStop_ = std::make_unique<screen::StopShortcut>(stopMedia);
+    auto updateMediaShortcut = [this] {
+        const bool active = !screen_->hosting().isEmpty() || !camera_->hosting().isEmpty();
+        const auto sequence = active ? screen_->settings().value("stopShortcut").toString() : QString();
+        if (sequence != mediaShortcutSequence_ || active != mediaShortcutActive_) {
+            mediaShortcutSequence_ = sequence; mediaShortcutActive_ = active;
+            if (active) mediaShortcutError_ = mediaStop_->enable(sequence);
+            else { mediaStop_->disable(); mediaShortcutError_.clear(); }
+        }
+        screen_->setShortcutError(mediaShortcutError_); camera_->setShortcutError(mediaShortcutError_);
+    };
+    connect(screen_, &ScreenController::hostingChanged, this, updateMediaShortcut);
+    connect(camera_, &ScreenController::hostingChanged, this, updateMediaShortcut);
+    connect(screen_, &ScreenController::settingsChanged, this, updateMediaShortcut);
     connect(screen_, &ScreenController::rememberPermission, this, [this](const QString& key, const QString& permission) {
         setDevicePermission(key, permission, true);
     });
@@ -268,7 +285,8 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
 }
 
 AppController::~AppController() {
-    delete screen_; screen_ = nullptr;
+    mediaStop_.reset();
+    delete screen_; screen_ = nullptr; delete camera_; camera_ = nullptr;
     QMetaObject::invokeMethod(session_, [s = session_] { s->stop(); }, Qt::BlockingQueuedConnection);
     worker_.quit();
     worker_.wait();
@@ -328,7 +346,7 @@ void AppController::completeFirstRun(const QString& server, const QString& name)
 }
 
 void AppController::applySettings(const QVariantMap& values) {
-    if (values.contains("screen")) screen_->configure(values.value("screen").toMap());
+    if (values.contains("screen")) { screen_->configure(values.value("screen").toMap()); camera_->configure(values.value("screen").toMap()); }
     QSettings settings;
     if (values.contains(Key::Server) && isValidServer(values.value(Key::Server).toString()))
         setServerAddress(values.value(Key::Server).toString());
@@ -423,6 +441,7 @@ void AppController::applySettings(const QVariantMap& values) {
 }
 
 QObject* AppController::screen() const { return screen_; }
+QObject* AppController::camera() const { return camera_; }
 
 // --- topic ---------------------------------------------------------------------
 

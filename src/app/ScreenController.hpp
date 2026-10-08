@@ -7,6 +7,8 @@
 #ifdef UCD_HAS_SCREEN
 #include <QMediaCaptureSession>
 #include <QScreenCapture>
+#include <QCamera>
+#include <QMediaDevices>
 #include <QVideoSink>
 #include "app/InputCapture.hpp"
 #endif
@@ -20,13 +22,14 @@ class ScreenController : public QObject {
     Q_PROPERTY(QVariantList consents READ consents NOTIFY consentChanged)
     Q_PROPERTY(QString shortcutError READ shortcutError NOTIFY hostingChanged)
 public:
-    ScreenController(Session* session, QObject* parent = nullptr);
+    ScreenController(Session* session, QObject* parent = nullptr, bool camera = false);
     ~ScreenController() override;
     bool available() const;
     QVariantMap settings() const { return settings_; }
     QVariantList hosting() const { return hosting_; }
     QVariantList consents() const { return consents_; }
     QString shortcutError() const { return shortcutError_; }
+    void setShortcutError(const QString& error);
     Q_INVOKABLE QVariantMap state(const QString& peer) const { return states_.value(peer); }
     Q_INVOKABLE void configure(const QVariantMap& settings);
     Q_INVOKABLE void request(const QString& peer, bool control = false);
@@ -51,13 +54,16 @@ signals:
 private:
     void pushSettings();
     Session* session_;
+    bool camera_ = false;
     QVariantMap settings_;
     QVariantList hosting_, consents_;
     QHash<QString, QVariantMap> states_;
     QString shortcutError_;
-    screen::StopShortcut shortcut_;
 #ifdef UCD_HAS_SCREEN
     QScreenCapture capture_;
+    std::unique_ptr<QCamera> cameraCapture_;
+    QMediaDevices devices_;
+    screen::ScreenService* service() const { return camera_ ? session_->camera() : session_->screen(); }
     QMediaCaptureSession captureSession_;
     QVideoSink captureSink_;
     QHash<QString, QPointer<QVideoSink>> sinks_;
@@ -66,6 +72,8 @@ private:
     QHash<QString, int> buttons_;
     QTimer moveTimer_;
     QTimer cursorTimer_;
+    quint64 sourceGeneration_ = 0;
+    void startCamera(int index, quint64 generation);
     quintptr cursorShape_ = 0;
     void input(const QString& peer, const QJsonObject& message);
 #endif

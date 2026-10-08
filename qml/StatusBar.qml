@@ -103,6 +103,13 @@ Rectangle {
             text: qsTr("%1 of %2 devices connected").arg(App.peers.connectedCount).arg(App.peers.count)
         }
         Segment {
+            visible: App.camera.hosting.length > 0
+            showDot: true
+            dotColor: Theme.warning
+            text: qsTr("Sharing camera · Stop")
+            onClicked: App.camera.stopHosting()
+        }
+        Segment {
             visible: App.screen.hosting.length > 0
             showDot: true
             dotColor: Theme.warning

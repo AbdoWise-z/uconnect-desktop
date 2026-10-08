@@ -106,6 +106,7 @@ bool InputState::apply(const QJsonObject& msg) {
     return false;
 }
 void InputState::release() {
+    backend_->releaseText();
     const auto keys = keys_;
     for (quint16 key : keys) if (backend_->key(key, false)) keys_.remove(key);
     if (buttons_ && backend_->mouse(point_, buttons_, 0)) buttons_ = 0;

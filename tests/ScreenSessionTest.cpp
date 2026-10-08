@@ -57,13 +57,13 @@ private slots:
         const auto ih = Identity::generate(), iv = Identity::generate();
         host.setIdentity(ih); viewer.setIdentity(iv);
         AccessPolicy hp, vp;
-        hp.trusted.insert(keyToHex(iv.publicKey()), {perm::ScreenView});
+        hp.trusted.insert(keyToHex(iv.publicKey()), {perm::ScreenView, perm::CameraView});
         vp.trusted.insert(keyToHex(ih.publicKey()), {});
         host.setAccessPolicy(hp); viewer.setAccessPolicy(vp);
-        host.setLocalHello({"Host", "test", ServiceScreen}); viewer.setLocalHello({"Viewer", "test", 0});
+        host.setLocalHello({"Host", "test", ServiceScreen | ServiceCamera}); viewer.setLocalHello({"Viewer", "test", 0});
         ScreenSettings settings; settings.ciscoLibrary = qEnvironmentVariable("UCD_TEST_OPENH264");
         settings.monitors = {QVariantMap{{"name", "Synthetic"}, {"width", 256}, {"height", 128}}};
-        host.screen()->configure(settings);
+        host.screen()->configure(settings); host.camera()->configure(settings);
         QString hostId, viewerId;
         connect(&host, &Session::snapshotChanged, this, [&](const auto& s) { if (!s.selfId.isEmpty()) hostId = s.selfId; });
         connect(&viewer, &Session::snapshotChanged, this, [&](const auto& s) { if (!s.selfId.isEmpty()) viewerId = s.selfId; });
@@ -78,6 +78,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!hostId.isEmpty() && !viewerId.isEmpty(), 2000);
         const auto remote = *uconnect::from_hex<uconnect::kDevIdLen>(hostId.toStdString());
         QSignalSpy prompt(host.screen(), &ScreenService::consentRequested), images(viewer.screen(), &ScreenService::imageReady);
+        QSignalSpy viewerState(viewer.screen(), &ScreenService::viewerChanged);
         QSignalSpy hostState(host.screen(), &ScreenService::hostingChanged);
         viewer.screen()->request(remote);
         QTRY_COMPARE_WITH_TIMEOUT(prompt.size(), 1, 3000);
@@ -88,8 +89,19 @@ private slots:
         // First capture may precede datagram negotiation, so keep the synthetic
         // desktop changing until the channel/keyframe recovery delivers it.
         for (int i = 0; i < 90 && images.isEmpty(); ++i) { host.screen()->submitImage(synthetic); QTest::qWait(35); }
-        QVERIFY2(!images.isEmpty(), "No decoded image crossed the real Session datagram channel");
+        QVERIFY2(!images.isEmpty(), qPrintable(QString("No decoded image crossed the real Session datagram channel; last state: %1")
+            .arg(viewerState.isEmpty() ? QString("none") : QString::fromUtf8(QJsonDocument::fromVariant(viewerState.back()[1]).toJson(QJsonDocument::Compact)))));
         QCOMPARE(qvariant_cast<QImage>(images.back()[1]).size(), synthetic.size());
+        QSignalSpy cameraPrompt(host.camera(), &ScreenService::consentRequested), cameraImages(viewer.camera(), &ScreenService::imageReady);
+        viewer.camera()->request(remote);
+        QTRY_COMPARE_WITH_TIMEOUT(cameraPrompt.size(), 1, 3000);
+        host.camera()->consent(viewerId, cameraPrompt[0][1].toUInt(), true, false);
+        for (int i = 0; i < 90 && cameraImages.isEmpty(); ++i) { host.camera()->submitImage(synthetic); host.screen()->submitImage(synthetic); QTest::qWait(35); }
+        QVERIFY2(!cameraImages.isEmpty(), "Camera did not use the existing real datagram connection");
+        viewer.camera()->stop(remote); QTest::qWait(100);
+        const auto before = images.size();
+        for (int i = 0; i < 50 && images.size() == before; ++i) { host.screen()->submitImage(synthetic); QTest::qWait(35); }
+        QVERIFY2(images.size() > before, "Stopping camera closed the screen's shared datagram connection");
         viewer.screen()->stop(remote);
         QTRY_VERIFY_WITH_TIMEOUT(hostState.back()[0].toList().isEmpty(), 3000);
         host.stop(); viewer.stop();

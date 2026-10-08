@@ -7,6 +7,7 @@
 #include <QVariantMap>
 #include <atomic>
 #include "Codec.hpp"
+#include "DesktopEncoder.hpp"
 #include "Input.hpp"
 #include "Cursor.hpp"
 #include "core/Permissions.hpp"
@@ -21,6 +22,8 @@ struct PeerAccess {
 };
 struct ScreenSettings {
     bool offered = false;
+    bool gpuCapture = true;
+    bool cursorEmbedded = true;
     bool controlOffered = false;
     int monitor = 0, maxFps = 30, maxWidth = 1920, maxBitrate = 8000000, maxViewers = 1;
     QString ciscoLibrary;
@@ -40,7 +43,7 @@ public:
     using Datagram = std::function<bool(const Peer&, const QByteArray&)>;
     using Now = std::function<qint64()>;
     ScreenService(Send send, Authorize authorize, Open open, Close close, Datagram datagram,
-        QObject* parent = nullptr, Now now = {}, std::unique_ptr<InputBackend> input = {});
+        QObject* parent = nullptr, Now now = {}, std::unique_ptr<InputBackend> input = {}, bool camera = false);
     ~ScreenService() override;
     void configure(const ScreenSettings& settings);
     void setOffered(bool offered);
@@ -73,6 +76,7 @@ signals:
     void hostingChanged(const QVariantList& viewers);
     void captureChanged(bool active, int monitor);
     void activity(const QString& line);
+    void nativeCaptureChanged(bool active);
 private:
     struct Host {
         quint32 request = 0;
@@ -99,7 +103,8 @@ private:
         quint64 bytes = 0;
         int decoded = 0;
         double decodeMs = 0;
-        bool decoding = false;
+        bool decoding = false, channel = false;
+        bool wantControl = false;
         bool control = false;
         quint32 controlRequest = 0;
         quint32 cursorSequence = 0;
@@ -121,6 +126,7 @@ private:
     Datagram datagram_;
     Now now_;
     ScreenSettings settings_;
+    bool camera_ = false;
     std::map<Peer, Host> hosts_;
     std::map<Peer, Viewer> viewers_;
     quint32 nextRequest_ = 1, nextFrame_ = 0;
@@ -132,6 +138,9 @@ private:
     QObject* encoderWorker_;
     QObject* decoderWorker_;
     std::unique_ptr<Encoder> encoder_;
+    std::unique_ptr<DesktopEncoder> desktop_;
+    bool nativeActive_ = false, nativeDisabled_ = false;
+    QString lastPipeline_;
     std::map<Peer, std::unique_ptr<Decoder>> decoders_;
     std::atomic_bool capturePending_{false};
     InputState input_;

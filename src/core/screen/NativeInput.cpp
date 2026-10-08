@@ -1,5 +1,6 @@
 #include "Input.hpp"
 #include <array>
+#include <algorithm>
 #include <tuple>
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -17,6 +18,16 @@ namespace {
 class NativeInput : public InputBackend {
 public:
 #ifdef Q_OS_WIN
+    QSet<ushort> unicodeHeld;
+    int pendingText() const override { return unicodeHeld.size(); }
+    void releaseText() override {
+        const auto held = unicodeHeld;
+        for (ushort character : held) {
+            INPUT event{}; event.type = INPUT_KEYBOARD; event.ki.wScan = character;
+            event.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+            if (SendInput(1, &event, sizeof(event)) == 1) unicodeHeld.remove(character);
+        }
+    }
     QString available() const override { return {}; }
     bool key(quint16 usage, bool down) override {
         const auto* code = mapping(usage); if (!code) return false;
@@ -45,11 +56,14 @@ public:
     }
     bool text(const QString& text) override {
         std::vector<INPUT> events;
+        for (QChar character : text) unicodeHeld.insert(character.unicode());
         for (const QChar character : text) for (bool down : {true, false}) {
             INPUT event{}; event.type = INPUT_KEYBOARD; event.ki.wScan = character.unicode();
             event.ki.dwFlags = KEYEVENTF_UNICODE | (down ? 0 : KEYEVENTF_KEYUP); events.push_back(event);
         }
-        return SendInput(events.size(), events.data(), sizeof(INPUT)) == events.size();
+        const bool delivered = SendInput(events.size(), events.data(), sizeof(INPUT)) == events.size();
+        if (delivered) unicodeHeld.clear(); else releaseText();
+        return delivered;
     }
 #elif defined(Q_OS_MACOS)
     std::array<bool, 8> modifiers{};
@@ -77,9 +91,10 @@ public:
         const CGEventType downs[]{kCGEventLeftMouseDown,kCGEventRightMouseDown,kCGEventOtherMouseDown};
         const CGEventType ups[]{kCGEventLeftMouseUp,kCGEventRightMouseUp,kCGEventOtherMouseUp};
         const CGMouseButton native[]{kCGMouseButtonLeft,kCGMouseButtonRight,kCGMouseButtonCenter};
-        for (int i = 0; i < 3; ++i) if ((previous ^ buttons) & (1 << i)) post(CGEventCreateMouseEvent(nullptr, buttons & (1 << i) ? downs[i] : ups[i], at, native[i]));
+        bool delivered = true;
+        for (int i = 0; i < 3; ++i) if ((previous ^ buttons) & (1 << i)) delivered &= post(CGEventCreateMouseEvent(nullptr, buttons & (1 << i) ? downs[i] : ups[i], at, native[i]));
         const auto motion = buttons & 1 ? kCGEventLeftMouseDragged : buttons & 2 ? kCGEventRightMouseDragged : buttons & 4 ? kCGEventOtherMouseDragged : kCGEventMouseMoved;
-        return post(CGEventCreateMouseEvent(nullptr, motion, at, buttons & 2 ? kCGMouseButtonRight : buttons & 4 ? kCGMouseButtonCenter : kCGMouseButtonLeft));
+        return post(CGEventCreateMouseEvent(nullptr, motion, at, buttons & 2 ? kCGMouseButtonRight : buttons & 4 ? kCGMouseButtonCenter : kCGMouseButtonLeft)) && delivered;
     }
     bool wheel(int dx, int dy) override {
         if (!available().isEmpty()) return false;
@@ -91,6 +106,7 @@ public:
             const int count = text[offset].isHighSurrogate() && offset + 1 < text.size() ? 2 : 1;
             for (bool down : {true, false}) {
                 auto event = CGEventCreateKeyboardEvent(nullptr, 0, down);
+                if (!event) return false;
                 CGEventKeyboardSetUnicodeString(event, count, reinterpret_cast<const UniChar*>(text.utf16() + offset)); post(event);
             }
             offset += count;
@@ -103,7 +119,9 @@ public:
     std::array<bool, 2> shifts{};
     ~NativeInput() override { if (display) XCloseDisplay(display); }
     QString available() const override {
-        if (qEnvironmentVariable("XDG_SESSION_TYPE") == "wayland") return "Remote input is not supported on Wayland.";
+        if (qEnvironmentVariable("XDG_SESSION_TYPE") == "wayland" ||
+            (!qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY") && qEnvironmentVariable("XDG_SESSION_TYPE") != "x11"))
+            return "Remote input is not supported on Wayland.";
         if (!display) display = XOpenDisplay(nullptr);
         if (!display) return "Cannot open the X11 display.";
         int event, error, major, minor;

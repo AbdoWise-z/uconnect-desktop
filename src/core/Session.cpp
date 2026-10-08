@@ -55,7 +55,9 @@ Session::Session(QObject* parent)
       media_([this](const uconnect::DevId& dev, uint8_t kind, std::span<const uint8_t> bytes) {
           emit mediaDatagram(hex(dev), kind, QByteArray(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 #ifdef UCD_HAS_SCREEN
-          if (screen_) screen_->receive(dev, QByteArray(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+          const auto packet = QByteArray(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+          if (kind == 3 && camera_) camera_->receive(dev, packet);
+          else if (screen_) screen_->receive(dev, packet);
 #endif
       }) {
 #ifdef UCD_HAS_SCREEN
@@ -78,9 +80,29 @@ Session::Session(QObject* parent)
         [this](const auto& peer, const QByteArray& bytes) {
             return sendMedia(peer, {reinterpret_cast<const uint8_t*>(bytes.constData()), size_t(bytes.size())});
         }, this);
+    camera_ = new screen::ScreenService(
+        [this](const auto& peer, const QJsonObject& msg) { const auto data = encodeControl(msg); return topic_ && topic_->send(peer, data); },
+        [this](const auto& peer) {
+            screen::PeerAccess access;
+            const auto it = peers_.find(peer);
+            if (it != peers_.end() && it->second.identity) {
+                access.key = keyToHex(*it->second.identity);
+                access.fingerprint = fingerprint(*it->second.identity);
+                access.name = it->second.hello ? it->second.hello->name : shortId(hex(peer));
+                access.trusted = policy_.trusted.contains(access.key);
+                access.permissions = permissionsFor(peer);
+            }
+            return access;
+        },
+        [this](const auto& peer) { return openMedia(peer); },
+        [this](const auto& peer) { closeMedia(peer); },
+        [this](const auto& peer, const QByteArray& bytes) {
+            return sendMedia(peer, {reinterpret_cast<const uint8_t*>(bytes.constData()), size_t(bytes.size())});
+        }, this, {}, {}, true);
     connect(screen_, &screen::ScreenService::activity, this, &Session::logMessage);
+    connect(camera_, &screen::ScreenService::activity, this, &Session::logMessage);
     connect(this, &Session::mediaPathChanged, this, [this](const QString& id, const QString& path) {
-        if (const auto peer = parseDevId(id)) screen_->pathChanged(*peer, path);
+        if (const auto peer = parseDevId(id)) { screen_->pathChanged(*peer, path); camera_->pathChanged(*peer, path); }
     });
 #endif
     storage_ = new StorageService(
@@ -214,9 +236,9 @@ void Session::stop() {
     snapshotTimer_->stop();
     ++generation_;
 #ifdef UCD_HAS_SCREEN
-    screen_->reset();
+    screen_->reset(); camera_->reset();
 #endif
-    media_.attach(nullptr);
+    media_.attach(nullptr); mediaUsers_.clear();
     storage_->reset();
     sync_->reset();
 
@@ -248,10 +270,16 @@ bool Session::openMedia(const uconnect::DevId& peer) {
     const auto it = peers_.find(peer);
     if (it == peers_.end() || !it->second.identity || !policy_.trusted.contains(keyToHex(*it->second.identity)))
         return false;
-    return media_.open(peer);
+    if (!mediaUsers_.contains(peer) && !media_.open(peer)) return false;
+    ++mediaUsers_[peer];
+    emit mediaPathChanged(hex(peer), QString::fromLatin1(uconnect::to_string(media_.path(peer))));
+    return true;
 }
 
-void Session::closeMedia(const uconnect::DevId& peer) { media_.close(peer); }
+void Session::closeMedia(const uconnect::DevId& peer) {
+    const auto it = mediaUsers_.find(peer); if (it == mediaUsers_.end()) return;
+    if (--it->second == 0) { media_.close(peer); mediaUsers_.erase(it); }
+}
 bool Session::sendMedia(const uconnect::DevId& peer, std::span<const uint8_t> bytes) { return media_.send(peer, bytes); }
 
 void Session::configureSync(const QString& keyHex, const QString& stateDir) {
@@ -265,15 +293,16 @@ void Session::setSyncFolders(const QVector<ucd::sync::FolderConfig>& folders) {
 void Session::setAccessPolicy(const AccessPolicy& policy) {
     policy_ = policy;
 #ifdef UCD_HAS_SCREEN
-    screen_->policyChanged();
+    screen_->policyChanged(); camera_->policyChanged();
 #endif
     if (topic_)
         for (const uconnect::DevId& dev : topic_->connected()) {
             sendGrants(dev);
             sync_->peerUp(dev);  // trust may have changed
             const auto it = peers_.find(dev);
-            if (it == peers_.end() || !it->second.identity || !policy_.trusted.contains(keyToHex(*it->second.identity)))
-                media_.close(dev);
+            if (it == peers_.end() || !it->second.identity || !policy_.trusted.contains(keyToHex(*it->second.identity))) {
+                media_.close(dev); mediaUsers_.erase(dev);
+            }
         }
     emitPeers();
 }
@@ -283,6 +312,7 @@ void Session::setLocalHello(const Hello& hello) {
 #ifdef UCD_HAS_SCREEN
     screen_->setOffered(hello.services & (ServiceScreen | ServiceControl));
     screen_->setControlOffered(hello.services & ServiceControl);
+    camera_->setOffered(hello.services & ServiceCamera);
 #endif
     helloMessage_ = hello.encode();
     if (topic_) topic_->broadcast(helloMessage_);
@@ -572,9 +602,9 @@ void Session::onPeerState(const uconnect::DevId& dev, uconnect::PeerState state)
         storage_->peerGone(dev);
         sync_->peerGone(dev);
 #ifdef UCD_HAS_SCREEN
-        screen_->peerGone(dev);
+        screen_->peerGone(dev); camera_->peerGone(dev);
 #endif
-        media_.close(dev);
+        media_.close(dev); mediaUsers_.erase(dev);
         p.connectedAt = -1;
         p.identity.reset();
         p.identityInvalid = false;
@@ -609,7 +639,7 @@ void Session::onData(const uconnect::DevId& dev, const std::vector<uint8_t>& dat
         if (t == QLatin1String("id")) return onIdentity(dev, *msg);
         if (t == QLatin1String("perm.granted")) return onGrants(dev, *msg);
 #ifdef UCD_HAS_SCREEN
-        if (screen_->handle(dev, *msg)) return;
+        if (screen_->handle(dev, *msg) || camera_->handle(dev, *msg)) return;
 #endif
     }
     if (sync_->handleMessage(dev, data)) return;

@@ -21,7 +21,7 @@ struct RecordingInput : InputBackend {
 };
 class ScreenInputTest : public QObject {
     Q_OBJECT
-    static uconnect::DevId peer() { uconnect::DevId p{}; p[0] = 1; return p; }
+    static uconnect::DevId peer(int n = 1) { uconnect::DevId p{}; p[0] = uint8_t(n); return p; }
 private slots:
     void physicalMappings() {
         QSet<int> usages, windows, linux;
@@ -69,14 +69,14 @@ private slots:
         QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, "é"), up(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier);
         QCoreApplication::sendEvent(&window, &press); QCoreApplication::sendEvent(&window, &up);
         QCOMPARE(events.size(), 1); QCOMPARE(events.back()[0].toJsonObject().value("t"), "in.text");
-        QKeyEvent shortcut(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier);
+        QKeyEvent shortcut(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier, keyboardPlatform() == KeyboardPlatform::X11 ? 54 : 46, 8, 0);
         QCoreApplication::sendEvent(&window, &shortcut); QCOMPARE(events.back()[0].toJsonObject().value("usage"), 6);
         QInputMethodEvent ime; ime.setCommitString(QString::fromUtf8("日本😀")); QCoreApplication::sendEvent(&window, &ime);
         QCOMPARE(events.back()[0].toJsonObject().value("text"), QString::fromUtf8("日本😀"));
         QEvent focus(QEvent::WindowDeactivate); QCoreApplication::sendEvent(&window, &focus);
         QVERIFY(!capture.captured()); QCOMPARE(events.back()[0].toJsonObject().value("t"), "in.release");
         capture.setCaptured(true);
-        QKeyEvent release(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier, 0x11d, 62, 0);
+        QKeyEvent release(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier, keyboardPlatform() == KeyboardPlatform::X11 ? 105 : 0x11d, 62, 0);
         QCoreApplication::sendEvent(&window, &release); QVERIFY(!capture.captured());
     }
     void controlConsentAndEveryStop() {
@@ -111,6 +111,58 @@ private slots:
             if (stop == 5) { access.trusted = false; service.policyChanged(); }
             QVERIFY(record->held.isEmpty()); QCOMPARE(record->buttons, 0);
             const int releasedCalls = record->calls; service.handle(peer(), key); QCOMPARE(record->calls, releasedCalls);
+        }
+    }
+    void oneControllerAmongViewers() {
+        auto backend = std::make_unique<RecordingInput>(); auto* record = backend.get();
+        PeerAccess access{"key", "Viewer", "fp", {perm::ScreenView, perm::ScreenDirect, perm::ControlInput, perm::ControlDirect}, true};
+        std::map<uconnect::DevId, QVector<QJsonObject>> sent;
+        ScreenService service([&](const auto& p, const auto& msg) { sent[p].push_back(msg); return true; },
+            [&](const auto&) { return access; }, [](const auto&) { return true; }, [](const auto&) {},
+            [](const auto&, const auto&) { return true; }, nullptr, {}, std::move(backend));
+        ScreenSettings settings; settings.maxViewers = 2; settings.monitors = {QVariantMap{{"width", 1920}, {"height", 1080}}};
+        service.configure(settings); service.setOffered(true); service.setControlOffered(true);
+        service.handle(peer(1), {{"t", "scr.request"}, {"request", 1}, {"codecs", QJsonArray{"h264"}}, {"wantControl", true}});
+        const int first = sent[peer(1)].back().value("session").toInt(); QVERIFY(sent[peer(1)].back().value("control").toBool());
+        service.handle(peer(1), {{"t", "in.key"}, {"session", first}, {"usage", 4}, {"down", true}}); QCOMPARE(record->held.size(), 1);
+        service.handle(peer(2), {{"t", "scr.request"}, {"request", 2}, {"codecs", QJsonArray{"h264"}}});
+        const int second = sent[peer(2)].back().value("session").toInt(); QVERIFY(second);
+        service.handle(peer(2), {{"t", "scr.control"}, {"request", 3}, {"session", second}, {"on", true}});
+        QVERIFY(!sent[peer(2)].back().value("on").toBool()); QCOMPARE(record->held.size(), 1);
+        const int before = record->calls;
+        service.handle(peer(2), {{"t", "in.key"}, {"session", second}, {"usage", 5}, {"down", true}}); QCOMPARE(record->calls, before);
+        service.peerGone(peer(2)); QCOMPARE(record->held.size(), 1);
+        service.stopControl(); QVERIFY(record->held.isEmpty());
+    }
+    void altGrAndDeadKeys() {
+        QObject window; InputCapture capture; capture.attach(&window); capture.setCaptured(true); QSignalSpy events(&capture, &InputCapture::input);
+        QKeyEvent altGr(QEvent::KeyPress, Qt::Key_AltGr, Qt::GroupSwitchModifier);
+        QCoreApplication::sendEvent(&window, &altGr);
+        QKeyEvent character(QEvent::KeyPress, Qt::Key_Q, Qt::ControlModifier | Qt::AltModifier, "@");
+        QCoreApplication::sendEvent(&window, &character);
+        QCOMPARE(events.back()[0].toJsonObject().value("t"), "in.text"); QCOMPARE(events.back()[0].toJsonObject().value("text"), "@");
+        QKeyEvent dead(QEvent::KeyPress, Qt::Key_Dead_Acute, Qt::NoModifier);
+        const int count = events.size(); QCoreApplication::sendEvent(&window, &dead); QCOMPARE(events.size(), count);
+    }
+    void viewerRequiresRequestedControl() {
+        for (bool camera : {false, true}) {
+            QVector<QJsonObject> sent;
+            ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
+                [](const auto&) { return PeerAccess{"key", "Host", "fp", {}, true}; },
+                [](const auto&) { return true; }, [](const auto&) {}, [](const auto&, const auto&) { return true; }, nullptr, {}, {}, camera);
+            QSignalSpy state(&service, &ScreenService::viewerChanged);
+            service.request(peer());
+            service.handle(peer(), {{"t", camera ? "cam.started" : "scr.started"}, {"request", 1}, {"session", 14}, {"codec", "h264"}, {"control", true}});
+            QVERIFY(!state.back()[1].toMap().value("control").toBool());
+            const int before = sent.size();
+            service.sendInput(peer(), {{"t", "in.key"}, {"usage", 4}, {"down", true}}); QCOMPARE(sent.size(), before);
+            service.requestControl(peer(), true);
+            if (camera) { QCOMPARE(sent.size(), before); continue; }
+            const auto id = sent.back().value("request");
+            service.handle(peer(), {{"t", "scr.controlled"}, {"request", 0}, {"session", 14}, {"on", true}});
+            QVERIFY(!state.back()[1].toMap().value("control").toBool());
+            service.handle(peer(), {{"t", "scr.controlled"}, {"request", id}, {"session", 14}, {"on", true}});
+            QVERIFY(state.back()[1].toMap().value("control").toBool());
         }
     }
     void cursorWire() {

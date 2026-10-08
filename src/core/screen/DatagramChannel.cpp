@@ -3,7 +3,14 @@
 namespace ucd::screen {
 
 bool DatagramChannel::open(const uconnect::DevId& peer, uconnect::DatagramFallback fallback) {
-    if (!topic_ || !topic_->open_datagrams(peer, fallback)) return false;
+    if (!topic_) return false;
+    if (!topic_->open_datagrams(peer, fallback)) {
+        // The other node can negotiate its channel before our worker handles
+        // scr.started. Adopt that channel only when the service authorizes open;
+        // arrival alone never adds the peer to active_.
+        const auto path = topic_->datagram_path(peer);
+        if (path == uconnect::DatagramPath::None || path == uconnect::DatagramPath::Failed) return false;
+    }
     active_.insert(peer);
     return true;
 }
@@ -15,13 +22,13 @@ void DatagramChannel::close(const uconnect::DevId& peer) {
 
 bool DatagramChannel::send(const uconnect::DevId& peer, std::span<const uint8_t> bytes) {
     if (!active(peer) || bytes.empty() || bytes.size() > uconnect::Topic::max_datagram()) return false;
-    if (bytes.front() != 1 && bytes.front() != 2) return false;
+    if (bytes.front() != 1 && bytes.front() != 2 && bytes.front() != 3) return false;
     return topic_ && topic_->send_datagram(peer, bytes);
 }
 
 bool DatagramChannel::receive(const uconnect::DevId& peer, std::span<const uint8_t> bytes) {
     if (!active(peer) || bytes.empty() || bytes.size() > uconnect::Topic::max_datagram()) return false;
-    if (bytes.front() != 1 && bytes.front() != 2) return false;
+    if (bytes.front() != 1 && bytes.front() != 2 && bytes.front() != 3) return false;
     receive_(peer, bytes.front(), bytes);
     return true;
 }

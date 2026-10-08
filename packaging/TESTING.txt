@@ -32,3 +32,19 @@ Both devices must use a version with upload support for upload tests.
 Downloads are saved to the folder configured in Settings > Services > Storage.
 The ZIP does not include a rendezvous server; use your existing server.
 View > Debug Window (Ctrl+Shift+D) provides the connection state and log.
+
+Screen, remote control and camera
+-------------------------------
+Both devices must trust each other. Offer the relevant service on the host and
+provide the view/control grants in the device's permissions. Requests show a
+host consent prompt; direct screen/control grants may bypass it. Camera always
+asks. Use the sharing bar or Ctrl+Alt+Shift+S to stop; Right Ctrl releases viewer
+keyboard capture (configurable). Viewers share one source and encoder, with
+one control owner. Screen and camera may run simultaneously; no audio is sent.
+
+The software fallback is optional and downloaded separately from Cisco:
+  python scripts/install-openh264.py <codec-folder>
+Enable it and enter its library path in Settings > Services > Screen Sharing.
+See docs/screen-testing.md in the source repository for native platform tests
+and the common-clock latency procedure. macOS needs Screen Recording and
+Accessibility permissions; Wayland is view-only through the desktop portal.
