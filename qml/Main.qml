@@ -40,7 +40,15 @@ ApplicationWindow {
     readonly property bool inWorkspace: page === "workspace"
 
     // Closing this window also closes the debug and service windows.
-    onClosing: Qt.quit()
+    onClosing: root.quitApp()
+    // Qt.quit() first asks every visible window to close and gives up if one
+    // refuses; the sharing bar refuses (it stops sharing instead), which left
+    // the app running with no window. Stop sharing, then leave regardless.
+    function quitApp() {
+        App.screen.stopHosting()
+        App.camera.stopHosting()
+        Qt.exit(0)
+    }
     Loader { source: App.screen.available ? Qt.resolvedUrl("ScreenSafety.qml") : "" }
     Loader {
         active: App.camera.available
@@ -102,7 +110,7 @@ ApplicationWindow {
         id: quitAction
         text: qsTr("Exit")
         shortcut: "Ctrl+Q"
-        onTriggered: Qt.quit()
+        onTriggered: root.quitApp()
     }
     Action {
         id: copyLinkAction

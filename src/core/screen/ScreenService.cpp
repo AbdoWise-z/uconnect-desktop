@@ -66,10 +66,7 @@ void ScreenService::configure(const ScreenSettings& settings) {
     settings_.maxBitrate = std::clamp(settings.maxBitrate, 150000, 20000000);
     settings_.maxViewers = std::clamp(settings.maxViewers, 1, 8);
     if (gpuChanged) {
-        ++generation_; nativeActive_ = false; nativeDisabled_ = !settings_.gpuCapture;
-        nativeRetryAt_ = 0; nativeFailures_ = 0;
-        emit nativeCaptureChanged(false);
-        QMetaObject::invokeMethod(encoderWorker_, [this] { encoder_->reset(); desktop_.reset(); });
+        resetNative(); updateQtCapture();
         for (auto& [peer, host] : hosts_) host.forceKey = true;
     }
     settings_.monitor = std::clamp(settings.monitor, 0, std::max(0, int(settings.monitors.size()) - 1));
@@ -163,6 +160,7 @@ void ScreenService::startHost(const Peer& peer) {
     });
     if (std::count_if(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.live; }) == 1)
         emit captureChanged(true, host.monitor);
+    updateQtCapture();
     showHosting();
     emit activity(QStringLiteral("Screen sharing started with %1").arg(authorize_(peer).name));
 }
@@ -194,9 +192,7 @@ void ScreenService::stop(const Peer& peer, const QString& reason) {
         emit consentClosed(hex(peer), host->second.request);
         hosts_.erase(host); showHosting();
         if (std::none_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.live; })) {
-            ++generation_; nativeActive_ = false; nativeDisabled_ = !settings_.gpuCapture; lastPipeline_.clear();
-            nativeRetryAt_ = 0; nativeFailures_ = 0; emit nativeCaptureChanged(false); emit captureChanged(false, settings_.monitor);
-            QMetaObject::invokeMethod(encoderWorker_, [this] { encoder_->reset(); desktop_.reset(); });
+            resetNative(); lastPipeline_.clear(); updateQtCapture(); emit captureChanged(false, settings_.monitor);
         }
         emit activity(QStringLiteral("Screen sharing stopped: %1").arg(reason));
     }
@@ -211,6 +207,22 @@ void ScreenService::stop(const Peer& peer, const QString& reason) {
     while (channels-- > 0) close_(peer);
     if (hosts_.empty() && viewers_.empty() && !input_.pressedCount()) timer_.stop();
 }
+void ScreenService::captureFailed(const QString& error) {
+    if (qtWanted_) stopHosting(error);  // otherwise it was stopped for the native path, or nothing is shared
+}
+
+void ScreenService::resetNative() {
+    ++generation_; nativeActive_ = nativeWorked_ = false; nativeDisabled_ = camera_ || !settings_.gpuCapture;
+    nativeRetryAt_ = nativeAttemptAt_ = 0; nativeFailures_ = 0;
+    QMetaObject::invokeMethod(encoderWorker_, [this] { encoder_->reset(); desktop_.reset(); });
+}
+
+void ScreenService::updateQtCapture() {
+    const bool watched = std::any_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.live; });
+    const bool wanted = watched && nativeDisabled_;
+    if (wanted != qtWanted_) { qtWanted_ = wanted; emit qtCaptureWanted(wanted); }
+}
+
 void ScreenService::stopHosting(const QString& reason) {
     while (!hosts_.empty()) stop(hosts_.begin()->first, reason);
 }
@@ -360,9 +372,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             if (index >= 0 && index < settings_.monitors.size()) {
                 const bool anotherController = std::any_of(hosts_.begin(), hosts_.end(), [&](const auto& entry) { return entry.first != peer && entry.second.control; });
                 if (anotherController) return true;
-                ++generation_; input_.release();
-                nativeActive_ = nativeDisabled_ = false; emit nativeCaptureChanged(false);
-                QMetaObject::invokeMethod(encoderWorker_, [this] { encoder_->reset(); desktop_.reset(); });
+                input_.release(); resetNative(); updateQtCapture();
                 const auto bounds = settings_.monitors[index].toMap();
                 input_.setBounds(QRect(bounds.value("inputX", bounds.value("x")).toInt(), bounds.value("inputY", bounds.value("y")).toInt(),
                     bounds.value("inputWidth", bounds.value("width")).toInt(), bounds.value("inputHeight", bounds.value("height")).toInt()));
@@ -397,7 +407,7 @@ void ScreenService::receive(const Peer& peer, const QByteArray& wire) {
     // Frames that complete while the decoder is busy wait for it: each one is
     // a reference for the next, so none may be skipped. Only a decoder far
     // behind (a second of video) starts over from a keyframe.
-    viewer.toDecode += complete;
+    viewer.toDecode += complete; stats_.completed += complete.size();
     if (viewer.toDecode.size() > std::max(8, viewer.fps)) {
         viewer.toDecode.clear();
         viewer.receiver.reset(viewer.token, viewer.fps);
@@ -411,33 +421,37 @@ void ScreenService::decodeNext(const Peer& peer) {
     const auto it = viewers_.find(peer);
     if (it == viewers_.end() || it->second.toDecode.isEmpty()) return;
     auto& viewer = it->second;
-    viewer.decoding = true;
+    viewer.decoding = true; ++stats_.decodes;
     auto complete = std::move(viewer.toDecode);
     viewer.toDecode.clear();
     const auto token = viewer.token; const auto generation = generation_; const auto started = monotonicMs();
     QMetaObject::invokeMethod(decoderWorker_, [this, peer, token, generation, complete = std::move(complete), started] {
         auto& decoder = decoders_[peer]; if (!decoder) decoder = std::make_unique<Decoder>();
-        QImage image;
-        for (const auto& frame : complete) {
-            const auto decoded = decoder->decode(frame); if (!decoded.isNull()) image = decoded;
+        // Only the last frame of a batch is shown; the others just advance the decoder.
+        QVideoFrame image; bool any = false;
+        for (qsizetype i = 0; i < complete.size(); ++i) {
+            bool decoded = false;
+            auto picture = decoder->decodeFrame(complete[i], i == complete.size() - 1, &decoded);
+            any |= decoded;
+            if (picture.isValid()) image = std::move(picture);
         }
         // Per frame: a batch taking longer is not a slower decoder.
         const double elapsed = double(monotonicMs() - started) / std::max<qsizetype>(1, complete.size());
-        QMetaObject::invokeMethod(this, [this, peer, token, generation, image, elapsed] {
+        QMetaObject::invokeMethod(this, [this, peer, token, generation, image, any, elapsed] {
             const auto it = viewers_.find(peer);
             if (generation != generation_ || it == viewers_.end() || it->second.token != token) return;
-            it->second.decoding = false; it->second.decodeMs = elapsed;
-            if (image.isNull()) {
+            it->second.decoding = false; it->second.decodeMs = elapsed; stats_.decodeMs += elapsed;
+            if (!any) {
                 it->second.toDecode.clear();
                 it->second.receiver.reset(token, it->second.fps);
                 send_(peer, message("scr.keyframe", token));
-            } else {
+            } else if (image.isValid()) {
                 ++it->second.decoded;
                 if (!it->second.pictured) {
                     it->second.pictured = true;
                     showViewer(peer, "live", {}, {{"pictured", true}});
                 }
-                emit imageReady(hex(peer), image);
+                emit frameReady(hex(peer), image); ++stats_.shown;
             }
             decodeNext(peer);
         });
@@ -454,7 +468,8 @@ void ScreenService::pathChanged(const Peer& peer, const QString& path) {
 }
 
 void ScreenService::submitCapture(const QVideoFrame& frame) {
-    if (capturePending_.exchange(true)) return;
+    ++stats_.offered;
+    if (capturePending_.exchange(true)) { ++stats_.busy; return; }
     const auto captured = quint32(monotonicMs());
     QMetaObject::invokeMethod(this, [this, frame, captured] { encodeCapture(frame, {}, captured); });
 }
@@ -470,8 +485,8 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
         width = std::min(width, host.congestion.width()); fps = std::min(fps, host.congestion.fps());
         bitrate = std::min(bitrate, host.congestion.bitrate());
     }
-    if (targets.empty() || now_() - lastCapture_ < 1000 / fps) { capturePending_ = false; return; }
-    lastCapture_ = now_();
+    if (targets.empty() || now_() - lastCapture_ < 1000 / fps) { if (!targets.empty()) ++stats_.throttled; capturePending_ = false; return; }
+    lastCapture_ = now_(); ++stats_.encodes;
     for (auto& [peer, host] : hosts_) if (host.live) host.forceKey = false;
     const auto number = nextFrame_; const auto generation = generation_;
     QString nativeMonitor;
@@ -483,6 +498,7 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
     CodecOptions options{width, fps, bitrate, {}, settings_.ciscoLibrary};
     const bool wasNative = nativeActive_;
     QMetaObject::invokeMethod(encoderWorker_, [this, targets, generation, number, key, video, image, captureMs, options, native, nativeMonitor, wasNative] {
+        const auto encodeStart = monotonicMs();
         DesktopResult gpu;
         if (native) {
             if (!desktop_) desktop_ = desktopEncoder();
@@ -497,19 +513,23 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
         const auto error = gpu.active || sourceless ? QString() : encoder_->error();
         const auto name = gpu.active ? gpu.pipeline : sourceless ? QString() : encoder_->name();
         const auto nativeError = gpu.detail;
-        QMetaObject::invokeMethod(this, [this, targets, generation, result, error, name, fps = options.fps, native, gpu, nativeError, sourceless] {
+        const double encodeMs = monotonicMs() - encodeStart;
+        QMetaObject::invokeMethod(this, [this, targets, generation, result, error, name, fps = options.fps, native, gpu, nativeError, sourceless, encodeMs] {
             capturePending_ = false;
+            stats_.encodeMs += encodeMs; if (result) ++stats_.frames;
             if (generation != generation_) return;
             if (native) {
                 if (gpu.active) {
-                    nativeFailures_ = 0; nativeRetryAt_ = 0;
+                    nativeFailures_ = 0; nativeRetryAt_ = 0; nativeWorked_ = true;
                 } else {
                     if (!nativeFailures_ && !nativeError.isEmpty()) emit activity(nativeError);
-                    nativeRetryAt_ = now_() + std::min<qint64>(60000, qint64(2000) << std::min(nativeFailures_, 5));
+                    // Only a path that worked is tried again (it was lost to a display
+                    // change, a UAC prompt, the lock screen): each try pauses Qt's capture.
+                    nativeRetryAt_ = nativeWorked_ ? now_() + std::min<qint64>(60000, qint64(2000) << std::min(nativeFailures_, 5)) : 0;
                     ++nativeFailures_;
                 }
-                nativeDisabled_ = !gpu.active;
-                if (nativeActive_ != gpu.active) { nativeActive_ = gpu.active; emit nativeCaptureChanged(nativeActive_); }
+                nativeDisabled_ = !gpu.active; nativeActive_ = gpu.active;
+                updateQtCapture();
             }
             // No frame from the software encoder means one was lost. The native
             // path also returns none when the screen has not changed yet, which
@@ -522,8 +542,8 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
                 if (it == hosts_.end() || it->second.token != token) continue;
                 if (result) {
                     auto frame = *result; frame.session = token;
-                    if (!it->second.sender.enqueue(frame, now_(), 1000 / fps)) it->second.forceKey = true;
-                    else ++it->second.framesSent;
+                    if (!it->second.sender.enqueue(frame, now_(), 1000 / fps)) { it->second.forceKey = true; ++stats_.refused; }
+                    else { ++it->second.framesSent; ++stats_.queued; }
                 } else if (!error.isEmpty()) {
                     auto failure = message("scr.error", token); failure["detail"] = error;
                     send_(peer, failure); stop(peer, error);
@@ -541,14 +561,41 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
     });
 }
 
+void ScreenService::logStats(qint64 now) {
+    const qint64 span = std::max<qint64>(1, now - stats_.at);
+    const auto rate = [&](double n) { return QString::number(n * 1000. / span, 'f', 1); };
+    QString line = QStringLiteral("[stats%1]").arg(camera_ ? " camera" : "");
+    for (const auto& [peer, host] : hosts_) if (host.live) {
+        line += QStringLiteral(" host: offered %1/s (busy %2/s), throttled %3/s, encodes %4/s at %5 ms, frames %6/s, queued %7/s, refused %8/s,"
+                               " sender drops %9 | target %10 fps %11 kbit/s %12 px | %13")
+            .arg(rate(stats_.offered), rate(stats_.busy), rate(stats_.throttled), rate(stats_.encodes))
+            .arg(stats_.encodes ? stats_.encodeMs / stats_.encodes : 0., 0, 'f', 1)
+            .arg(rate(stats_.frames), rate(stats_.queued), rate(stats_.refused))
+            .arg(host.sender.dropped()).arg(host.congestion.fps()).arg(host.congestion.bitrate() / 1000).arg(host.congestion.width())
+            .arg(lastPipeline_);
+        break;
+    }
+    if (!viewers_.empty())
+        line += QStringLiteral(" viewer: complete %1/s, decodes %2/s at %3 ms/frame, shown %4/s")
+            .arg(rate(stats_.completed), rate(stats_.decodes))
+            .arg(stats_.decodes ? stats_.decodeMs / stats_.decodes : 0., 0, 'f', 1).arg(rate(stats_.shown));
+    if (!hosts_.empty() || !viewers_.empty()) qInfo().noquote() << line;
+    stats_.offered = 0; stats_.busy = 0;
+    stats_.throttled = stats_.encodes = stats_.frames = stats_.queued = stats_.refused = 0;
+    stats_.completed = stats_.decodes = stats_.shown = 0; stats_.encodeMs = stats_.decodeMs = 0; stats_.at = now;
+}
+
 void ScreenService::tick() {
     const auto now = now_(); QVector<Peer> expired;
+    if (statsOn_ && now - stats_.at >= 1000) logStats(now);
     // The native path (desktop duplication) captures by itself. Try it as
     // soon as someone watches instead of waiting for Qt's capture to deliver
     // a first frame, which on some systems never comes.
     const bool watched = std::any_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.live; });
-    if (nativeDisabled_ && nativeRetryAt_ && now >= nativeRetryAt_ && settings_.gpuCapture) { nativeDisabled_ = false; nativeRetryAt_ = 0; }
-    if (watched && !camera_ && settings_.gpuCapture && !nativeDisabled_ && !capturePending_.exchange(true))
+    if (nativeDisabled_ && nativeRetryAt_ && now >= nativeRetryAt_ && settings_.gpuCapture && !camera_) {
+        nativeDisabled_ = false; nativeRetryAt_ = 0; nativeAttemptAt_ = now + 500; updateQtCapture();
+    }
+    if (watched && !camera_ && settings_.gpuCapture && !nativeDisabled_ && now >= nativeAttemptAt_ && !capturePending_.exchange(true))
         encodeCapture({}, {}, quint32(now));
     const bool controlled = std::any_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.control; });
     if (!controlled && input_.pressedCount() && now - lastReleaseRetry_ >= 100) {

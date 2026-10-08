@@ -127,6 +127,9 @@ class D3DDesktop : public DesktopEncoder {
             codec_->framerate = {options.fps, 1}; codec_->bit_rate = codec_->rc_max_rate = options.bitrate;
             codec_->rc_buffer_size = options.bitrate / 8; codec_->gop_size = options.fps * 4; codec_->max_b_frames = 0;
             codec_->flags |= AV_CODEC_FLAG_LOW_DELAY; codec_->hw_frames_ctx = av_buffer_ref(codecFrames);
+            // As the video processor converts (YCbCr_Matrix 1, nominal range).
+            codec_->colorspace = AVCOL_SPC_BT709; codec_->color_primaries = AVCOL_PRI_BT709;
+            codec_->color_trc = AVCOL_TRC_BT709; codec_->color_range = AVCOL_RANGE_MPEG;
             codec_->pix_fmt = name == "h264_qsv" ? AV_PIX_FMT_QSV : AV_PIX_FMT_D3D11;
             AVDictionary* tuning = nullptr;
             if (name == "h264_nvenc") {

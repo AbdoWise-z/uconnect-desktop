@@ -23,7 +23,7 @@ private slots:
     void roundTrip() {
         QFETCH(QString, name);
         CodecOptions options{640, 30, 4000000, name, qEnvironmentVariable("UCD_TEST_OPENH264")};
-        Encoder encoder; Decoder decoder;
+        Encoder encoder; Decoder decoder, frames;
         QImage source(640, 360, QImage::Format_RGBA8888);
         for (int y = 0; y < source.height(); ++y) for (int x = 0; x < source.width(); ++x)
             source.setPixelColor(x, y, QColor(x / 8 + 50, y / 4 + 30, (x + y) / 6 + 40));
@@ -40,14 +40,23 @@ private slots:
             if (decoded == 0) QVERIFY(encoded->keyframe);
             const auto image = decoder.decode(*encoded);
             QVERIFY2(!image.isNull(), qPrintable(decoder.error())); QCOMPARE(image.size(), source.size());
-            double error = 0;
-            for (int y = 0; y < source.height(); ++y) for (int x = 0; x < source.width(); ++x) {
-                const auto a = source.pixelColor(x, y), b = image.pixelColor(x, y);
-                error += std::pow(a.red() - b.red(), 2) + std::pow(a.green() - b.green(), 2) + std::pow(a.blue() - b.blue(), 2);
-            }
-            const double mse = error / (source.width() * source.height() * 3);
-            const double psnr = mse ? 10 * std::log10(255. * 255 / mse) : 100;
-            QVERIFY2(psnr > 28, qPrintable(QString("PSNR %1 dB").arg(psnr))); ++decoded;
+            const auto psnr = [&](const QImage& out) {
+                double error = 0;
+                for (int y = 0; y < source.height(); ++y) for (int x = 0; x < source.width(); ++x) {
+                    const auto a = source.pixelColor(x, y), b = out.pixelColor(x, y);
+                    error += std::pow(a.red() - b.red(), 2) + std::pow(a.green() - b.green(), 2) + std::pow(a.blue() - b.blue(), 2);
+                }
+                const double mse = error / (source.width() * source.height() * 3);
+                return mse ? 10 * std::log10(255. * 255 / mse) : 100;
+            };
+            QVERIFY2(psnr(image) > 28, qPrintable(QString("PSNR %1 dB").arg(psnr(image))));
+            // The viewer's path: YUV frames, labelled so the sink converts them right.
+            bool produced = false;
+            const auto frame = frames.decodeFrame(*encoded, true, &produced);
+            QVERIFY(produced); QVERIFY(frame.isValid()); QCOMPARE(frame.size(), source.size());
+            QVERIFY(frame.pixelFormat() != QVideoFrameFormat::Format_RGBA8888);
+            const auto shown = frame.toImage().convertToFormat(QImage::Format_RGBA8888);
+            QVERIFY2(psnr(shown) > 28, qPrintable(QString("frame PSNR %1 dB").arg(psnr(shown)))); ++decoded;
             if (i == 5) options.bitrate = 2000000;
         }
         QVERIFY(decoded >= 8);

@@ -2,6 +2,8 @@
 
 #include <QImage>
 #include <QString>
+#include <QVideoFrame>
+#include <functional>
 #include <memory>
 #include <optional>
 #include "MediaTransport.hpp"
@@ -33,7 +35,13 @@ class Decoder {
 public:
     Decoder();
     ~Decoder();
+    // The picture as RGBA, converted on the CPU.
     QImage decode(const EncodedFrame& frame);
+    // The picture in its decoded YUV layout, for a video sink to convert on
+    // the GPU: far cheaper than decode() per frame. Without `picture`, the
+    // frame only advances the decoder (it is a reference for the next one).
+    // `decoded` tells whether a picture came out either way.
+    QVideoFrame decodeFrame(const EncodedFrame& frame, bool picture = true, bool* decoded = nullptr);
     QString error() const;
     void reset();
 private:

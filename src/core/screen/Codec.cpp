@@ -115,6 +115,8 @@ struct Encoder::Impl {
             context->rc_buffer_size = options.bitrate / 8;
             context->gop_size = options.fps * 4; context->max_b_frames = 0;
             context->flags |= AV_CODEC_FLAG_LOW_DELAY;
+            // As swscale converts by default.
+            context->colorspace = AVCOL_SPC_SMPTE170M; context->color_range = AVCOL_RANGE_MPEG;
             context->pix_fmt = supports(codec, AV_PIX_FMT_NV12) ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
             AVDictionary* settings = nullptr;
             if (candidate == "h264_nvenc") {
@@ -237,6 +239,7 @@ struct Decoder::Impl {
     SwsContext* scale = nullptr;
     QString error;
     ~Impl() { avcodec_free_context(&context); av_buffer_unref(&device); sws_freeContext(scale); }
+    bool decodeInto(const EncodedFrame& encoded, bool transfer, const std::function<void(AVFrame*)>& use);
     static AVPixelFormat selectFormat(AVCodecContext* codec, const AVPixelFormat* formats) {
         const auto* self = static_cast<Impl*>(codec->opaque);
         for (auto* f = formats; *f != AV_PIX_FMT_NONE; ++f) if (*f == self->hardwareFormat) return *f;
@@ -248,12 +251,15 @@ Decoder::Decoder() : impl_(std::make_unique<Impl>()) {}
 Decoder::~Decoder() = default;
 void Decoder::reset() { impl_ = std::make_unique<Impl>(); }
 QString Decoder::error() const { return impl_->error; }
-QImage Decoder::decode(const EncodedFrame& encoded) {
-    auto& p = *impl_;
-    if (!lgplCodecBuild()) { p.error = "FFmpeg must be an LGPL shared build"; return {}; }
+// Sends one access unit and hands each picture that comes out to `use`, in
+// system memory when `transfer` is set (otherwise as decoded, possibly a GPU
+// surface). False on failure.
+bool Decoder::Impl::decodeInto(const EncodedFrame& encoded, bool transfer, const std::function<void(AVFrame*)>& use) {
+    auto& p = *this;
+    if (!lgplCodecBuild()) { p.error = "FFmpeg must be an LGPL shared build"; return false; }
     if (!p.context) {
         const auto* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-        if (!codec) { p.error = "H.264 decoder unavailable"; return {}; }
+        if (!codec) { p.error = "H.264 decoder unavailable"; return false; }
         p.context = avcodec_alloc_context3(codec); p.context->thread_count = 1;
         p.context->opaque = &p; p.context->get_format = Impl::selectFormat;
 #ifdef Q_OS_WIN
@@ -272,33 +278,83 @@ QImage Decoder::decode(const EncodedFrame& encoded) {
         p.context->max_pixels = 3840 * 4320;
         p.context->err_recognition = AV_EF_EXPLODE;
         p.context->flags |= AV_CODEC_FLAG_LOW_DELAY;
-        if (avcodec_open2(p.context, codec, nullptr) < 0) { p.error = "Cannot open H.264 decoder"; return {}; }
+        if (avcodec_open2(p.context, codec, nullptr) < 0) { p.error = "Cannot open H.264 decoder"; return false; }
     }
-    if (encoded.bytes.isEmpty() || encoded.bytes.size() > MaxFrameBytes) return {};
+    if (encoded.bytes.isEmpty() || encoded.bytes.size() > MaxFrameBytes) return false;
     if (encoded.keyframe) avcodec_flush_buffers(p.context);
     auto* packet = av_packet_alloc();
     av_new_packet(packet, encoded.bytes.size()); memcpy(packet->data, encoded.bytes.constData(), encoded.bytes.size());
     int status = avcodec_send_packet(p.context, packet); av_packet_free(&packet);
-    if (status < 0) { p.error = avError(status); return {}; }
-    auto* frame = av_frame_alloc(); QImage image;
+    if (status < 0) { p.error = avError(status); return false; }
+    auto* frame = av_frame_alloc();
     while ((status = avcodec_receive_frame(p.context, frame)) >= 0) {
-        if (frame->format == p.hardwareFormat && p.hardwareFormat != AV_PIX_FMT_NONE) {
+        if (transfer && frame->format == p.hardwareFormat && p.hardwareFormat != AV_PIX_FMT_NONE) {
             auto* mapped = av_frame_alloc();
             if (av_hwframe_transfer_data(mapped, frame, 0) < 0) { av_frame_free(&mapped); break; }
+            av_frame_copy_props(mapped, frame);
             av_frame_unref(frame); av_frame_move_ref(frame, mapped); av_frame_free(&mapped);
         }
         if (frame->width < 2 || frame->height < 2 || frame->width > 3840 || frame->height > 4320) break;
-        image = QImage(frame->width, frame->height, QImage::Format_RGBA8888);
-        p.scale = sws_getCachedContext(p.scale, frame->width, frame->height, AVPixelFormat(frame->format),
-            frame->width, frame->height, AV_PIX_FMT_RGBA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-        if (!p.scale) { image = {}; break; }
-        uint8_t* target[]{image.bits()}; const int stride[]{int(image.bytesPerLine())};
-        sws_scale(p.scale, frame->data, frame->linesize, 0, frame->height, target, stride);
+        use(frame);
         av_frame_unref(frame);
     }
     av_frame_free(&frame);
-    if (status != AVERROR(EAGAIN) && status != AVERROR_EOF && status < 0) p.error = avError(status);
+    if (status != AVERROR(EAGAIN) && status != AVERROR_EOF && status < 0) { p.error = avError(status); return false; }
+    return true;
+}
+
+QImage Decoder::decode(const EncodedFrame& encoded) {
+    auto& p = *impl_;
+    QImage image;
+    p.decodeInto(encoded, true, [&](AVFrame* frame) {
+        image = QImage(frame->width, frame->height, QImage::Format_RGBA8888);
+        p.scale = sws_getCachedContext(p.scale, frame->width, frame->height, AVPixelFormat(frame->format),
+            frame->width, frame->height, AV_PIX_FMT_RGBA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+        if (!p.scale) { image = {}; return; }
+        uint8_t* target[]{image.bits()}; const int stride[]{int(image.bytesPerLine())};
+        sws_scale(p.scale, frame->data, frame->linesize, 0, frame->height, target, stride);
+    });
     return image;
+}
+
+QVideoFrame Decoder::decodeFrame(const EncodedFrame& encoded, bool picture, bool* decoded) {
+    auto& p = *impl_;
+    QVideoFrame result; bool any = false;
+    p.decodeInto(encoded, picture, [&](AVFrame* frame) {
+        any = true;
+        if (!picture) return;
+        const auto format = AVPixelFormat(frame->format);
+        const bool full = format == AV_PIX_FMT_YUVJ420P || frame->color_range == AVCOL_RANGE_JPEG;
+        const auto layout = format == AV_PIX_FMT_NV12 ? QVideoFrameFormat::Format_NV12
+            : format == AV_PIX_FMT_YUV420P || format == AV_PIX_FMT_YUVJ420P ? QVideoFrameFormat::Format_YUV420P
+            : QVideoFrameFormat::Format_RGBA8888;
+        QVideoFrameFormat videoFormat(QSize(frame->width, frame->height), layout);
+        // Unlabelled streams were encoded with swscale's default, BT.601.
+        videoFormat.setColorSpace(frame->colorspace == AVCOL_SPC_BT709 ? QVideoFrameFormat::ColorSpace_BT709 : QVideoFrameFormat::ColorSpace_BT601);
+        videoFormat.setColorRange(full ? QVideoFrameFormat::ColorRange_Full : QVideoFrameFormat::ColorRange_Video);
+        QVideoFrame out(videoFormat);
+        if (!out.map(QVideoFrame::WriteOnly)) return;
+        if (layout == QVideoFrameFormat::Format_RGBA8888) {
+            p.scale = sws_getCachedContext(p.scale, frame->width, frame->height, format,
+                frame->width, frame->height, AV_PIX_FMT_RGBA, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+            if (!p.scale) { out.unmap(); return; }
+            uint8_t* target[]{out.bits(0)}; const int stride[]{out.bytesPerLine(0)};
+            sws_scale(p.scale, frame->data, frame->linesize, 0, frame->height, target, stride);
+        } else {
+            for (int plane = 0; plane < out.planeCount(); ++plane) {
+                const int rows = plane ? (frame->height + 1) / 2 : frame->height;
+                const int bytes = layout == QVideoFrameFormat::Format_NV12 ? (frame->width + 1) / 2 * 2
+                                : plane ? (frame->width + 1) / 2 : frame->width;
+                const int length = std::min({bytes, out.bytesPerLine(plane), frame->linesize[plane]});
+                for (int y = 0; y < rows; ++y)
+                    memcpy(out.bits(plane) + qsizetype(y) * out.bytesPerLine(plane), frame->data[plane] + qsizetype(y) * frame->linesize[plane], length);
+            }
+        }
+        out.unmap();
+        result = out;
+    });
+    if (decoded) *decoded = any;
+    return result;
 }
 
 }  // namespace ucd::screen

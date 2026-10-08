@@ -57,6 +57,9 @@ public:
     void consent(const QString& peerId, quint32 request, bool allow, bool remember);
     void stop(const Peer& peer, const QString& reason = "ended");
     void stopHosting(const QString& reason = "stopped by host");
+    // Qt's screen capture failed. That ends hosting only while Qt's capture
+    // is the one in use (see qtCaptureWanted).
+    void captureFailed(const QString& error);
     void peerGone(const Peer& peer);
     void reset();
     void policyChanged();
@@ -73,11 +76,15 @@ signals:
     void consentClosed(const QString& peer, quint32 request);
     void rememberPermission(const QString& key, const QString& permission);
     void viewerChanged(const QString& peer, const QVariantMap& state);
-    void imageReady(const QString& peer, const QImage& image);
+    // A decoded picture, in its YUV layout: the video sink converts it on the GPU.
+    void frameReady(const QString& peer, const QVideoFrame& frame);
     void hostingChanged(const QVariantList& viewers);
     void captureChanged(bool active, int monitor);
     void activity(const QString& line);
-    void nativeCaptureChanged(bool active);
+    // Whether Qt's capture should run. The native path (desktop duplication)
+    // is preferred and the two never run together: they compete for the
+    // desktop, and whichever starts second fails.
+    void qtCaptureWanted(bool wanted);
 private:
     struct Host {
         quint32 request = 0;
@@ -140,6 +147,16 @@ private:
     quint32 nextRequest_ = 1, nextFrame_ = 0;
     quint64 generation_ = 0;
     qint64 lastCapture_ = -1000;
+    // Diagnostics: per-second counters, logged when UCD_SCREEN_STATS is set.
+    struct Stats {
+        std::atomic_int offered{0}, busy{0};  // Qt capture frames (its own thread), and those skipped while encoding
+        int throttled = 0, encodes = 0, frames = 0, queued = 0, refused = 0;
+        int completed = 0, decodes = 0, shown = 0;
+        double encodeMs = 0, decodeMs = 0;
+        qint64 at = 0;
+    } stats_;
+    const bool statsOn_ = qEnvironmentVariableIsSet("UCD_SCREEN_STATS");
+    void logStats(qint64 now);
     qint64 lastReleaseRetry_ = -1000;
     QTimer timer_;
     QThread encoderThread_, decoderThread_;
@@ -152,6 +169,11 @@ private:
     // on display changes, UAC prompts, the lock screen), backing off each time.
     qint64 nativeRetryAt_ = 0;
     int nativeFailures_ = 0;
+    qint64 nativeAttemptAt_ = 0;  // a retry waits for Qt's capture to let go
+    bool nativeWorked_ = false;   // in this sharing session; only then is it retried
+    bool qtWanted_ = false;
+    void resetNative();
+    void updateQtCapture();
     QString lastPipeline_;
     std::map<Peer, std::unique_ptr<Decoder>> decoders_;
     std::atomic_bool capturePending_{false};

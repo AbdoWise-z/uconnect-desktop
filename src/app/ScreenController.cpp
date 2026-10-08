@@ -37,13 +37,18 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
     if (!camera_) captureSession_.setScreenCapture(&capture_); captureSession_.setVideoSink(&captureSink_);
     connect(&captureSink_, &QVideoSink::videoFrameChanged, service,
         [service](const QVideoFrame& frame) { service->submitCapture(frame); }, Qt::DirectConnection);
-    connect(&capture_, &QScreenCapture::errorOccurred, this, [this](auto, const QString& error) {
-        emit notify(error + tr(" Check Screen Recording permission on macOS.")); stopHosting();
+    connect(&capture_, &QScreenCapture::errorOccurred, this, [service](auto, QString error) {
+        qWarning().noquote() << "Qt screen capture failed:" << error;
+#ifdef Q_OS_MACOS
+        error += tr(" Check Screen Recording permission in System Settings.");
+#endif
+        QMetaObject::invokeMethod(service, [service, error] { service->captureFailed(error); });
     });
-    connect(service, &screen::ScreenService::nativeCaptureChanged, this, [this](bool active) {
+    connect(service, &screen::ScreenService::qtCaptureWanted, this, [this](bool wanted) {
         if (camera_) return;
-        if (active) capture_.stop();
-        else if (!hosting_.isEmpty() && !capture_.isActive()) capture_.start();
+        qtCaptureWanted_ = wanted;
+        if (!wanted) capture_.stop();
+        else if (!capture_.isActive()) capture_.start();  // the screen was chosen by captureChanged
     });
     connect(service, &screen::ScreenService::captureChanged, this, [this](bool active, int index) {
         ++sourceGeneration_;
@@ -58,7 +63,7 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
             // On Wayland Qt's FFmpeg backend invokes the ScreenCast portal.
             // Its user-selected source replaces the QScreen selection.
             if (!QGuiApplication::platformName().startsWith("wayland")) capture_.setScreen(screens[std::clamp(index, 0, int(screens.size()) - 1)]);
-            capture_.start();
+            if (qtCaptureWanted_) capture_.start();
         }
     });
     connect(service, &screen::ScreenService::viewerChanged, this, [this](const QString& peer, const QVariantMap& update) {
@@ -70,14 +75,8 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
         if (!update.value("detail").toString().isEmpty()) emit notify(update.value("detail").toString());
         emit stateChanged(peer);
     });
-    connect(service, &screen::ScreenService::imageReady, this, [this](const QString& peer, const QImage& image) {
-        if (const auto sink = sinks_.value(peer)) {
-            QVideoFrame frame(QVideoFrameFormat(image.size(), QVideoFrameFormat::Format_RGBA8888));
-            if (frame.map(QVideoFrame::WriteOnly)) {
-                for (int y = 0; y < image.height(); ++y) memcpy(frame.bits(0) + y * frame.bytesPerLine(0), image.constScanLine(y), image.width() * 4);
-                frame.unmap(); sink->setVideoFrame(frame);
-            }
-        }
+    connect(service, &screen::ScreenService::frameReady, this, [this](const QString& peer, const QVideoFrame& frame) {
+        if (const auto sink = sinks_.value(peer)) sink->setVideoFrame(frame);
     });
     connect(service, &screen::ScreenService::hostingChanged, this, [this](const QVariantList& hosting) {
         hosting_ = hosting;
@@ -180,7 +179,9 @@ void ScreenController::request(const QString& id, bool control) {
 #ifdef UCD_HAS_SCREEN
     const auto peer = uconnect::from_hex<uconnect::kDevIdLen>(id.toStdString()); if (!peer) return;
     auto* service = this->service();
-    QMetaObject::invokeMethod(service, [service, peer, control] { service->request(*peer, control); });
+    // Ask for what this device is set to show; the host caps it by its own settings.
+    const int width = settings_.value("maxWidth").toInt(), fps = settings_.value("maxFps").toInt();
+    QMetaObject::invokeMethod(service, [service, peer, control, width, fps] { service->request(*peer, control, width, fps); });
 #else
     Q_UNUSED(id); Q_UNUSED(control);
 #endif

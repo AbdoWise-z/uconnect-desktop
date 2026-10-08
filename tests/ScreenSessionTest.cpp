@@ -72,6 +72,36 @@ private slots:
         time = 6000; service.handle(peer(1), report); service.tick(); QCOMPARE(statuses(), 1);
     }
 
+    // Native capture is tried first; Qt's capture is wanted only once it fails,
+    // and only then does Qt's failure end hosting.
+    void captureFailureWaitsForNativePath() {
+        for (bool gpu : {false, true}) {
+            PeerAccess access{"key", "Viewer", "fp", {perm::ScreenView, perm::ScreenDirect}, true};
+            QVector<QJsonObject> sent;
+            ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
+                [&](const auto&) { return access; }, [](const auto&) { return true; }, [](const auto&) {},
+                [](const auto&, const auto&) { return true; });
+            ScreenSettings settings; settings.gpuCapture = gpu;
+            settings.monitors = {QVariantMap{{"name", "No such monitor"}, {"width", 256}, {"height", 128}}};
+            service.configure(settings); service.setOffered(true);
+            QSignalSpy hosting(&service, &ScreenService::hostingChanged), qt(&service, &ScreenService::qtCaptureWanted);
+            service.handle(peer(1), request());
+            QVERIFY(!hosting.back()[0].toList().isEmpty());
+            if (gpu) {
+                QVERIFY(qt.isEmpty());  // the native path goes first
+                service.captureFailed("not running");  // a late error from Qt's capture, stopped meanwhile
+                QVERIFY(!hosting.back()[0].toList().isEmpty());
+                // It cannot find the monitor: Qt's capture takes over.
+                QTRY_VERIFY_WITH_TIMEOUT(!qt.isEmpty() && qt.back()[0].toBool(), 3000);
+            } else {
+                QVERIFY(qt.back()[0].toBool());
+            }
+            service.captureFailed("capture failed");
+            QVERIFY(hosting.back()[0].toList().isEmpty());
+            QVERIFY(!qt.back()[0].toBool());
+        }
+    }
+
     void twoRealSessionsSyntheticVideo() {
         if (qEnvironmentVariableIsEmpty("UCD_TEST_OPENH264")) QSKIP("Install Cisco OpenH264 for synthetic end-to-end test");
         uconnect::server::RendezvousConfig config; config.port = 0;
@@ -101,7 +131,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(proven, 20000);
         QTRY_VERIFY_WITH_TIMEOUT(!hostId.isEmpty() && !viewerId.isEmpty(), 2000);
         const auto remote = *uconnect::from_hex<uconnect::kDevIdLen>(hostId.toStdString());
-        QSignalSpy prompt(host.screen(), &ScreenService::consentRequested), images(viewer.screen(), &ScreenService::imageReady);
+        QSignalSpy prompt(host.screen(), &ScreenService::consentRequested), images(viewer.screen(), &ScreenService::frameReady);
         QSignalSpy viewerState(viewer.screen(), &ScreenService::viewerChanged);
         QSignalSpy hostState(host.screen(), &ScreenService::hostingChanged);
         viewer.screen()->request(remote);
@@ -115,8 +145,8 @@ private slots:
         for (int i = 0; i < 90 && images.isEmpty(); ++i) { host.screen()->submitImage(synthetic); QTest::qWait(35); }
         QVERIFY2(!images.isEmpty(), qPrintable(QString("No decoded image crossed the real Session datagram channel; last state: %1")
             .arg(viewerState.isEmpty() ? QString("none") : QString::fromUtf8(QJsonDocument::fromVariant(viewerState.back()[1]).toJson(QJsonDocument::Compact)))));
-        QCOMPARE(qvariant_cast<QImage>(images.back()[1]).size(), synthetic.size());
-        QSignalSpy cameraPrompt(host.camera(), &ScreenService::consentRequested), cameraImages(viewer.camera(), &ScreenService::imageReady);
+        QCOMPARE(qvariant_cast<QVideoFrame>(images.back()[1]).size(), synthetic.size());
+        QSignalSpy cameraPrompt(host.camera(), &ScreenService::consentRequested), cameraImages(viewer.camera(), &ScreenService::frameReady);
         viewer.camera()->request(remote);
         QTRY_COMPARE_WITH_TIMEOUT(cameraPrompt.size(), 1, 3000);
         host.camera()->consent(viewerId, cameraPrompt[0][1].toUInt(), true, false);

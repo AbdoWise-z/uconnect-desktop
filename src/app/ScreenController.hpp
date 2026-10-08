@@ -61,6 +61,7 @@ private:
     QString shortcutError_;
 #ifdef UCD_HAS_SCREEN
     QScreenCapture capture_;
+    bool qtCaptureWanted_ = false;  // the service prefers native capture; Qt's runs only when it says so
     std::unique_ptr<QCamera> cameraCapture_;
     QMediaDevices devices_;
     screen::ScreenService* service() const { return camera_ ? session_->camera() : session_->screen(); }
