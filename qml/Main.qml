@@ -6,8 +6,8 @@ import UConnect
 ApplicationWindow {
     id: root
 
-    width: 1280
-    height: 800
+    width: 1024
+    height: 680
     minimumWidth: 900
     minimumHeight: 560
     visible: true

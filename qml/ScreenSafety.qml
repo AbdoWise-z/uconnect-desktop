@@ -56,7 +56,9 @@ Item {
         transientParent: null
         width: 580
         height: safety.controller.shortcutError.length ? 110 : 68
-        flags: Qt.Tool | Qt.WindowStaysOnTopHint | Qt.WindowTitleHint
+        // Never takes focus: it stays on top while you keep working, and its
+        // buttons still work without activating it.
+        flags: Qt.Tool | Qt.WindowStaysOnTopHint | Qt.WindowTitleHint | Qt.WindowDoesNotAcceptFocus
         visible: safety.controller.hosting.length > 0
         color: Theme.panel
         onClosing: event => { event.accepted = false; safety.controller.stopHosting() }
