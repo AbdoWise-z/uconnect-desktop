@@ -1,6 +1,6 @@
 # Plan: screen sharing and remote control
 
-Status: **phases 0-4 implemented; Windows verification complete, native platform/manual acceptance pending** (2026-10-08). Each phase is implemented,
+Status: **phases 0-4 implemented, plus post-phase fixes; Windows verified, native platform/manual acceptance pending** (2026-10-09). Each phase is implemented,
 tested and committed before the next phase. Wire details land in `docs/protocol.md`.
 
 Execution notes:
@@ -44,6 +44,41 @@ Execution notes:
   capture and NVENC. The screen-disabled build and its foundation/settings
   tests also pass. The datagram-opening race regression passed 15 consecutive
   runs of both foundation and session tests.
+- Post-phase fixes (2026-10-08/09), after the first real two-machine use
+  showed the frame rate collapsing, silent starts, and a needless trust rule:
+  - **Transport:** the pacer queues up to 3 frames and retries refused
+    datagrams instead of dropping every frame that arrives while the previous
+    one is sending. Incomplete delta frames are nacked too, from a 500 ms send
+    history. Congestion control cuts less, at most once per few reports, and
+    a slow decoder lowers the frame rate instead of the bitrate.
+  - **Encoders:** FFmpeg's NVENC restarts with a keyframe on every bitrate
+    change, so hardware encoders get bitrate changes in batches (cuts at most
+    once a second, raises every few seconds); only a change beyond 2x reopens
+    them. DXGI keeps its desktop duplication across encoder changes and
+    reopens it on access loss (display change, UAC, lock screen).
+  - **Capture:** native capture (DXGI) goes first and starts as soon as a
+    viewer is live; Qt's capture runs only when native capture is
+    unavailable, never alongside it (they compete for the desktop, and the
+    second one fails). A native path that worked is retried after a loss.
+  - **Viewer:** frames that complete mid-decode queue for the decoder instead
+    of costing a keyframe. Decoded frames go to the video sink in their YUV
+    layout (labelled BT.709/BT.601) for GPU conversion, instead of a CPU RGBA
+    conversion and copy: 5-7 ms instead of 13-16 ms per 1080p frame.
+  - **Start feedback:** the host reports (`scr.status`) when nothing was sent
+    5 s in; the viewer shows "waiting for the first picture", then a hint and
+    Try Again.
+  - **Trust:** watching needs only the host's proven identity; only the host
+    has to trust the viewer (decision 2).
+  - **Frame rate:** up to 165 fps (one `MaxFps` constant), with capture timed
+    on fractional intervals. The viewer now requests its configured rate
+    (it always asked for 30).
+  - **App:** quitting while sharing exits instead of leaving an invisible
+    process; the sharing bar never takes focus; `UCD_SCREEN_STATS=1` logs
+    per-second capture, encode and decode counters.
+  - **Measured** on one Windows machine (DXGI + NVENC, loopback): 60 fps
+    target, 61 fps encoded at ~4 ms and 61 shown at 5-7 ms per frame; 165 fps
+    target, 161-165 encoded at ~2.5 ms and 143-165 shown at ~5 ms per frame.
+    All 13 suites pass, plus the real-desktop NVENC test.
 - Hardware, macOS/Linux capture, and glass-to-glass latency require real
   desktops; automated synthetic tests cannot establish those acceptance values.
 - The pinned BtbN build embeds source-built OpenH264. Its software encoder
@@ -55,10 +90,11 @@ Execution notes:
 | # | Question | Decision |
 |---|---|---|
 | 1 | Codec library | **FFmpeg** (libavcodec, libswscale), LGPL shared builds only; no GPL or non-free parts. |
-| 2 | Consent | Only **trusted** devices may send a request. The host is asked each time, unless the device holds a "without asking" permission (`screen.direct` / `control.direct`). Those are only grantable to trusted devices. |
+| 2 | Consent | Only **trusted** devices may send a request. The host is asked each time, unless the device holds a "without asking" permission (`screen.direct` / `control.direct`). Those are only grantable to trusted devices. Trust is one-way: the viewer needs only the host's proven identity, not to trust it back. |
 | 3 | Unattended access | **Out of scope.** No system service, so no lock screen, UAC prompts or Ctrl+Alt+Del. |
 | 4 | Viewers | Phase 2 starts with one viewer; phase 4 implements a configurable **1-8 viewers**, sharing one encoder and one control owner. |
 | 5 | Transport | **Datagrams from the start** (uconnect's datagram channel), no TCP-first version. |
+| 6 | Frame rate | Up to **165 fps**, for high refresh displays (was 60). |
 
 Also settled while drafting:
 
@@ -99,12 +135,13 @@ New code lives in `src/core/screen/`, plus platform folders.
 
 ### Host side
 
-- **`ScreenSource`**: capture of one monitor. v1 uses Qt Multimedia's
-  `QScreenCapture` (Qt 6.5+). It wraps Windows.Graphics.Capture/DXGI,
-  ScreenCaptureKit, and X11/PipeWire, and delivers `QVideoFrame`s.
+- **`ScreenSource`**: capture of one monitor. Native capture comes first:
+  DXGI Desktop Duplication on Windows, ScreenCaptureKit on macOS, encoding
+  GPU surfaces directly. Qt Multimedia's `QScreenCapture` (Qt 6.5+; wraps
+  Windows.Graphics.Capture/DXGI, ScreenCaptureKit and X11/PipeWire) is the
+  fallback, and only runs while native capture is unavailable: the two
+  compete for the desktop.
   - Needs the `qtmultimedia` module (`aqt install-qt ... -m qtmultimedia`).
-  - **Fallback if it proves too slow:** our own DXGI Desktop Duplication
-    path on Windows, behind the same interface.
   - Monitor list and switching.
   - Capture without the cursor; the cursor travels separately.
 - **`Encoder`**: FFmpeg H.264, low-latency setup:
@@ -114,15 +151,18 @@ New code lives in `src/core/screen/`, plus platform folders.
   - **Settings:** no B-frames, a constrained bitrate with a small buffer, a
     keyframe every ~4 s plus on request, and periodic intra refresh where
     supported.
-  - **v1 pipeline:** map the frame to the CPU → swscale to NV12 → encode.
-    Zero-copy GPU paths come later.
+  - **Pipelines:** native capture stays on the GPU (D3D11 video processor
+    to NV12, then NVENC/QSV/AMF). The Qt fallback maps the frame to the CPU,
+    swscales to NV12 and encodes.
   - **Scaling:** downscale to what the viewer asked for (`maxWidth`),
     within the host's limits.
-  - **Bitrate:** set live from viewer feedback.
+  - **Bitrate:** set from viewer feedback. Hardware encoders get it in
+    batches, since FFmpeg's NVENC restarts with a keyframe on each change.
 - **`Packetizer`**: splits each encoded frame into fragments that fit one
   datagram.
-  - Paces sends over the frame interval, so a burst cannot overflow queues.
-  - Keeps the last keyframe's fragments for a short while, to answer
+  - Paces each frame over about half a frame interval, so a burst cannot
+    overflow queues. Up to 3 frames wait their turn.
+  - Keeps the fragments of frames sent in the last 500 ms, to answer
     retransmit requests (see transport).
 - **`InputInjector`** (per OS):
   | OS | API | Note |
@@ -147,8 +187,11 @@ New code lives in `src/core/screen/`, plus platform folders.
   - Asks for a keyframe when the decoder cannot continue.
 - **`Decoder`**: FFmpeg with hardware acceleration where available (`d3d11va`
   / `dxva2`, `videotoolbox`, `vaapi`), else software.
-  - Output goes to a `QVideoFrame` → `QVideoSink` → QML `VideoOutput` in the
-    existing service window.
+  - Complete frames queue for the decoder in order; each is a reference
+    for the next.
+  - Output goes as a YUV `QVideoFrame` → `QVideoSink` → QML `VideoOutput`,
+    which converts it on the GPU. Hardware-decoded frames are still copied
+    to the CPU on the way.
 - **`InputCapture`**: the viewer window turns mouse and keyboard into input
   events while control is on (see the input section).
 - **`ScreenViewer`**: requests, the session state, feedback reports, and stats
@@ -182,10 +225,10 @@ flags: keyframe, retransmit
 - **Missing references:** a frame whose reference was lost is not decoded.
   The viewer asks for a keyframe (`scr.keyframe`) and shows the last good
   frame until one arrives.
-- **Keyframe loss:** the viewer asks for just the missing fragments
-  (`scr.nack {frame, indexes}`), once. The host answers from the fragments it
-  kept. Lost delta-frame fragments are not retransmitted; the next keyframe
-  heals the picture.
+- **Fragment loss:** the viewer asks for just the missing fragments of an
+  incomplete frame (`scr.nack {frame, indexes}`), once. The host answers from
+  its 500 ms send history. If that fails, the next keyframe heals the
+  picture.
 - **Later, if loss is common:** simple XOR parity per group of fragments.
 
 ### Feedback and congestion control (reliable messages)
@@ -193,15 +236,17 @@ flags: keyframe, retransmit
 - **Reports:** every 250–500 ms the viewer sends
   `scr.report {received, lost, late, jitterMs, owdTrendMs, decodeMs}`.
 - **Host response (AIMD on bitrate):**
-  - It lowers the bitrate sharply on loss or rising delay.
-  - It raises it slowly while the link is clean.
-  - Bitrate stays between configured bounds.
+  - It lowers the bitrate by 20% on loss above 5% or rising delay, at most
+    once per few reports.
+  - It raises it gradually while the link is clean.
+  - Bitrate stays between configured bounds (never below 300 kbit/s).
   - **Last resort:** fewer frames per second, then a smaller resolution.
+  - A viewer that decodes too slowly gets fewer frames, not a lower bitrate.
 - **Path changes:**
   - **Datagrams fall back to TCP** (reliable and ordered): the same reports
-    show rising delay, the host lowers the bitrate, and it skips capture
-    frames while sending would block. Video stays usable, only slower to
-    react.
+    show rising delay and the host lowers the bitrate. Datagrams the full
+    fallback queue refuses are retried; frames too old to show are dropped
+    and a keyframe follows. Video stays usable, only slower to react.
   - **Relay path:** a lower starting bitrate, shown to the user.
 
 ### Cursor position (datagram kind 2)
@@ -242,7 +287,9 @@ All of these are per device, and only for trusted devices.
 | `control.direct` (new) | control without the host being asked |
 
 **Untrusted devices** cannot send screen requests at all, whatever the
-default permissions say. They are answered with `scr.err {code:"forbidden"}`.
+default permissions say. They are answered with `scr.err {code:"forbidden"}`,
+and the viewer explains that the host has to trust it. The viewer itself
+does not need to trust the host, only to have its identity proven.
 
 ### The request flow (reliable messages)
 
@@ -259,6 +306,8 @@ default permissions say. They are answered with `scr.err {code:"forbidden"}`.
      control}`.
    - Both sides open the datagram channel.
    - The first frame is a keyframe.
+   - If the host has sent nothing 5 s in, it says why (`scr.status`); after
+     8 s without a picture the viewer shows a hint and Try Again.
 5. **During the session:** `scr.monitor {index}` switches monitor;
    `scr.control {on}` asks to add or drop control, through the same check.
 6. **Ending:**
@@ -271,6 +320,7 @@ default permissions say. They are answered with `scr.err {code:"forbidden"}`.
 
 - **A floating, always-on-top bar:** "Sharing your screen with Alice · Control
   on" with **Stop** and **Stop control**, plus a tray/status-bar indicator.
+  It never takes focus, so it cannot interrupt what the host is doing.
 - **A global stop hotkey**, configurable, default Ctrl+Alt+Shift+S:
   `RegisterHotKey` on Windows, a CGEvent tap on macOS, `XGrabKey` on X11.
 - **Activity log entries:** start, stop, control on and off, and denied
@@ -287,14 +337,15 @@ default permissions say. They are answered with `scr.err {code:"forbidden"}`.
   - a "Keyboard captured" indicator, released with Right Ctrl
     (configurable);
   - session states: requesting, waiting for consent, denied, busy, live,
-    ended.
+    ended; while live, "waiting for the first picture" until one arrives;
+  - Try Again after it ends, and a Stats toggle.
 - **Host:** the consent prompt, the sharing bar, and the stop hotkey.
 - **Settings > Screen sharing:**
   - offer the service;
   - default monitor;
-  - max fps and quality cap;
+  - max fps (1-165) and quality cap;
   - the stop hotkey;
-  - **max viewers**, shown fixed at 1 for now.
+  - **max viewers** (1-8).
 - **Device page and context menu:** the two new `.direct` permissions appear
   with the others, like the sync grants.
 
@@ -389,8 +440,28 @@ default permissions say. They are answered with `scr.err {code:"forbidden"}`.
 - **Licensing:** stay strictly LGPL with FFmpeg (no `--enable-gpl` /
   `--enable-nonfree`). Check H.264 decoding patent obligations for
   distribution.
-- **CPU path cost at 4K:** v1 copies frames through the CPU. If that is too
-  slow, phase 4's zero-copy paths move earlier.
+- **CPU path cost at 4K and high frame rates:** the host is zero-copy on
+  the native path, but the Qt fallback still goes through the CPU, and the
+  viewer copies each decoded frame from the GPU and back. At 165 fps the
+  viewer's ~5 ms per 1080p frame is close to the 6 ms budget.
+
+## Open items
+
+Built but not yet verified:
+
+- macOS (ScreenCaptureKit/VideoToolbox), Linux X11 and the Wayland portal:
+  never built or run on those systems.
+- QSV and AMF: the code exists, but the test machine only has NVENC.
+- The Cisco OpenH264 fallback end to end: its two-session test needs the
+  Cisco library installed.
+- Glass-to-glass latency (phase 2's acceptance value): never measured.
+
+Known limits:
+
+- Wayland: view only; no control and no global stop shortcut.
+- XOR parity: deferred until field loss shows a need.
+- Viewer zero-copy: decoded frames go through the CPU on their way to the
+  screen (see risks).
 
 ## Follow-ups, not planned yet
 
