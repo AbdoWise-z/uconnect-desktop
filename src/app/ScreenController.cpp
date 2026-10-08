@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QBuffer>
 #include <QPermissions>
+#include "core/screen/MediaTransport.hpp"  // MaxFps
 #ifdef Q_OS_WIN
 #include <windows.h>
 #elif defined(Q_OS_MACOS)
@@ -121,7 +122,7 @@ void ScreenController::setShortcutError(const QString& error) {
 }
 void ScreenController::configure(const QVariantMap& values) {
     for (auto it = values.begin(); it != values.end(); ++it) if (settings_.contains(it.key())) settings_[it.key()] = it.value();
-    settings_["maxFps"] = std::clamp(settings_["maxFps"].toInt(), 1, 60);
+    settings_["maxFps"] = std::clamp(settings_["maxFps"].toInt(), 1, screen::MaxFps);
     settings_["maxWidth"] = std::clamp(settings_["maxWidth"].toInt(), 320, 3840);
     settings_["maxBitrate"] = std::clamp(settings_["maxBitrate"].toInt(), 150000, 20000000);
     settings_["maxViewers"] = std::clamp(settings_["maxViewers"].toInt(), 1, 8);

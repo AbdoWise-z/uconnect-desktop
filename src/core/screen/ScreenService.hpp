@@ -146,7 +146,7 @@ private:
     std::map<Peer, Viewer> viewers_;
     quint32 nextRequest_ = 1, nextFrame_ = 0;
     quint64 generation_ = 0;
-    qint64 lastCapture_ = -1000;
+    double nextCapture_ = 0;  // when the next frame is due, in fractional ms
     // Diagnostics: per-second counters, logged when UCD_SCREEN_STATS is set.
     struct Stats {
         std::atomic_int offered{0}, busy{0};  // Qt capture frames (its own thread), and those skipped while encoding

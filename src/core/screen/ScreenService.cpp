@@ -61,7 +61,7 @@ void ScreenService::configure(const ScreenSettings& settings) {
     settings_ = settings;
     settings_.offered = offered;
     settings_.controlOffered = controlOffered;
-    settings_.maxFps = std::clamp(settings.maxFps, 1, 60);
+    settings_.maxFps = std::clamp(settings.maxFps, 1, MaxFps);
     settings_.maxWidth = std::clamp(settings.maxWidth, 320, 3840);
     settings_.maxBitrate = std::clamp(settings.maxBitrate, 150000, 20000000);
     settings_.maxViewers = std::clamp(settings.maxViewers, 1, 8);
@@ -107,7 +107,7 @@ void ScreenService::request(const Peer& peer, bool control, int maxWidth, int fp
     Viewer viewer;
     viewer.wantControl = control && !camera_;
     viewer.request = nextRequest_++; if (!nextRequest_) ++nextRequest_;
-    viewer.width = std::clamp(maxWidth, 320, 3840); viewer.fps = std::clamp(fps, 1, 60);
+    viewer.width = std::clamp(maxWidth, 320, 3840); viewer.fps = std::clamp(fps, 1, MaxFps);
     viewer.expires = now_() + 35000; viewer.reportAt = now_();
     viewers_.emplace(peer, std::move(viewer)); timer_.start();
     showViewer(peer, "requesting", {}, {{"pictured", false}, {"stalled", false}, {"hostStatus", QString()}});
@@ -265,7 +265,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         Host host; host.request = requestId; host.expires = now_() + 30000;
         host.wantControl = wantControl;
         host.width = std::min(settings_.maxWidth, std::clamp(msg.value("maxWidth").toInt(1920), 320, 3840));
-        host.fps = std::min(settings_.maxFps, std::clamp(msg.value("maxFps").toInt(30), 1, 60));
+        host.fps = std::min(settings_.maxFps, std::clamp(msg.value("maxFps").toInt(30), 1, MaxFps));
         hosts_.emplace(peer, std::move(host)); timer_.start();
         if (!camera_ && authorize_(peer).permissions.contains(perm::ScreenDirect) &&
             (!wantControl || authorize_(peer).permissions.contains(perm::ControlDirect))) startHost(peer);
@@ -294,7 +294,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             if (token < 1 || token > 65535 || msg.value("codec") != "h264" || !authorize_(peer).verified) return true;
             viewer->second.token = quint16(token); viewer->second.expires = now_() + 10000;
             viewer->second.liveAt = now_();
-            viewer->second.fps = std::clamp(msg.value("fps").toInt(30), 1, 60);
+            viewer->second.fps = std::clamp(msg.value("fps").toInt(30), 1, MaxFps);
             viewer->second.receiver.reset(quint16(token), viewer->second.fps);
             viewer->second.control = viewer->second.wantControl && !camera_ && msg.value("control").toBool();
             if (!open_(peer)) { stop(peer, "transport unavailable"); return true; }
@@ -485,8 +485,12 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
         width = std::min(width, host.congestion.width()); fps = std::min(fps, host.congestion.fps());
         bitrate = std::min(bitrate, host.congestion.bitrate());
     }
-    if (targets.empty() || now_() - lastCapture_ < 1000 / fps) { if (!targets.empty()) ++stats_.throttled; capturePending_ = false; return; }
-    lastCapture_ = now_(); ++stats_.encodes;
+    // Frames are due every 1000/fps ms, kept fractional: whole milliseconds
+    // would drift at high rates (165 fps is 6.06 ms). Late frames do not
+    // bunch up to catch up.
+    const double now = double(now_());
+    if (targets.empty() || now < nextCapture_ - .5) { if (!targets.empty()) ++stats_.throttled; capturePending_ = false; return; }
+    nextCapture_ = std::max(nextCapture_ + 1000. / fps, now); ++stats_.encodes;
     for (auto& [peer, host] : hosts_) if (host.live) host.forceKey = false;
     const auto number = nextFrame_; const auto generation = generation_;
     QString nativeMonitor;

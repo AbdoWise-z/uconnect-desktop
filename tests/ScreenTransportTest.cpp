@@ -93,6 +93,21 @@ private slots:
         QVERIFY(!sender.busy());
     }
 
+    // A 165 Hz display at full rate: frames every 6.06 ms, none dropped.
+    void highRefreshKeepsUp() {
+        PacedSender sender;
+        int frames = 0; double next = 0;
+        for (qint64 time = 0; time < 5000; ++time) {
+            if (time >= next) {
+                QVERIFY(sender.enqueue(frame(quint32(frames), frames == 0, 20000), time, 1000 / MaxFps));
+                ++frames; next += 1000. / MaxFps;
+            }
+            QVERIFY(sender.pump(time, [](const QByteArray&) { return true; }));
+        }
+        QCOMPARE(sender.dropped(), 0u);
+        QVERIFY(frames >= 5 * MaxFps - 1);
+    }
+
     // 60 fps with frames that take most of an interval to send: none dropped.
     void sixtyFramesPerSecondKeepUp() {
         PacedSender sender;

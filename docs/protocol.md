@@ -679,7 +679,7 @@ Reliable control messages have these types:
 
 | type | fields / meaning |
 |---|---|
-| `scr.request` | nonzero u32 `request`, `wantControl`, `maxWidth`, `maxFps`, `codecs:["h264"]` |
+| `scr.request` | nonzero u32 `request`, `wantControl`, `maxWidth`, `maxFps` (1-165), `codecs:["h264"]` |
 | `scr.wait` | `request`; host is asking its user |
 | `scr.err` | `request`, `code` (`forbidden`, `busy`, `codec`, `denied`, `transport`, `ended`) |
 | `scr.started` | matching `request`, nonzero u16 `session`, `codec:"h264"`, `width`, `height`, `fps`, `monitors`, `control` |

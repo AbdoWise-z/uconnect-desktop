@@ -37,7 +37,7 @@ bool PacedSender::enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalM
     if (int(queue_.size()) >= MaxQueuedFrames) { ++dropped_; return false; }
     Queued queued{fragment(frame), 0, nowMs, nowMs, nowMs};
     if (queued.packets.isEmpty()) return false;
-    interval_ = std::clamp(intervalMs, 8, 1000);
+    interval_ = std::clamp(intervalMs, 1000 / MaxFps, 1000);
     queued.start = queue_.empty() ? nowMs : std::max(nowMs, queue_.back().due);
     queued.due   = queued.start + std::max(4, interval_ / 2);
     while (!history_.empty() && (history_.front().expires < nowMs || history_.size() >= 16)) history_.pop_front();
@@ -107,7 +107,7 @@ std::optional<Feedback> Feedback::parse(const QJsonObject& message) {
 }
 
 void Reassembler::reset(quint16 session, int fps) {
-    session_ = session; interval_ = 1000 / std::clamp(fps, 1, 120);
+    session_ = session; interval_ = 1000 / std::clamp(fps, 1, MaxFps);
     frames_.clear(); buffered_ = 0; waiting_ = true; haveLast_ = false; requestKey_ = false;
     stats_ = {}; previousTransit_.reset(); trend_ = 0; lastKeyRequest_ = -1000;
 }
@@ -220,7 +220,7 @@ Feedback Reassembler::report(double decodeMs) {
 
 void CongestionController::reset(const QString& path, int maxFps, int maxWidth, int maxBitrate) {
     cap_ = std::clamp(maxBitrate, MinBitrate, 20000000);
-    maxFps_ = fps_ = std::clamp(maxFps, 1, 60);
+    maxFps_ = fps_ = std::clamp(maxFps, 1, MaxFps);
     maxWidth_ = width_ = std::clamp(maxWidth, 320, 3840);
     bitrate_ = std::min(cap_, path == "direct" ? 4000000 : path == "relayed" ? 1500000 : 1000000);
     bad_ = good_ = slowDecode_ = cooldown_ = 0;

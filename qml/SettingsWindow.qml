@@ -595,7 +595,7 @@ Window {
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Default monitor (0 = first)") }
                     USpinBox { from: 0; to: 15; value: draft.screen.monitor || 0; onValueModified: dlg.setScreenSetting("monitor", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum FPS") }
-                    USpinBox { from: 1; to: 60; value: draft.screen.maxFps || 30; onValueModified: dlg.setScreenSetting("maxFps", value) }
+                    USpinBox { from: 1; to: 165; value: draft.screen.maxFps || 30; onValueModified: dlg.setScreenSetting("maxFps", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum width") }
                     USpinBox { from: 320; to: 3840; stepSize: 160; value: draft.screen.maxWidth || 1920; onValueModified: dlg.setScreenSetting("maxWidth", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum bitrate (Mbit/s)") }

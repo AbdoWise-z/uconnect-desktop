@@ -13,6 +13,8 @@ namespace ucd::screen {
 constexpr int FragmentHeader = 16;
 constexpr int FragmentPayload = 1084;
 constexpr int MaxFrameBytes = 4 * 1024 * 1024;
+// Highest frame rate a session may ask for or run at (high refresh displays).
+constexpr int MaxFps = 165;
 constexpr int MaxFragments = (MaxFrameBytes + FragmentPayload - 1) / FragmentPayload;
 
 struct EncodedFrame {
