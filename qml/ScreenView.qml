@@ -33,7 +33,9 @@ ColumnLayout {
             text: qsTr("Full Screen")
             onClicked: view.Window.window.visibility = view.Window.window.visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
         }
-        ComboBox {
+        UComboBox {
+            Layout.preferredWidth: 180
+            Layout.maximumWidth: 220
             model: view.session.monitors || []
             textRole: "name"
             currentIndex: view.session.monitor || 0

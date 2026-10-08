@@ -224,6 +224,8 @@ qt_add_qml_module(uconnect_desktop
         qml/UButton.qml
         qml/UToolButton.qml
         qml/UTextField.qml
+        qml/USpinBox.qml
+        qml/UComboBox.qml
         qml/UCheckBox.qml
         qml/ULink.qml
         qml/UMenu.qml

@@ -189,6 +189,7 @@ Window {
     // --- page building blocks ---------------------------------------------
     component Help: Text {
         Layout.fillWidth: true
+        Layout.minimumWidth: 0
         wrapMode: Text.WordWrap
         color: Theme.textSecondary
         font.pixelSize: Theme.smallFontSize
@@ -585,36 +586,32 @@ Window {
             ColumnLayout {
                 visible: svcPage.service === "screen"
                 Layout.fillWidth: true
+                spacing: 8
                 Help { text: App.screen.available ? qsTr("Only trusted devices may request your screen. Each request asks for consent unless you grant view without asking.") : qsTr("This build needs Qt Multimedia and a shared LGPL FFmpeg SDK for screen sharing.") }
-                RowLayout {
-                    Text { text: qsTr("Default monitor (0 = first)"); color: Theme.text }
-                    SpinBox { from: 0; to: 15; value: draft.screen.monitor || 0; onValueModified: dlg.setScreenSetting("monitor", value) }
-                    Text { text: qsTr("Maximum FPS"); color: Theme.text }
-                    SpinBox { from: 1; to: 60; value: draft.screen.maxFps || 30; onValueModified: dlg.setScreenSetting("maxFps", value) }
-                }
-                RowLayout {
-                    Text { text: qsTr("Maximum width"); color: Theme.text }
-                    SpinBox { from: 320; to: 3840; stepSize: 160; value: draft.screen.maxWidth || 1920; onValueModified: dlg.setScreenSetting("maxWidth", value) }
-                    Text { text: qsTr("Maximum bitrate (Mbit/s)"); color: Theme.text }
-                    SpinBox { from: 1; to: 20; value: (draft.screen.maxBitrate || 8000000) / 1000000; onValueModified: dlg.setScreenSetting("maxBitrate", value * 1000000) }
-                }
-                RowLayout {
-                    Text { text: qsTr("Stop sharing shortcut"); color: Theme.text }
-                    UTextField { text: draft.screen.stopShortcut || "Ctrl+Alt+Shift+S"; onTextEdited: dlg.setScreenSetting("stopShortcut", text) }
-                }
-                RowLayout {
-                    Text { text: qsTr("Maximum viewers"); color: Theme.text }
-                    SpinBox { from: 1; to: 8; value: draft.screen.maxViewers || 1; onValueModified: dlg.setScreenSetting("maxViewers", value) }
-                }
-                Help { text: qsTr("Viewers share one source and encoder. One viewer may control it at a time. Camera sharing uses these quality limits too.") }
-                RowLayout {
-                    Text { text: qsTr("Release keyboard"); color: Theme.text }
-                    ComboBox {
-                        model: ["Right Ctrl", "Escape", "F12"]
+                GridLayout {
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Default monitor (0 = first)") }
+                    USpinBox { from: 0; to: 15; value: draft.screen.monitor || 0; onValueModified: dlg.setScreenSetting("monitor", value) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum FPS") }
+                    USpinBox { from: 1; to: 60; value: draft.screen.maxFps || 30; onValueModified: dlg.setScreenSetting("maxFps", value) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum width") }
+                    USpinBox { from: 320; to: 3840; stepSize: 160; value: draft.screen.maxWidth || 1920; onValueModified: dlg.setScreenSetting("maxWidth", value) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum bitrate (Mbit/s)") }
+                    USpinBox { from: 1; to: 20; value: (draft.screen.maxBitrate || 8000000) / 1000000; onValueModified: dlg.setScreenSetting("maxBitrate", value * 1000000) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum viewers") }
+                    USpinBox { from: 1; to: 8; value: draft.screen.maxViewers || 1; onValueModified: dlg.setScreenSetting("maxViewers", value) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Stop sharing shortcut") }
+                    UTextField { Layout.preferredWidth: 220; text: draft.screen.stopShortcut || "Ctrl+Alt+Shift+S"; onTextEdited: dlg.setScreenSetting("stopShortcut", text) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Release keyboard") }
+                    UComboBox {
+                        model: [qsTr("Right Ctrl"), qsTr("Escape"), "F12"]
                         currentIndex: [228, 41, 69].indexOf(draft.screen.releaseUsage || 228)
                         onActivated: index => dlg.setScreenSetting("releaseUsage", [228, 41, 69][index])
                     }
                 }
+                Help { text: qsTr("Viewers share one source and encoder. One viewer may control it at a time. Camera sharing uses these quality limits too.") }
                 UCheckBox {
                     text: qsTr("Use native GPU capture when available")
                     checked: draft.screen.gpuCapture !== false
@@ -628,6 +625,7 @@ Window {
                 Help { text: "OpenH264 Video Codec provided by Cisco Systems, Inc." }
                 UTextField {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     placeholderText: qsTr("Path to separately installed Cisco OpenH264 2.6 library")
                     text: draft.screen.codecLibrary || ""
                     onTextEdited: dlg.setScreenSetting("codecLibrary", text)
