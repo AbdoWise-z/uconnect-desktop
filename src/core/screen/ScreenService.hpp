@@ -7,6 +7,8 @@
 #include <QVariantMap>
 #include <atomic>
 #include "Codec.hpp"
+#include "Input.hpp"
+#include "Cursor.hpp"
 #include "core/Permissions.hpp"
 #include "uconnect/uconnect.hpp"
 
@@ -19,6 +21,7 @@ struct PeerAccess {
 };
 struct ScreenSettings {
     bool offered = false;
+    bool controlOffered = false;
     int monitor = 0, maxFps = 30, maxWidth = 1920, maxBitrate = 8000000, maxViewers = 1;
     QString ciscoLibrary;
     QVariantList monitors;
@@ -37,10 +40,15 @@ public:
     using Datagram = std::function<bool(const Peer&, const QByteArray&)>;
     using Now = std::function<qint64()>;
     ScreenService(Send send, Authorize authorize, Open open, Close close, Datagram datagram,
-        QObject* parent = nullptr, Now now = {});
+        QObject* parent = nullptr, Now now = {}, std::unique_ptr<InputBackend> input = {});
     ~ScreenService() override;
     void configure(const ScreenSettings& settings);
     void setOffered(bool offered);
+    void setControlOffered(bool offered);
+    void requestControl(const Peer& peer, bool on);
+    void stopControl();
+    void sendInput(const Peer& peer, QJsonObject message);
+    void submitCursor(const QPoint& position, bool visible, const QByteArray& shape, const QPoint& hotspot);
     void request(const Peer& peer, bool control = false, int maxWidth = 1920, int fps = 30);
     void consent(const QString& peerId, quint32 request, bool allow, bool remember);
     void stop(const Peer& peer, const QString& reason = "ended");
@@ -72,6 +80,10 @@ private:
         qint64 expires = 0, lastReport = 0;
         int width = 1920, fps = 30, monitor = 0;
         bool live = false, wantControl = false, forceKey = true;
+        bool control = false;
+        quint32 controlRequest = 0;
+        qint64 controlExpires = 0;
+        quint32 cursorVersion = 0;
         std::optional<quint32> nackedFrame;
         QString path = "opening";
         PacedSender sender;
@@ -88,9 +100,16 @@ private:
         int decoded = 0;
         double decodeMs = 0;
         bool decoding = false;
+        bool control = false;
+        quint32 controlRequest = 0;
+        quint32 cursorSequence = 0;
+        bool haveCursor = false;
     };
     void startHost(const Peer& peer);
     bool allowed(const Peer& peer) const;
+    bool controlAllowed(const Peer& peer) const;
+    void setControl(const Peer& peer, bool on, quint32 request = 0, const QString& detail = {});
+    void requestHostControl(const Peer& peer, quint32 request);
     void fail(const Peer& peer, quint32 request, const QString& code);
     void showViewer(const Peer& peer, const QString& state, const QString& detail = {}, const QVariantMap& extra = {});
     void showHosting();
@@ -107,6 +126,7 @@ private:
     quint32 nextRequest_ = 1, nextFrame_ = 0;
     quint64 generation_ = 0;
     qint64 lastCapture_ = -1000;
+    qint64 lastReleaseRetry_ = -1000;
     QTimer timer_;
     QThread encoderThread_, decoderThread_;
     QObject* encoderWorker_;
@@ -114,6 +134,10 @@ private:
     std::unique_ptr<Encoder> encoder_;
     std::map<Peer, std::unique_ptr<Decoder>> decoders_;
     std::atomic_bool capturePending_{false};
+    InputState input_;
+    QByteArray cursorShape_;
+    QPoint cursorHotspot_;
+    quint32 cursorVersion_ = 0, cursorSequence_ = 0;
 };
 
 }  // namespace ucd::screen

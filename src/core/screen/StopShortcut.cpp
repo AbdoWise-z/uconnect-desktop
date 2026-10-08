@@ -14,6 +14,17 @@
 #endif
 
 namespace ucd::screen {
+#ifdef UCD_HAS_X11
+namespace {
+Display* grabbingDisplay = nullptr;
+bool grabFailed = false;
+XErrorHandler previousHandler = nullptr;
+int grabError(Display* display, XErrorEvent* error) {
+    if (display == grabbingDisplay) { grabFailed = true; return 0; }
+    return previousHandler ? previousHandler(display, error) : 0;
+}
+}
+#endif
 struct StopShortcut::Impl : QAbstractNativeEventFilter {
     std::function<void()> stop;
     bool active = false;
@@ -93,9 +104,16 @@ QString StopShortcut::enable(const QString& sequence) {
     if (mods & Qt::AltModifier) impl_->modifiers |= Mod1Mask;
     if (mods & Qt::ShiftModifier) impl_->modifiers |= ShiftMask;
     if (mods & Qt::MetaModifier) impl_->modifiers |= Mod4Mask;
+    XSync(impl_->display, False);
+    grabbingDisplay = impl_->display; grabFailed = false;
+    previousHandler = XSetErrorHandler(grabError);
     for (int locks : {0, int(LockMask), int(Mod2Mask), int(LockMask | Mod2Mask)})
         XGrabKey(impl_->display, impl_->key, impl_->modifiers | locks, DefaultRootWindow(impl_->display), False, GrabModeAsync, GrabModeAsync);
-    XFlush(impl_->display);
+    XSync(impl_->display, False); XSetErrorHandler(previousHandler); grabbingDisplay = nullptr;
+    if (grabFailed) {
+        XCloseDisplay(impl_->display); impl_->display = nullptr;
+        return "Cannot register stop shortcut; it may be in use.";
+    }
     impl_->notifier = std::make_unique<QSocketNotifier>(ConnectionNumber(impl_->display), QSocketNotifier::Read);
     connect(impl_->notifier.get(), &QSocketNotifier::activated, this, [this] {
         while (XPending(impl_->display)) { XEvent event; XNextEvent(impl_->display, &event); if (event.type == KeyPress) impl_->stop(); }

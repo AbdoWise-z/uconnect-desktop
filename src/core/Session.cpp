@@ -282,6 +282,7 @@ void Session::setLocalHello(const Hello& hello) {
     storage_->setOffered(hello.services & ServiceStorage);
 #ifdef UCD_HAS_SCREEN
     screen_->setOffered(hello.services & (ServiceScreen | ServiceControl));
+    screen_->setControlOffered(hello.services & ServiceControl);
 #endif
     helloMessage_ = hello.encode();
     if (topic_) topic_->broadcast(helloMessage_);

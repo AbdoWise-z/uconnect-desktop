@@ -52,8 +52,9 @@ ApplicationWindow {
 
     function openService(service, devId) {
         if (service === "sync") return syncWindow.show()  // one window for every synced folder
-        const key = service + ":" + devId
+        const key = (service === "control" ? "screen" : service) + ":" + devId
         let w = serviceWindows[key]
+        if (w && service === "control" && App.screen.available) App.screen.requestControl(devId, true)
         if (!w) {
             // No parent: each service gets an independent top-level window.
             w = serviceWindowComponent.createObject(null, { service: service, devId: devId })

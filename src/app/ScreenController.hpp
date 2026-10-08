@@ -8,6 +8,7 @@
 #include <QMediaCaptureSession>
 #include <QScreenCapture>
 #include <QVideoSink>
+#include "app/InputCapture.hpp"
 #endif
 
 namespace ucd {
@@ -34,6 +35,12 @@ public:
     Q_INVOKABLE void consent(const QString& peer, quint32 request, bool allow, bool remember);
     Q_INVOKABLE void monitor(const QString& peer, int index);
     Q_INVOKABLE void attachSink(const QString& peer, QObject* sink);
+    Q_INVOKABLE void requestControl(const QString& peer, bool on);
+    Q_INVOKABLE void stopControl();
+    Q_INVOKABLE void captureKeyboard(const QString& peer, QObject* window, bool capture);
+    Q_INVOKABLE void mouse(const QString& peer, double x, double y, int buttons);
+    Q_INVOKABLE void wheel(const QString& peer, int dx, int dy);
+    Q_INVOKABLE void releaseInput(const QString& peer);
 signals:
     void stateChanged(const QString& peer);
     void hostingChanged();
@@ -54,6 +61,13 @@ private:
     QMediaCaptureSession captureSession_;
     QVideoSink captureSink_;
     QHash<QString, QPointer<QVideoSink>> sinks_;
+    QHash<QString, InputCapture*> captures_;
+    QHash<QString, QJsonObject> moves_;
+    QHash<QString, int> buttons_;
+    QTimer moveTimer_;
+    QTimer cursorTimer_;
+    quintptr cursorShape_ = 0;
+    void input(const QString& peer, const QJsonObject& message);
 #endif
 };
 }

@@ -43,9 +43,21 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::ControlInput, "control", tr("Control"),
-         tr("Use this device's mouse and keyboard."), false, true},
+         tr("Use this device's mouse and keyboard."),
+#ifdef UCD_HAS_SCREEN
+         true,
+#else
+         false,
+#endif
+         true},
         {perm::ControlDirect, "control", tr("Without asking"),
-         tr("Control mouse and keyboard without a consent prompt. Trusted devices only."), false, true},
+         tr("Control mouse and keyboard without a consent prompt. Trusted devices only."),
+#ifdef UCD_HAS_SCREEN
+         true,
+#else
+         false,
+#endif
+         true},
     };
     return table;
 }

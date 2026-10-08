@@ -58,3 +58,19 @@ Manual phase-2 acceptance:
 5. Introduce 5% packet loss and verify picture recovery within about a second.
 6. On macOS grant Screen Recording; on Linux test X11 and the desktop portal
    separately. An OS/backend capture error must stop hosting and explain why.
+
+`ScreenInputTest` uses a recording backend, never injects into other desktop
+applications. It checks physical HID mapping on three platforms, malformed
+input, Unicode/IME and shortcuts, focus/release capture, consent and stale
+tokens, and release after disconnect, host stop, control revocation, global
+control stop, feedback timeout and trust withdrawal. Failed releases must
+remain tracked until a retry succeeds.
+
+Manual phase-3 acceptance: test typing and application shortcuts with different
+viewer/host layouts, mouse drags within the remote desktop, high-DPI and negative
+monitor coordinates, wheel and cursor shapes. Hold Ctrl and a mouse button,
+disconnect, and confirm neither remains pressed. Repeat using focus loss,
+Right Ctrl, stop, permission withdrawal and the sharing bar's Stop control.
+macOS needs Accessibility authorization; X11 text is limited to the host keymap.
+System-reserved shortcuts can remain local. Secure/elevated desktops, file
+drag-in and clipboard sync are outside this version's scope.

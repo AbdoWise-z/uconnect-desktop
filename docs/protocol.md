@@ -683,7 +683,36 @@ on dedicated codec threads. The viewer reports decode time, loss, bitrate,
 frame rate and the transport path. `captureMs` is monotonic and cannot be
 interpreted as absolute cross-device latency without clock synchronization.
 
-In this phase control is always false. Cursor and input arrive in phase 3.
+### 7.4 Remote control and cursor
+
+An initial `wantControl:true` request needs `control.input` and explicit control
+consent, unless both direct grants exist. During a view session,
+`scr.control {session,request,on}` requests or drops control;
+`scr.controlled {session,request,on,detail}` answers it. A request of zero in
+the answer denotes host revocation. Control-only consent expires in 30 s.
+Control never permits input after trust or its grant is withdrawn.
+
+Reliable input messages all carry `session`: `in.key {usage,down}` uses USB
+HID keyboard-page positions; `in.text {text}` carries at most 256 UTF-16
+units; `in.mouse {x,y,buttons}` uses normalized monitor coordinates and
+left/right/middle bits 1/2/4; `in.wheel {dx,dy}` uses 120 units per notch.
+`in.release` releases held keys/buttons. Focus loss, Right Ctrl, stop,
+revocation, timeout and disconnect release held input. Mouse moves are
+coalesced below 120 Hz; button changes are immediate. Native input failure
+ends control, retains failed releases and retries them.
+
+`scr.cursor {session,png,hotspotX,hotspotY}` carries a base64 PNG bounded to
+128 by 128 pixels and 49 KiB compressed. Cursor position datagrams are 16
+bytes: `[u8=2][u16 session][u32 seq][i32 x][i32 y][u8 visible]`, big endian.
+Positions use original monitor pixels; the latest wrapping sequence wins.
+`scr.started.cursorEmbedded` tells the viewer whether to suppress its overlay.
+`scr.monitorChanged {session,index}` acknowledges a monitor switch.
+
+Windows input cannot reach elevated windows or secure desktops. macOS requires
+Accessibility authorization. X11 requires XTest; Unicode text must exist in
+the host keymap. Wayland control is unsupported. System-reserved shortcuts
+may be handled locally before Qt sees them. File transfer into the remote
+desktop and clipboard synchronization are outside this protocol version.
 
 ## Changes
 

@@ -5,6 +5,8 @@
 #include <QtEndian>
 #include <chrono>
 #include <cmath>
+#include <QBuffer>
+#include <QImageReader>
 #include "core/Identity.hpp"
 
 namespace ucd::screen {
@@ -19,10 +21,11 @@ qint64 ScreenService::monotonicMs() {
 }
 
 ScreenService::ScreenService(Send send, Authorize authorize, Open open, Close close, Datagram datagram,
-        QObject* parent, Now now)
+        QObject* parent, Now now, std::unique_ptr<InputBackend> input)
     : QObject(parent), send_(std::move(send)), authorize_(std::move(authorize)), open_(std::move(open)),
       close_(std::move(close)), datagram_(std::move(datagram)), now_(now ? std::move(now) : monotonicMs),
-      encoderWorker_(new QObject), decoderWorker_(new QObject), encoder_(std::make_unique<Encoder>()) {
+      encoderWorker_(new QObject), decoderWorker_(new QObject), encoder_(std::make_unique<Encoder>()),
+      input_(input ? std::move(input) : nativeInputBackend()) {
     timer_.setParent(this); timer_.setInterval(2); timer_.setTimerType(Qt::PreciseTimer);
     connect(&timer_, &QTimer::timeout, this, &ScreenService::tick);
     encoderWorker_->moveToThread(&encoderThread_); decoderWorker_->moveToThread(&decoderThread_);
@@ -41,17 +44,28 @@ ScreenService::~ScreenService() {
 
 void ScreenService::configure(const ScreenSettings& settings) {
     const bool offered = settings_.offered;
+    const bool controlOffered = settings_.controlOffered;
     settings_ = settings;
     settings_.offered = offered;
+    settings_.controlOffered = controlOffered;
     settings_.maxFps = std::clamp(settings.maxFps, 1, 60);
     settings_.maxWidth = std::clamp(settings.maxWidth, 320, 3840);
     settings_.maxBitrate = std::clamp(settings.maxBitrate, 150000, 20000000);
     settings_.maxViewers = 1;
+    settings_.monitor = std::clamp(settings.monitor, 0, std::max(0, int(settings.monitors.size()) - 1));
     if (!settings_.offered) stopHosting("screen service disabled");
 }
 void ScreenService::setOffered(bool offered) {
     settings_.offered = offered;
     if (!offered) stopHosting("screen service disabled");
+}
+void ScreenService::setControlOffered(bool offered) {
+    settings_.controlOffered = offered;
+    if (!offered) stopControl();
+}
+bool ScreenService::controlAllowed(const Peer& peer) const {
+    const auto access = authorize_(peer);
+    return settings_.controlOffered && access.trusted && access.permissions.contains(perm::ControlInput);
 }
 
 bool ScreenService::allowed(const Peer& peer) const {
@@ -82,11 +96,22 @@ void ScreenService::consent(const QString& peerId, quint32 requestId, bool allow
     const auto peer = uconnect::from_hex<uconnect::kDevIdLen>(peerId.toStdString());
     if (!peer) return;
     const auto it = hosts_.find(*peer);
-    if (it == hosts_.end() || it->second.live || it->second.request != requestId) return;
+    if (it == hosts_.end()) return;
+    if (it->second.live) {
+        if (it->second.controlRequest != requestId || !requestId) return;
+        const bool approved = allow && now_() < it->second.controlExpires && controlAllowed(*peer);
+        if (approved && remember) emit rememberPermission(authorize_(*peer).key, perm::ControlDirect);
+        setControl(*peer, approved, requestId, approved ? QString() : QString("denied"));
+        return;
+    }
+    if (it->second.request != requestId) return;
     if (!allow || now_() >= it->second.expires || !allowed(*peer)) {
         fail(*peer, requestId, "denied"); emit consentClosed(peerId, requestId); hosts_.erase(it); return;
     }
-    if (remember) emit rememberPermission(authorize_(*peer).key, perm::ScreenDirect);
+    if (remember) {
+        emit rememberPermission(authorize_(*peer).key, perm::ScreenDirect);
+        if (it->second.wantControl) emit rememberPermission(authorize_(*peer).key, perm::ControlDirect);
+    }
     startHost(*peer);
 }
 
@@ -98,10 +123,19 @@ void ScreenService::startHost(const Peer& peer) {
     host.congestion.reset(host.path, host.fps, host.width, settings_.maxBitrate);
     if (!open_(peer)) { fail(peer, host.request, "transport"); hosts_.erase(peer); return; }
     emit consentClosed(hex(peer), host.request);
-    // Control is deliberately unavailable until the input phase lands.
+    host.control = host.wantControl && controlAllowed(peer) && input_.available().isEmpty();
+    const auto bounds = settings_.monitors.value(host.monitor).toMap();
+    input_.setBounds(QRect(bounds.value("inputX", bounds.value("x")).toInt(), bounds.value("inputY", bounds.value("y")).toInt(),
+        bounds.value("inputWidth", bounds.value("width")).toInt(), bounds.value("inputHeight", bounds.value("height")).toInt()));
     send_(peer, {{"t", "scr.started"}, {"request", double(host.request)}, {"session", host.token},
         {"codec", "h264"}, {"width", host.width}, {"height", 0}, {"fps", host.fps},
-        {"monitors", QJsonArray::fromVariantList(settings_.monitors)}, {"control", false}});
+        {"monitors", QJsonArray::fromVariantList(settings_.monitors)}, {"monitor", host.monitor}, {"control", host.control},
+#ifdef Q_OS_WIN
+        {"cursorEmbedded", false}
+#else
+        {"cursorEmbedded", true}
+#endif
+    });
     emit captureChanged(true, host.monitor); showHosting();
     emit activity(QStringLiteral("Screen sharing started with %1").arg(authorize_(peer).name));
 }
@@ -117,13 +151,15 @@ void ScreenService::showViewer(const Peer& peer, const QString& state, const QSt
 void ScreenService::showHosting() {
     QVariantList viewers;
     for (const auto& [peer, host] : hosts_) if (host.live)
-        viewers.push_back(QVariantMap{{"devId", hex(peer)}, {"name", authorize_(peer).name}, {"control", false}});
+        viewers.push_back(QVariantMap{{"devId", hex(peer)}, {"name", authorize_(peer).name}, {"control", host.control}});
     emit hostingChanged(viewers);
 }
 
 void ScreenService::stop(const Peer& peer, const QString& reason) {
     const auto host = hosts_.find(peer);
     if (host != hosts_.end()) {
+        if (host->second.control) input_.release();
+        if (host->second.controlRequest) emit consentClosed(hex(peer), host->second.controlRequest);
         if (host->second.live) send_(peer, message("scr.stop", host->second.token));
         else fail(peer, host->second.request, "ended");
         emit consentClosed(hex(peer), host->second.request);
@@ -140,7 +176,7 @@ void ScreenService::stop(const Peer& peer, const QString& reason) {
         showViewer(peer, "ended", reason);
     }
     close_(peer);
-    if (hosts_.empty() && viewers_.empty()) timer_.stop();
+    if (hosts_.empty() && viewers_.empty() && !input_.pressedCount()) timer_.stop();
 }
 void ScreenService::stopHosting(const QString& reason) {
     while (!hosts_.empty()) stop(hosts_.begin()->first, reason);
@@ -156,28 +192,37 @@ void ScreenService::policyChanged() {
     for (const auto& [peer, host] : hosts_) if (!allowed(peer)) revoked.push_back(peer);
     for (const auto& [peer, viewer] : viewers_) if (!authorize_(peer).trusted) revoked.push_back(peer);
     for (const auto& peer : revoked) stop(peer, "permission withdrawn");
+    QVector<Peer> controlRevoked;
+    for (const auto& [peer, host] : hosts_) if (host.control && !controlAllowed(peer)) controlRevoked.push_back(peer);
+    for (const auto& peer : controlRevoked) setControl(peer, false, 0, "control permission withdrawn");
 }
 
 bool ScreenService::handle(const Peer& peer, const QJsonObject& msg) {
     const auto type = msg.value("t").toString();
-    if (!type.startsWith("scr.")) return false;
+    if (!type.startsWith("scr.") && !type.startsWith("in.")) return false;
     const double requestValue = msg.value("request").toDouble();
     const quint32 requestId = requestValue >= 1 && requestValue <= 4294967295. && std::floor(requestValue) == requestValue
         ? quint32(requestValue) : 0;
     if (type == "scr.request") {
         if (!requestId || !allowed(peer)) { fail(peer, requestId, "forbidden"); return true; }
         if (!msg.value("codecs").toArray().contains("h264")) { fail(peer, requestId, "codec"); return true; }
+        const bool wantControl = msg.value("wantControl").toBool();
+        if (wantControl && (!controlAllowed(peer) || !input_.available().isEmpty())) {
+            fail(peer, requestId, !controlAllowed(peer) ? QString("control forbidden") : input_.available()); return true;
+        }
         if (!hosts_.empty()) { fail(peer, requestId, "busy"); return true; }
         Host host; host.request = requestId; host.expires = now_() + 30000;
+        host.wantControl = wantControl;
         host.width = std::min(settings_.maxWidth, std::clamp(msg.value("maxWidth").toInt(1920), 320, 3840));
         host.fps = std::min(settings_.maxFps, std::clamp(msg.value("maxFps").toInt(30), 1, 60));
         hosts_.emplace(peer, std::move(host)); timer_.start();
-        if (authorize_(peer).permissions.contains(perm::ScreenDirect)) startHost(peer);
+        if (authorize_(peer).permissions.contains(perm::ScreenDirect) &&
+            (!wantControl || authorize_(peer).permissions.contains(perm::ControlDirect))) startHost(peer);
         else {
             send_(peer, {{"t", "scr.wait"}, {"request", double(requestId)}});
             const auto access = authorize_(peer);
             emit consentRequested(hex(peer), requestId, {{"name", access.name}, {"fingerprint", access.fingerprint},
-                {"control", false}});
+                {"control", wantControl}});
         }
         return true;
     }
@@ -194,8 +239,11 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& msg) {
             viewer->second.token = quint16(token); viewer->second.expires = now_() + 10000;
             viewer->second.fps = std::clamp(msg.value("fps").toInt(30), 1, 60);
             viewer->second.receiver.reset(quint16(token), viewer->second.fps);
+            viewer->second.control = msg.value("control").toBool();
             if (!open_(peer)) { stop(peer, "transport unavailable"); return true; }
-            showViewer(peer, "live", {}, {{"monitors", msg.value("monitors").toArray().toVariantList()}, {"control", false}});
+            showViewer(peer, "live", {}, {{"monitors", msg.value("monitors").toArray().toVariantList()},
+                {"monitor", msg.value("monitor").toInt()}, {"control", viewer->second.control},
+                {"cursorEmbedded", msg.value("cursorEmbedded").toBool(true)}});
         }
         return true;
     }
@@ -203,14 +251,39 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& msg) {
     auto host = hosts_.find(peer);
     const bool forHost = host != hosts_.end() && host->second.live && token == host->second.token;
     const bool forViewer = viewer != viewers_.end() && viewer->second.token && token == viewer->second.token;
+    if (type.startsWith("in.")) {
+        if (forHost && host->second.control && allowed(peer) && controlAllowed(peer)) {
+            if (!input_.available().isEmpty() || !input_.apply(msg)) setControl(peer, false, 0, "Input could not be delivered; check host accessibility and keyboard layout.");
+        }
+        return true;
+    }
     if (type == "scr.stop") {
         if (forHost || forViewer || (host != hosts_.end() && !host->second.live && requestId == host->second.request))
             stop(peer, "stopped by peer");
     } else if (forViewer && type == "scr.error") {
         stop(peer, msg.value("detail").toString("media error"));
+    } else if (forViewer && type == "scr.controlled") {
+        if (requestId && requestId != viewer->second.controlRequest) return true;
+        viewer->second.control = msg.value("on").toBool();
+        viewer->second.controlRequest = 0;
+        showViewer(peer, "live", msg.value("detail").toString(), {{"control", viewer->second.control}, {"controlPending", false}});
+    } else if (forViewer && type == "scr.cursor") {
+        const QByteArray base64 = msg.value("png").toString().toLatin1();
+        if (base64.size() > 65536) return true;
+        QByteArray png = QByteArray::fromBase64(base64, QByteArray::AbortOnBase64DecodingErrors);
+        QBuffer buffer(&png); buffer.open(QIODevice::ReadOnly); QImageReader reader(&buffer, "PNG");
+        const auto size = reader.size();
+        const int hx = msg.value("hotspotX").toInt(-1), hy = msg.value("hotspotY").toInt(-1);
+        if (size.width() < 1 || size.height() < 1 || size.width() > 128 || size.height() > 128 ||
+            hx < 0 || hy < 0 || hx >= size.width() || hy >= size.height() || reader.read().isNull()) return true;
+        showViewer(peer, "live", {}, {{"cursorImage", "data:image/png;base64," + QString::fromLatin1(base64)},
+            {"cursorHotspotX", hx}, {"cursorHotspotY", hy}});
     } else if (forHost) {
         if (!allowed(peer)) { stop(peer, "permission withdrawn"); return true; }
-        if (type == "scr.report") {
+        if (type == "scr.control") {
+            if (msg.value("on").toBool()) requestHostControl(peer, requestId);
+            else setControl(peer, false, requestId);
+        } else if (type == "scr.report") {
             if (const auto report = Feedback::parse(msg)) {
                 if (now_() - host->second.lastReport < 100) return true;
                 host->second.lastReport = now_(); host->second.congestion.update(*report);
@@ -231,10 +304,16 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& msg) {
             const int index = msg.value("index").toInt(-1);
             if (index >= 0 && index < settings_.monitors.size()) {
                 host->second.monitor = index; host->second.forceKey = true;
+                input_.release();
+                const auto bounds = settings_.monitors[index].toMap();
+                input_.setBounds(QRect(bounds.value("inputX", bounds.value("x")).toInt(), bounds.value("inputY", bounds.value("y")).toInt(),
+                    bounds.value("inputWidth", bounds.value("width")).toInt(), bounds.value("inputHeight", bounds.value("height")).toInt()));
+                auto changed = message("scr.monitorChanged", host->second.token); changed["index"] = index; send_(peer, changed);
                 emit captureChanged(true, index);
             }
         }
     }
+    if (forViewer && type == "scr.monitorChanged") showViewer(peer, "live", {}, {{"monitor", msg.value("index").toInt()}});
     return true;
 }
 
@@ -242,6 +321,13 @@ void ScreenService::receive(const Peer& peer, const QByteArray& packet) {
     const auto it = viewers_.find(peer);
     if (it == viewers_.end() || !it->second.token || !authorize_(peer).trusted) return;
     auto& viewer = it->second;
+    if (!packet.isEmpty() && packet[0] == 2) {
+        const auto cursor = parseCursor(packet);
+        if (!cursor || cursor->session != viewer.token || (viewer.haveCursor && !cursorNewer(cursor->sequence, viewer.cursorSequence))) return;
+        viewer.cursorSequence = cursor->sequence; viewer.haveCursor = true;
+        showViewer(peer, "live", {}, {{"cursorX", cursor->point.x()}, {"cursorY", cursor->point.y()}, {"cursorVisible", cursor->visible}});
+        return;
+    }
     auto complete = viewer.receiver.receive(packet, now_()); viewer.bytes += packet.size();
     if (complete.isEmpty()) return;
     if (viewer.decoding) {
@@ -316,9 +402,15 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
 
 void ScreenService::tick() {
     const auto now = now_(); QVector<Peer> expired;
+    const bool controlled = std::any_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.control; });
+    if (!controlled && input_.pressedCount() && now - lastReleaseRetry_ >= 100) {
+        lastReleaseRetry_ = now; input_.release();
+    }
     for (auto& [peer, host] : hosts_) {
         if (!host.live && now >= host.expires) expired.push_back(peer);
         else if (host.live) {
+            if (host.controlRequest && now >= host.controlExpires) setControl(peer, false, host.controlRequest, "control request timed out");
+            if (host.control && !controlAllowed(peer)) setControl(peer, false, 0, "control permission withdrawn");
             if (now - host.lastReport > 5000 || !allowed(peer)) expired.push_back(peer);
             else if (!host.sender.pump(now, [&](const QByteArray& packet) { return datagram_(peer, packet); })) host.forceKey = true;
         }
@@ -343,10 +435,78 @@ void ScreenService::tick() {
         }
     }
     for (const auto& peer : expired) stop(peer, "request or feedback timed out");
+    if (hosts_.empty() && viewers_.empty() && !input_.pressedCount()) timer_.stop();
 }
 void ScreenService::monitor(const Peer& peer, int index) {
     if (const auto it = viewers_.find(peer); it != viewers_.end() && it->second.token) {
         auto msg = message("scr.monitor", it->second.token); msg["index"] = index; send_(peer, msg);
+    }
+}
+
+void ScreenService::setControl(const Peer& peer, bool on, quint32 request, const QString& detail) {
+    const auto it = hosts_.find(peer); if (it == hosts_.end() || !it->second.live) return;
+    auto& host = it->second;
+    if (host.controlRequest) emit consentClosed(hex(peer), host.controlRequest);
+    host.controlRequest = 0;
+    const bool accepted = on && controlAllowed(peer) && input_.available().isEmpty();
+    if (!accepted) input_.release();
+    host.control = accepted;
+    auto msg = message("scr.controlled", host.token); msg["request"] = double(request); msg["on"] = accepted;
+    msg["detail"] = on && !input_.available().isEmpty() ? input_.available() : detail;
+    send_(peer, msg); showHosting();
+    emit activity(QStringLiteral("Remote control %1 for %2").arg(accepted ? "started" : "stopped", authorize_(peer).name));
+}
+void ScreenService::requestHostControl(const Peer& peer, quint32 request) {
+    auto& host = hosts_.at(peer);
+    if (!request || host.controlRequest) return;
+    if (!controlAllowed(peer) || !input_.available().isEmpty()) {
+        setControl(peer, false, request, input_.available().isEmpty() ? QString("control forbidden") : input_.available()); return;
+    }
+    if (authorize_(peer).permissions.contains(perm::ControlDirect)) { setControl(peer, true, request); return; }
+    host.controlRequest = request; host.controlExpires = now_() + 30000;
+    const auto access = authorize_(peer);
+    emit consentRequested(hex(peer), request, {{"name", access.name}, {"fingerprint", access.fingerprint}, {"control", true}, {"controlOnly", true}});
+}
+void ScreenService::requestControl(const Peer& peer, bool on) {
+    const auto it = viewers_.find(peer); if (it == viewers_.end() || !it->second.token) return;
+    auto& viewer = it->second;
+    if (viewer.controlRequest && on) return;
+    if (!on) send_(peer, message("in.release", viewer.token));
+    viewer.controlRequest = nextRequest_++; if (!nextRequest_) ++nextRequest_;
+    showViewer(peer, "live", {}, {{"controlPending", on}});
+    auto msg = message("scr.control", viewer.token); msg["on"] = on; msg["request"] = double(viewer.controlRequest); send_(peer, msg);
+}
+void ScreenService::stopControl() {
+    for (const auto& [peer, host] : hosts_) if (host.control || host.controlRequest) setControl(peer, false);
+}
+void ScreenService::sendInput(const Peer& peer, QJsonObject msg) {
+    const auto it = viewers_.find(peer);
+    if (it == viewers_.end() || !it->second.token || !it->second.control || !authorize_(peer).trusted) return;
+    if (!msg.value("t").toString().startsWith("in.")) return;
+    msg["session"] = it->second.token;
+    if (!send_(peer, msg)) stop(peer, "input connection unavailable");
+}
+
+void ScreenService::submitCursor(const QPoint& position, bool visible, const QByteArray& shape, const QPoint& hotspot) {
+    if (!shape.isEmpty() && shape.size() <= 49152 && shape != cursorShape_) {
+        cursorShape_ = shape; cursorHotspot_ = hotspot; ++cursorVersion_;
+    }
+    ++cursorSequence_;
+    for (auto& [peer, host] : hosts_) {
+        if (!host.live) continue;
+        if (host.cursorVersion != cursorVersion_ && !cursorShape_.isEmpty()) {
+            auto msg = message("scr.cursor", host.token); msg["png"] = QString::fromLatin1(cursorShape_.toBase64());
+            msg["hotspotX"] = cursorHotspot_.x(); msg["hotspotY"] = cursorHotspot_.y();
+            if (send_(peer, msg)) host.cursorVersion = cursorVersion_;
+        }
+        const auto monitor = settings_.monitors.value(host.monitor).toMap();
+        const QRect bounds(monitor.value("inputX", monitor.value("x")).toInt(), monitor.value("inputY", monitor.value("y")).toInt(),
+            monitor.value("inputWidth", monitor.value("width")).toInt(), monitor.value("inputHeight", monitor.value("height")).toInt());
+        if (bounds.isEmpty()) continue;
+        const QPoint local = position - bounds.topLeft();
+        const QPoint pixels(qint64(local.x()) * monitor.value("width").toInt() / bounds.width(),
+            qint64(local.y()) * monitor.value("height").toInt() / bounds.height());
+        datagram_(peer, cursorPacket({host.token, cursorSequence_, pixels, visible && bounds.contains(position)}));
     }
 }
 

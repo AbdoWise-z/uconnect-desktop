@@ -25,6 +25,11 @@ Execution notes:
   macOS/Linux acceptance remain manual tests, not established by this run.
   All 11 CTest suites pass. The app also builds with `UCD_WITH_SCREEN=OFF`;
   its foundation and settings tests pass in that separate build.
+- Phase 3: native input backends, physical HID mapping, Unicode/IME capture,
+  separate control consent, focus/Right Ctrl release and cursor shape/position
+  channels implemented. Recording-backend tests cover invalid input and held
+  key/button release on all principal stop paths. Windows app build and all
+  12 suites pass. Cross-layout/native desktop acceptance remains manual.
 - Hardware, macOS/Linux capture, and glass-to-glass latency require real
   desktops; automated synthetic tests cannot establish those acceptance values.
 - The pinned BtbN build embeds source-built OpenH264. Its software encoder

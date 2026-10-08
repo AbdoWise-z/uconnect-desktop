@@ -22,6 +22,7 @@ Window {
     color: Theme.canvas
     title: Theme.serviceLabel(service) + " – " + deviceName
     onClosing: if (service === "screen" || service === "control") App.screen.stop(devId)
+    onActiveChanged: if (!active && (service === "screen" || service === "control")) App.screen.releaseInput(devId)
 
     component Separator: Rectangle {
         implicitWidth: 1

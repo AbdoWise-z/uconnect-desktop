@@ -37,6 +37,16 @@ ColumnLayout {
             enabled: view.session.state === "live" && count > 1
             onActivated: index => App.screen.monitor(view.devId, index)
         }
+        UToolButton {
+            text: view.session.controlPending ? qsTr("Waiting for control…") : view.session.control ? qsTr("Stop control") : qsTr("Request control")
+            enabled: view.session.state === "live" && !view.session.controlPending
+            onClicked: App.screen.requestControl(view.devId, !view.session.control)
+        }
+        UToolButton {
+            visible: view.session.control === true
+            text: view.session.keyboardCaptured ? qsTr("Keyboard captured · Right Ctrl to release") : qsTr("Capture keyboard")
+            onClicked: App.screen.captureKeyboard(view.devId, view.Window.window, !view.session.keyboardCaptured)
+        }
         Item { Layout.fillWidth: true }
         UButton {
             text: view.session.state === "live" || view.session.state === "waiting" || view.session.state === "requesting"
@@ -58,6 +68,34 @@ ColumnLayout {
             width: view.fit ? parent.width : sourceRect.width
             height: view.fit ? parent.height : sourceRect.height
             fillMode: VideoOutput.PreserveAspectFit
+        }
+        MouseArea {
+            anchors.fill: parent
+            enabled: view.session.control === true && view.session.state === "live"
+            hoverEnabled: true
+            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+            function send(mouse) {
+                const rect = video.contentRect
+                if (rect.width <= 0 || rect.height <= 0) return
+                App.screen.mouse(view.devId, (mouse.x - video.x - rect.x) / rect.width,
+                    (mouse.y - video.y - rect.y) / rect.height, mouse.buttons)
+            }
+            onPressed: mouse => { App.screen.captureKeyboard(view.devId, view.Window.window, true); send(mouse) }
+            onReleased: mouse => send(mouse)
+            onPositionChanged: mouse => send(mouse)
+            onCanceled: App.screen.releaseInput(view.devId)
+            onWheel: wheel => { App.screen.wheel(view.devId, wheel.angleDelta.x, wheel.angleDelta.y); wheel.accepted = true }
+        }
+        Image {
+            readonly property var monitor: (view.session.monitors || [])[view.session.monitor || 0] || ({})
+            readonly property real scaleX: video.contentRect.width / (monitor.width || 1)
+            readonly property real scaleY: video.contentRect.height / (monitor.height || 1)
+            x: video.x + video.contentRect.x + ((view.session.cursorX || 0) - (view.session.cursorHotspotX || 0)) * scaleX
+            y: video.y + video.contentRect.y + ((view.session.cursorY || 0) - (view.session.cursorHotspotY || 0)) * scaleY
+            width: implicitWidth * scaleX
+            height: implicitHeight * scaleY
+            source: view.session.cursorImage || ""
+            visible: view.session.state === "live" && view.session.cursorVisible === true && view.session.cursorEmbedded === false
         }
         ColumnLayout {
             anchors.centerIn: parent

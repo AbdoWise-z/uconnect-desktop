@@ -15,6 +15,7 @@ Item {
         visible: App.screen.consents.length > 0
         color: Theme.panel
         onVisibleChanged: if (visible) { raise(); requestActivate(); remember.checked = false }
+        onRequestChanged: remember.checked = false
         onClosing: event => { event.accepted = false; App.screen.consent(request.peer, request.request, false, false) }
         ColumnLayout {
             anchors.fill: parent
@@ -22,7 +23,9 @@ Item {
             spacing: 12
             Text {
                 Layout.fillWidth: true
-                text: qsTr("%1 wants to view your screen").arg(consent.request.name || "")
+                text: consent.request.controlOnly ? qsTr("%1 wants to control your mouse and keyboard").arg(consent.request.name || "")
+                    : consent.request.control ? qsTr("%1 wants to view and control your screen").arg(consent.request.name || "")
+                    : qsTr("%1 wants to view your screen").arg(consent.request.name || "")
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: Theme.text
@@ -68,6 +71,11 @@ Item {
                     color: Theme.text
                 }
                 UButton { text: qsTr("Stop sharing"); onClicked: App.screen.stopHosting() }
+                UButton {
+                    visible: App.screen.hosting.some(p => p.control)
+                    text: qsTr("Stop control")
+                    onClicked: App.screen.stopControl()
+                }
             }
             Text {
                 Layout.fillWidth: true
