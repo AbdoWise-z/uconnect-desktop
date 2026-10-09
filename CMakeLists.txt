@@ -16,6 +16,11 @@ if (MINGW)
     file(GLOB _ucd_qt_hints LIST_DIRECTORIES true "C:/Qt/6.*/mingw_64")
     list(SORT _ucd_qt_hints COMPARE NATURAL ORDER DESCENDING)
 endif ()
+if (APPLE)
+    # Qt before 6.9 links AGL, whose link stub the macOS 26 SDK no longer
+    # ships. Nothing here uses it; OpenGL stands in, harmless on every version.
+    set(WrapOpenGL_AGL "-framework OpenGL" CACHE STRING "Framework Qt links in place of AGL")
+endif ()
 find_package(Qt6 6.5 REQUIRED
     COMPONENTS Core Gui Network Qml Quick QuickControls2 OpenGL Test
     HINTS ${_ucd_qt_hints})

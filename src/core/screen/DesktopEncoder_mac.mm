@@ -4,10 +4,14 @@
 #include <map>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <CoreMedia/CoreMedia.h>
+// AVFoundation (through ScreenCaptureKit) and FFmpeg both name a type
+// AVMediaType; FFmpeg's enum is renamed here, where nothing uses it.
+#define AVMediaType FFmpegAVMediaType
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
 }
+#undef AVMediaType
 
 // ScreenCaptureKit owns the IOSurface pool; this delegate retains only the
 // newest CVPixelBuffer. No image mapping, readback or swscale is used.
