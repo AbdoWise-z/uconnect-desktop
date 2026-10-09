@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <QtTest>
 
+#include <filesystem>
 #include <limits>
 #include <memory>
 
@@ -164,6 +165,24 @@ class StorageServiceTest : public QObject {
 #else
         return QFile::link(target, link);
 #endif
+    }
+    // A symlink is a file to remove; a Windows junction is a folder.
+    static bool removeLink(const QString& link) { return QFile::remove(link) || QDir().rmdir(link); }
+
+    // Partial uploads in `folder`. Where the system allows it (Linux), Qt
+    // creates them unnamed (O_TMPFILE): they only appear in the folder once
+    // complete, and until then only as this process's open descriptors.
+    static int partialUploads(const QString& folder) {
+        int count = int(QDir(folder).entryList({"*.part"}, QDir::Files | QDir::Hidden).size());
+#ifdef Q_OS_LINUX
+        std::error_code error;
+        const auto prefix = QDir(folder).absoluteFilePath(QStringLiteral("#")).toStdString();
+        for (const auto& fd : std::filesystem::directory_iterator("/proc/self/fd", error)) {
+            std::error_code unreadable;
+            if (std::filesystem::read_symlink(fd.path(), unreadable).string().starts_with(prefix)) ++count;
+        }
+#endif
+        return count;
     }
 
     QString uploadedPath(const QString& remotePath) const {
@@ -385,7 +404,7 @@ private slots:
             QVERIFY(QFile::exists(outside_ + "/secret.txt"));
         }
 
-        if (innerLink) QVERIFY(QDir().rmdir(share_ + "/tree/out"));
+        if (innerLink) QVERIFY(removeLink(share_ + "/tree/out"));
         QVERIFY(QDir(share_ + "/tree").removeRecursively());
         QVERIFY(QDir(share_ + "/dest").removeRecursively());
         QVERIFY(QDir(share_ + "/sub/tree (1)").removeRecursively());
@@ -831,12 +850,11 @@ private slots:
         link_->requester->upload(kOfferer, share_ + "/big.bin", "/share/sub", id);
         QVERIFY(progress.count() > 0);
         // Wait for receiver acceptance, then cancel before the pump sends data.
-        QTRY_VERIFY(!QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).isEmpty());
+        QTRY_VERIFY(partialUploads(share_ + "/sub") > 0);
         link_->requester->cancel(id);
         QCOMPARE(finished.count(), 1);
         QVERIFY(!finished.first().at(2).toString().isEmpty());
-        QTRY_VERIFY2(QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).isEmpty(),
-                     qPrintable(QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).join(", ")));
+        QTRY_COMPARE(partialUploads(share_ + "/sub"), 0);
         QVERIFY(!QFileInfo::exists(share_ + "/sub/big.bin"));
     }
 
@@ -939,11 +957,11 @@ private slots:
         const quint32 id = nextId();
         link_->offerer->handleMessage(kRequester, encodeControl({{"t", "fs.write"}, {"id", qint64(id)},
             {"path", "/share/sub"}, {"name", "pending.txt"}, {"size", 3}}));
-        QVERIFY(!QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).isEmpty());
+        QVERIFY(partialUploads(share_ + "/sub") > 0);
         for (const QString& name : names(list("/share/sub").entries))
             QVERIFY(!name.startsWith(".uconnect-upload-"));
         link_->offerer->setSharedFolders({outside_});
-        QVERIFY(QDir(share_ + "/sub").entryList({"*.part"}, QDir::Files | QDir::Hidden).isEmpty());
+        QCOMPARE(partialUploads(share_ + "/sub"), 0);
         link_->offerer->handleMessage(kRequester, uploadFrame(id, "abc"));
         QVERIFY(!QFileInfo::exists(share_ + "/sub/pending.txt"));
         QVERIFY(!QFileInfo::exists(outside_ + "/pending.txt"));

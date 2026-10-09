@@ -24,11 +24,11 @@ class ScreenInputTest : public QObject {
     static uconnect::DevId peer(int n = 1) { uconnect::DevId p{}; p[0] = uint8_t(n); return p; }
 private slots:
     void physicalMappings() {
-        QSet<int> usages, windows, linux;
+        QSet<int> usages, windows, linuxCodes;  // not "linux": GCC predefines it as 1 on Linux
         for (const auto& key : keyMappings()) {
             QVERIFY(!usages.contains(key.usage)); usages.insert(key.usage);
             QVERIFY(!windows.contains(key.windowsScan)); windows.insert(key.windowsScan);
-            QVERIFY(!linux.contains(key.linuxCode)); linux.insert(key.linuxCode);
+            QVERIFY(!linuxCodes.contains(key.linuxCode)); linuxCodes.insert(key.linuxCode);
             // Deliberately use a conflicting logical key: native position wins.
             QKeyEvent win(QEvent::KeyPress, Qt::Key_Z, Qt::NoModifier, key.windowsScan, 0, 0);
             QCOMPARE(hidUsage(win, KeyboardPlatform::Windows), key.usage);
