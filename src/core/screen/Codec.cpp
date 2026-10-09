@@ -165,13 +165,75 @@ QStringList Encoder::candidates() {
 #endif
 }
 
+struct Encoder::Source {
+    QSize size;
+    AVPixelFormat format = AV_PIX_FMT_NONE;
+    const uint8_t* data[4]{};
+    int stride[4]{};
+};
+
+namespace {
+// QImage and QVideoFrame layouts swscale reads as they are (byte order).
+AVPixelFormat avFormat(QImage::Format format) {
+    switch (format) {
+    case QImage::Format_RGB32: return AV_PIX_FMT_BGR0;  // 0xffRRGGBB, little endian
+    case QImage::Format_ARGB32: case QImage::Format_ARGB32_Premultiplied: return AV_PIX_FMT_BGRA;
+    case QImage::Format_RGBX8888: return AV_PIX_FMT_RGB0;
+    case QImage::Format_RGBA8888: case QImage::Format_RGBA8888_Premultiplied: return AV_PIX_FMT_RGBA;
+    default: return AV_PIX_FMT_NONE;
+    }
+}
+AVPixelFormat avFormat(QVideoFrameFormat::PixelFormat format) {
+    switch (format) {
+    case QVideoFrameFormat::Format_BGRA8888: case QVideoFrameFormat::Format_BGRA8888_Premultiplied: return AV_PIX_FMT_BGRA;
+    case QVideoFrameFormat::Format_BGRX8888: return AV_PIX_FMT_BGR0;
+    case QVideoFrameFormat::Format_RGBA8888: return AV_PIX_FMT_RGBA;
+    case QVideoFrameFormat::Format_RGBX8888: return AV_PIX_FMT_RGB0;
+    case QVideoFrameFormat::Format_ARGB8888: case QVideoFrameFormat::Format_ARGB8888_Premultiplied: return AV_PIX_FMT_ARGB;
+    case QVideoFrameFormat::Format_XRGB8888: return AV_PIX_FMT_0RGB;
+    case QVideoFrameFormat::Format_ABGR8888: return AV_PIX_FMT_ABGR;
+    case QVideoFrameFormat::Format_XBGR8888: return AV_PIX_FMT_0BGR;
+    case QVideoFrameFormat::Format_NV12: return AV_PIX_FMT_NV12;
+    case QVideoFrameFormat::Format_NV21: return AV_PIX_FMT_NV21;
+    case QVideoFrameFormat::Format_YUV420P: return AV_PIX_FMT_YUV420P;
+    case QVideoFrameFormat::Format_YUYV: return AV_PIX_FMT_YUYV422;
+    case QVideoFrameFormat::Format_UYVY: return AV_PIX_FMT_UYVY422;
+    default: return AV_PIX_FMT_NONE;
+    }
+}
+}  // namespace
+
 std::optional<EncodedFrame> Encoder::encode(const QImage& input, const CodecOptions& options,
         quint16 session, quint32 number, quint32 captureMs, bool keyframe) {
     if (input.isNull() || input.width() < 2 || input.height() < 2) return std::nullopt;
-    const auto target = QSize(std::max(2, std::min(input.width(), options.width) & ~1),
-        std::max(2, int(qint64(input.height()) * (std::min(input.width(), options.width) & ~1) / input.width()) & ~1));
+    const QImage image = avFormat(input.format()) != AV_PIX_FMT_NONE ? input : input.convertToFormat(QImage::Format_RGBA8888);
+    Source source{image.size(), avFormat(image.format()), {image.constBits()}, {int(image.bytesPerLine())}};
+    return encodeSource(source, options, session, number, captureMs, keyframe);
+}
+
+std::optional<EncodedFrame> Encoder::encode(const QVideoFrame& input, const CodecOptions& options,
+        quint16 session, quint32 number, quint32 captureMs, bool keyframe) {
+    QVideoFrame frame(input);
+    const auto format = avFormat(frame.pixelFormat());
+    if (format == AV_PIX_FMT_NONE || !frame.map(QVideoFrame::ReadOnly))
+        return encode(frame.toImage(), options, session, number, captureMs, keyframe);
+    Source source{frame.size(), format};
+    for (int plane = 0; plane < std::min(frame.planeCount(), 4); ++plane) {
+        source.data[plane] = frame.bits(plane); source.stride[plane] = frame.bytesPerLine(plane);
+    }
+    auto result = encodeSource(source, options, session, number, captureMs, keyframe);
+    frame.unmap();
+    return result;
+}
+
+std::optional<EncodedFrame> Encoder::encodeSource(const Source& input, const CodecOptions& options,
+        quint16 session, quint32 number, quint32 captureMs, bool keyframe) {
+    const QSize inputSize = input.size;
+    if (inputSize.width() < 2 || inputSize.height() < 2) return std::nullopt;
+    const auto target = QSize(std::max(2, std::min(inputSize.width(), options.width) & ~1),
+        std::max(2, int(qint64(inputSize.height()) * (std::min(inputSize.width(), options.width) & ~1) / inputSize.width()) & ~1));
     if (impl_->size != target || impl_->fps != options.fps || (impl_->software && impl_->library != options.ciscoLibrary)) reset();
-    if (!impl_->frame && !impl_->open(input.size(), options)) return std::nullopt;
+    if (!impl_->frame && !impl_->open(inputSize, options)) return std::nullopt;
     auto& p = *impl_;
     if (p.bitrate != options.bitrate && (p.software || bitrateWorthChanging(p.bitrate, options.bitrate, p.bitrateChanged.elapsed()))) {
         if (p.software) {
@@ -181,21 +243,25 @@ std::optional<EncodedFrame> Encoder::encode(const QImage& input, const CodecOpti
             // A large change reopens the encoder, which every implementation
             // honours. Smaller ones are applied live (NVENC and QSV pick them
             // up; others keep their rate until a large change).
-            reset(); if (!impl_->open(input.size(), options)) return std::nullopt;
-            return encode(input, options, session, number, captureMs, true);
+            reset(); if (!impl_->open(inputSize, options)) return std::nullopt;
+            return encodeSource(input, options, session, number, captureMs, true);
         } else {
             p.context->bit_rate = p.context->rc_max_rate = options.bitrate;
             p.context->rc_buffer_size = options.bitrate / 8;
         }
         p.bitrate = options.bitrate; p.bitrateChanged.start();
     }
-    const QImage image = input.convertToFormat(QImage::Format_RGBA8888);
     if (av_frame_make_writable(p.frame) < 0) return std::nullopt;
-    p.scale = sws_getCachedContext(p.scale, image.width(), image.height(), AV_PIX_FMT_RGBA,
-        p.size.width(), p.size.height(), AVPixelFormat(p.frame->format), SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
-    if (!p.scale) { p.error = "Cannot create color converter"; return std::nullopt; }
-    const uint8_t* source[]{image.constBits()}; const int stride[]{int(image.bytesPerLine())};
-    sws_scale(p.scale, source, stride, 0, image.height(), p.frame->data, p.frame->linesize);
+    if (input.format == AVPixelFormat(p.frame->format) && inputSize == p.size) {
+        // Already the encoder's layout and size: copy the planes. (swscale's
+        // unscaled NV12 copy also drops the chroma plane in FFmpeg 7.1.)
+        av_image_copy(p.frame->data, p.frame->linesize, input.data, input.stride, input.format, p.size.width(), p.size.height());
+    } else {
+        p.scale = sws_getCachedContext(p.scale, inputSize.width(), inputSize.height(), input.format,
+            p.size.width(), p.size.height(), AVPixelFormat(p.frame->format), SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+        if (!p.scale) { p.error = "Cannot create color converter"; return std::nullopt; }
+        sws_scale(p.scale, input.data, input.stride, 0, inputSize.height(), p.frame->data, p.frame->linesize);
+    }
     EncodedFrame result{session, number, captureMs, false, {}};
     if (p.software) {
         if (keyframe || p.pts == 0) p.software->ForceIntraFrame(true);

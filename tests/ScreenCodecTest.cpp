@@ -16,6 +16,44 @@ private slots:
         // Small drift catches up eventually.
         QVERIFY(bitrateWorthChanging(4000000, 4400000, 15000)); QVERIFY(!bitrateWorthChanging(4000000, 4100000, 60000));
     }
+    // Captured frames are encoded in their own layout, packed or planar.
+    void encodesVideoFramesInTheirLayout() {
+        QImage source(320, 180, QImage::Format_RGB32);
+        for (int y = 0; y < source.height(); ++y) for (int x = 0; x < source.width(); ++x)
+            source.setPixelColor(x, y, QColor(x / 2 + 40, y + 30, (x + y) / 3 + 50));
+        // NV12 by hand (BT.601, video range), as cameras deliver it.
+        QVideoFrame nv12(QVideoFrameFormat(source.size(), QVideoFrameFormat::Format_NV12));
+        QVERIFY(nv12.map(QVideoFrame::WriteOnly));
+        for (int y = 0; y < source.height(); ++y) for (int x = 0; x < source.width(); ++x) {
+            const QColor c = source.pixelColor(x, y);
+            nv12.bits(0)[y * nv12.bytesPerLine(0) + x] = uchar(16 + (66 * c.red() + 129 * c.green() + 25 * c.blue() + 128) / 256);
+            if (x % 2 == 0 && y % 2 == 0) {
+                uchar* uv = nv12.bits(1) + (y / 2) * nv12.bytesPerLine(1) + x;
+                uv[0] = uchar(128 + (-38 * c.red() - 74 * c.green() + 112 * c.blue() + 128) / 256);
+                uv[1] = uchar(128 + (112 * c.red() - 94 * c.green() - 18 * c.blue() + 128) / 256);
+            }
+        }
+        nv12.unmap();
+        // Same size (a plain copy when the layouts match) and scaled down.
+        for (const int width : {320, 160}) for (const auto& frame : {QVideoFrame(source), nv12}) {
+            Encoder encoder; Decoder decoder;
+            CodecOptions options{width, 30, 2000000, {}, qEnvironmentVariable("UCD_TEST_OPENH264")};
+            const QImage expected = source.scaledToWidth(width, Qt::SmoothTransformation);
+            std::optional<EncodedFrame> encoded;
+            for (int i = 0; i < 8 && !encoded; ++i) encoded = encoder.encode(frame, options, 1, i, i * 33, true);
+            if (!encoded && encoder.name().isEmpty()) QSKIP(qPrintable("No usable H.264 encoder: " + encoder.error()));
+            QVERIFY2(encoded, qPrintable(encoder.error()));
+            const QImage image = decoder.decode(*encoded);
+            QVERIFY2(!image.isNull(), qPrintable(decoder.error())); QCOMPARE(image.size(), expected.size());
+            double error = 0;
+            for (int y = 0; y < expected.height(); ++y) for (int x = 0; x < expected.width(); ++x) {
+                const auto a = expected.pixelColor(x, y), b = image.pixelColor(x, y);
+                error += std::pow(a.red() - b.red(), 2) + std::pow(a.green() - b.green(), 2) + std::pow(a.blue() - b.blue(), 2);
+            }
+            const double psnr = 10 * std::log10(255. * 255 / std::max(1e-9, error / (expected.width() * expected.height() * 3)));
+            QVERIFY2(psnr > 28, qPrintable(QString("layout %1, width %2: PSNR %3 dB").arg(int(frame.pixelFormat())).arg(width).arg(psnr)));
+        }
+    }
     void roundTrip_data() {
         QTest::addColumn<QString>("name");
         for (const auto& name : Encoder::candidates()) QTest::newRow(qPrintable(name)) << name;

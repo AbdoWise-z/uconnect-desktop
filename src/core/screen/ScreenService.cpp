@@ -516,7 +516,8 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
         // to encode when it fails: Qt's capture takes over from its next frame.
         const bool sourceless = !gpu.active && image.isNull() && !video.isValid();
         const auto result = gpu.active || sourceless ? gpu.frame
-            : encoder_->encode(image.isNull() ? video.toImage() : image, options, 1, number, captureMs, key);
+            : image.isNull() ? encoder_->encode(video, options, 1, number, captureMs, key)
+                             : encoder_->encode(image, options, 1, number, captureMs, key);
         const auto error = gpu.active || sourceless ? QString() : encoder_->error();
         const auto name = gpu.active ? gpu.pipeline : sourceless ? QString() : encoder_->name();
         const auto nativeError = gpu.detail;

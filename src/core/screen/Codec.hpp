@@ -22,12 +22,19 @@ public:
     ~Encoder();
     std::optional<EncodedFrame> encode(const QImage& image, const CodecOptions& options,
         quint16 session, quint32 number, quint32 captureMs, bool keyframe);
+    // The frame in its own pixel layout (BGRA, NV12, ...), converted once
+    // into the encoder: cheaper than going through a QImage.
+    std::optional<EncodedFrame> encode(const QVideoFrame& frame, const CodecOptions& options,
+        quint16 session, quint32 number, quint32 captureMs, bool keyframe);
     QString name() const;
     QString error() const;
     void reset();
     static QStringList candidates();
 private:
     struct Impl;
+    struct Source;  // pixels in an FFmpeg layout
+    std::optional<EncodedFrame> encodeSource(const Source& source, const CodecOptions& options,
+        quint16 session, quint32 number, quint32 captureMs, bool keyframe);
     std::unique_ptr<Impl> impl_;
 };
 
