@@ -73,8 +73,17 @@ public:
         for (int i = 0; i < 8; ++i) if (modifiers[i]) result |= masks[i % 4];
         return result;
     }
+    mutable bool prompted = false;
     QString available() const override {
-        return AXIsProcessTrusted() ? QString() : QString("Allow uConnect in System Settings > Privacy & Security > Accessibility, then request control again.");
+        if (AXIsProcessTrusted()) return {};
+        if (!prompted) {
+            // Once per run, let macOS show its own prompt, which leads to the switch.
+            prompted = true;
+            const void* keys[]{kAXTrustedCheckOptionPrompt}; const void* values[]{kCFBooleanTrue};
+            const auto options = CFDictionaryCreate(nullptr, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            AXIsProcessTrustedWithOptions(options); CFRelease(options);
+        }
+        return QString("Allow uConnect in System Settings > Privacy & Security > Accessibility, then request control again.");
     }
     bool post(CGEventRef event) {
         if (!event) return false;
