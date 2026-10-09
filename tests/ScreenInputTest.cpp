@@ -113,6 +113,26 @@ private slots:
             const int releasedCalls = record->calls; service.handle(peer(), key); QCOMPARE(record->calls, releasedCalls);
         }
     }
+    // Control that cannot be granted leaves a view-only session, with the reason.
+    void viewWhenControlUnavailable() {
+        struct NoInput : RecordingInput { QString available() const override { return "No input here."; } };
+        for (bool permitted : {true, false}) {
+            PeerAccess access{"key", "Viewer", "fp", {perm::ScreenView, perm::ScreenDirect}, true};
+            if (permitted) access.permissions += {perm::ControlInput, perm::ControlDirect};
+            QVector<QJsonObject> sent;
+            ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
+                [&](const auto&) { return access; }, [](const auto&) { return true; }, [](const auto&) {},
+                [](const auto&, const auto&) { return true; }, nullptr, {},
+                permitted ? std::unique_ptr<InputBackend>(std::make_unique<NoInput>()) : std::make_unique<RecordingInput>());
+            ScreenSettings settings; settings.monitors = {QVariantMap{{"width", 1920}, {"height", 1080}}};
+            service.configure(settings); service.setOffered(true); service.setControlOffered(true);
+            service.handle(peer(), {{"t", "scr.request"}, {"request", 1}, {"codecs", QJsonArray{"h264"}}, {"wantControl", true}});
+            QCOMPARE(sent.back().value("t"), "scr.started");
+            QVERIFY(!sent.back().value("control").toBool());
+            QCOMPARE(sent.back().value("controlDetail").toString(),
+                     permitted ? QString("No input here.") : QString("This device is not allowed to control the screen."));
+        }
+    }
     void oneControllerAmongViewers() {
         auto backend = std::make_unique<RecordingInput>(); auto* record = backend.get();
         PeerAccess access{"key", "Viewer", "fp", {perm::ScreenView, perm::ScreenDirect, perm::ControlInput, perm::ControlDirect}, true};

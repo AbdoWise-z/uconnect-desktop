@@ -97,6 +97,7 @@ private:
         qint64 controlExpires = 0;
         quint32 cursorVersion = 0;
         qint64 startedAt = 0;
+        QString controlRefused;  // control was asked for but cannot be granted: why
         quint64 framesSent = 0;
         bool stalledTold = false;
         std::optional<quint32> nackedFrame;

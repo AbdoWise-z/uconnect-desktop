@@ -156,7 +156,8 @@ void ScreenService::startHost(const Peer& peer) {
     send_(peer, {{"t", "scr.started"}, {"request", double(host.request)}, {"session", host.token},
         {"codec", "h264"}, {"width", host.width}, {"height", 0}, {"fps", host.fps},
         {"monitors", QJsonArray::fromVariantList(settings_.monitors)}, {"monitor", host.monitor}, {"control", host.control},
-        {"pipeline", lastPipeline_}, {"cursorEmbedded", nativeActive_ ? false : settings_.cursorEmbedded}
+        {"pipeline", lastPipeline_}, {"cursorEmbedded", nativeActive_ ? false : settings_.cursorEmbedded},
+        {"controlDetail", host.controlRefused}
     });
     if (std::count_if(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.live; }) == 1)
         emit captureChanged(true, host.monitor);
@@ -259,14 +260,18 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
     if (type == "scr.request") {
         if (!requestId || !allowed(peer)) { fail(peer, requestId, "forbidden"); return true; }
         if (!msg.value("codecs").toArray().contains("h264")) { fail(peer, requestId, "codec"); return true; }
-        const bool wantControl = msg.value("wantControl").toBool();
-        if (wantControl && (!controlAllowed(peer) || !input_.available().isEmpty())) {
-            fail(peer, requestId, !controlAllowed(peer) ? QString("control forbidden") : input_.available()); return true;
-        }
+        bool wantControl = msg.value("wantControl").toBool();
+        if (wantControl && camera_) { fail(peer, requestId, "control forbidden"); return true; }
+        // Control that cannot be granted (no permission, or no way to inject
+        // input here, e.g. Wayland) leaves a view: the viewer is told why.
+        QString controlRefused;
+        if (wantControl && !controlAllowed(peer)) controlRefused = QStringLiteral("This device is not allowed to control the screen.");
+        else if (wantControl) controlRefused = input_.available();
+        if (!controlRefused.isEmpty()) wantControl = false;
         if (hosts_.contains(peer) || int(hosts_.size()) >= settings_.maxViewers) { fail(peer, requestId, "busy"); return true; }
         if (wantControl && std::any_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.control || (!entry.second.live && entry.second.wantControl) || entry.second.controlRequest; })) { fail(peer, requestId, "control busy"); return true; }
         Host host; host.request = requestId; host.expires = now_() + 30000;
-        host.wantControl = wantControl;
+        host.wantControl = wantControl; host.controlRefused = controlRefused;
         host.width = std::min(settings_.maxWidth, std::clamp(msg.value("maxWidth").toInt(1920), 320, 3840));
         host.fps = std::min(settings_.maxFps, std::clamp(msg.value("maxFps").toInt(30), 1, MaxFps));
         hosts_.emplace(peer, std::move(host)); timer_.start();
@@ -302,7 +307,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             viewer->second.control = viewer->second.wantControl && !camera_ && msg.value("control").toBool();
             if (!open_(peer)) { stop(peer, "transport unavailable"); return true; }
             viewer->second.channel = true;
-            showViewer(peer, "live", {}, {{"monitors", msg.value("monitors").toArray().toVariantList()},
+            showViewer(peer, "live", msg.value("controlDetail").toString().left(300), {{"monitors", msg.value("monitors").toArray().toVariantList()},
                 {"monitor", msg.value("monitor").toInt()}, {"control", viewer->second.control},
                 {"pipeline", msg.value("pipeline").toString()},
                 {"cursorEmbedded", msg.value("cursorEmbedded").toBool(true)}});
