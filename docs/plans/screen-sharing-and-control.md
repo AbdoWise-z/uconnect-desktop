@@ -1,6 +1,6 @@
 # Plan: screen sharing and remote control
 
-Status: **phases 0-4 implemented, plus post-phase fixes; Windows verified, native platform/manual acceptance pending** (2026-10-09). Each phase is implemented,
+Status: **phases 0-4 implemented, plus post-phase fixes; verified on Windows, macOS and Linux X11; Wayland, QSV/AMF and latency pending** (2026-10-09). Each phase is implemented,
 tested and committed before the next phase. Wire details land in `docs/protocol.md`.
 
 Execution notes:
@@ -447,18 +447,32 @@ does not need to trust the host, only to have its identity proven.
 
 ## Open items
 
-Built but not yet verified:
+Verified on real systems (2026-10-09), each against Windows in both directions:
 
-- macOS (ScreenCaptureKit/VideoToolbox), Linux X11 and the Wayland portal:
-  never built or run on those systems.
-- QSV and AMF: the code exists, but the test machine only has NVENC.
-- The Cisco OpenH264 fallback end to end: its two-session test needs the
-  Cisco library installed.
+- **macOS** (Apple M5, macOS 26.6): ScreenCaptureKit / IOSurface /
+  VideoToolbox at 60 fps (~5 ms per frame), VideoToolbox decoding (~4 ms),
+  direct UDP over a LAN, and remote control through CGEvent after the
+  Accessibility prompt. Screen Recording and Accessibility must be granted
+  once per build while builds are ad-hoc signed.
+- **Linux X11** (Ubuntu 26.04 under WSL, Qt 6.10): Qt capture with NVENC
+  (60 fps, ~8 ms per frame) or Cisco OpenH264, decoding, and XTest control
+  (on Xvfb). Linked through the relay, as WSL's virtual network stalls
+  direct links to Windows.
+- **Cisco OpenH264 fallback**: codec round trips and the two-session tests
+  pass on Windows, Linux and macOS.
+
+Not yet verified:
+
+- The Wayland portal: WSLg has no screen-cast portal; needs a real Linux
+  desktop.
+- QSV and AMF: the code exists, but no test machine has Intel or AMD
+  encoders.
 - Glass-to-glass latency (phase 2's acceptance value): never measured.
 
 Known limits:
 
-- Wayland: view only; no control and no global stop shortcut.
+- Wayland: view only; no control and no global stop shortcut. Asking for
+  control there gives a view-only session with the reason.
 - XOR parity: deferred until field loss shows a need.
 - Viewer zero-copy: decoded frames go through the CPU on their way to the
   screen (see risks).
