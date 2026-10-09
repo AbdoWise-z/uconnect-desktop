@@ -34,6 +34,7 @@ struct LaunchOptions {
     bool    autoConnect = false;
     bool    showDebug   = false;
     bool    verbose     = false;
+    bool    forceRelay  = false;
 };
 
 class AppController : public QObject {
@@ -300,6 +301,7 @@ private:
     bool     autoConnect_    = false;
     bool     rememberTopic_  = true;
     bool     verbose_        = false;
+    bool     forceRelay_     = false;  // --force-relay, for this run only
     bool     debugOnStartup_ = false;
     QString  topicLink_;
     QStringList sharedFolders_;

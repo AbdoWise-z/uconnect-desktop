@@ -18,13 +18,16 @@ int main(int argc, char* argv[]) {
     cli.addVersionOption();
     const QCommandLineOption serverOpt({"s", "server"}, "Rendezvous server (host:port).", "address");
     const QCommandLineOption topicOpt({"t", "topic"}, "Protected topic link (uconn://...).", "link");
-    const QCommandLineOption nameOpt({"n", "name"}, "Name shown to other devices.", "name");
+    // Qt's X11 platform takes -name/--name for itself, so Linux needs --device-name.
+    const QCommandLineOption nameOpt({"n", "device-name", "name"}, "Name shown to other devices.", "name");
     const QCommandLineOption profileOpt(
         "profile", "Use a separate settings profile, e.g. to run two instances on one machine.", "name");
     const QCommandLineOption connectOpt("connect", "Connect immediately on start.");
     const QCommandLineOption debugOpt("debug", "Open the debug window on start.");
     const QCommandLineOption verboseOpt("verbose", "Verbose uconnect library logging.");
-    cli.addOptions({serverOpt, topicOpt, nameOpt, profileOpt, connectOpt, debugOpt, verboseOpt});
+    const QCommandLineOption relayOpt("force-relay",
+        "Skip hole punching: connect through the server's relay and send media over TCP.");
+    cli.addOptions({serverOpt, topicOpt, nameOpt, profileOpt, connectOpt, debugOpt, verboseOpt, relayOpt});
     cli.process(app);
 
     if (cli.isSet(profileOpt)) {
@@ -43,6 +46,7 @@ int main(int argc, char* argv[]) {
     options.autoConnect = cli.isSet(connectOpt);
     options.showDebug   = cli.isSet(debugOpt);
     options.verbose     = cli.isSet(verboseOpt);
+    options.forceRelay  = cli.isSet(relayOpt);
 
     // Basic is the style meant to be restyled; the look comes from qml/Theme.qml.
     QQuickStyle::setStyle(QStringLiteral("Basic"));

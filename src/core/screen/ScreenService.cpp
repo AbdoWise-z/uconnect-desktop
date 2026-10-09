@@ -167,9 +167,12 @@ void ScreenService::startHost(const Peer& peer) {
 
 void ScreenService::showViewer(const Peer& peer, const QString& state, const QString& detail, const QVariantMap& extra) {
     QVariantMap update = extra; update["state"] = state; update["detail"] = detail;
-    if (const auto it = viewers_.find(peer); it != viewers_.end()) {
-        it->second.state = state; update["path"] = it->second.path;
-    }
+    const auto it = viewers_.find(peer);
+    // The viewer's side of a session in the activity log: each state once.
+    if (it == viewers_.end() || it->second.state != state)
+        emit activity(QStringLiteral("Watching %1 (%2): %3%4").arg(authorize_(peer).name, camera_ ? "camera" : "screen", state,
+                                                                    detail.isEmpty() ? QString() : QStringLiteral(" - ") + detail));
+    if (it != viewers_.end()) { it->second.state = state; update["path"] = it->second.path; }
     emit viewerChanged(hex(peer), update);
 }
 

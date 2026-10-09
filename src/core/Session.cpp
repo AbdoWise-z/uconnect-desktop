@@ -178,6 +178,7 @@ void Session::start(const Options& options) {
         uconnect::Node::Config cfg;
         cfg.server  = server.toStdString();
         cfg.verbose = options.verbose;
+        cfg.force_relay = options.forceRelay;
         node_       = std::make_unique<uconnect::Node>(cfg);
         node_->run_in_background();
         topic_ = &node_->join(*creds);
@@ -218,7 +219,9 @@ void Session::start(const Options& options) {
     });
     topic_->on_datagram_path([this, gen](uconnect::DevId dev, uconnect::DatagramPath path) {
         QMetaObject::invokeMethod(this, [this, gen, dev, path] {
-            if (gen == generation_ && media_.active(dev))
+            if (gen != generation_) return;
+            log(tr("Media path to %1: %2").arg(shortId(hex(dev)), QString::fromLatin1(uconnect::to_string(path))));
+            if (media_.active(dev))
                 emit mediaPathChanged(hex(dev), QString::fromLatin1(uconnect::to_string(path)));
         }, Qt::QueuedConnection);
     });

@@ -116,6 +116,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     autoConnect_    = settings.value(Key::AutoConnect, false).toBool();
     rememberTopic_  = settings.value(Key::RememberTopic, true).toBool();
     verbose_        = settings.value(Key::Verbose, false).toBool() || options.verbose;
+    forceRelay_     = options.forceRelay;
     debugOnStartup_ = settings.value(Key::DebugOnStartup, false).toBool();
     sharedFolders_  = settings.value(Key::SharedFolders).toStringList();
     readOnlyFolders_ = settings.value(Key::ReadOnly).toStringList();
@@ -508,7 +509,7 @@ bool AppController::debugAvailable() const {
 }
 
 void AppController::connectToTopic() {
-    Session::Options o{serverAddress_, topicLink_, verbose_};
+    Session::Options o{serverAddress_, topicLink_, verbose_, forceRelay_};
     // Show progress immediately; the worker may be busy for a moment.
     status_       = Session::Status::Connecting;
     statusDetail_ = tr("Starting...");

@@ -98,6 +98,10 @@ public:
         QString server;
         QString topicLink;
         bool    verbose = false;
+        // Skip punching and use the fallbacks at once (the server's relay for
+        // connections, TCP for datagrams): for tests, and for networks where
+        // punching is known to fail.
+        bool    forceRelay = false;
     };
 
     explicit Session(QObject* parent = nullptr);

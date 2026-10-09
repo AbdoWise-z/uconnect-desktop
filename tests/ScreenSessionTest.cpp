@@ -102,7 +102,13 @@ private slots:
         }
     }
 
+    void twoRealSessionsSyntheticVideo_data() {
+        QTest::addColumn<bool>("relay");
+        QTest::newRow("punched") << false;
+        QTest::newRow("fallback") << true;  // as when punching fails: relay, datagrams over TCP
+    }
     void twoRealSessionsSyntheticVideo() {
+        QFETCH(bool, relay);
         if (qEnvironmentVariableIsEmpty("UCD_TEST_OPENH264")) QSKIP("Install Cisco OpenH264 for synthetic end-to-end test");
         uconnect::server::RendezvousConfig config; config.port = 0;
         uconnect::server::Rendezvous server(config); QVERIFY(server.open());
@@ -127,6 +133,7 @@ private slots:
         });
         const auto creds = uconnect::TopicCreds::generate_keyed();
         Session::Options options{QString::fromStdString("127.0.0.1:" + std::to_string(server.port())), QString::fromStdString(creds.to_uri())};
+        options.forceRelay = relay;
         host.start(options); viewer.start(options);
         QTRY_VERIFY_WITH_TIMEOUT(proven, 20000);
         QTRY_VERIFY_WITH_TIMEOUT(!hostId.isEmpty() && !viewerId.isEmpty(), 2000);
