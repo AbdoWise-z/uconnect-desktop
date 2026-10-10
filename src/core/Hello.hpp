@@ -39,6 +39,7 @@ enum Service : uint32_t {
     ServiceCamera  = 1u << 1,
     ServiceScreen  = 1u << 2,
     ServiceControl = 1u << 3,
+    ServiceDisplay = 1u << 4,  // can be used as another device's extended display
 };
 
 QStringList serviceNames(uint32_t services);

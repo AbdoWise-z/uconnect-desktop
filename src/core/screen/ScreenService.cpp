@@ -21,21 +21,26 @@ qint64 ScreenService::monotonicMs() {
 }
 
 ScreenService::ScreenService(Send send, Authorize authorize, Open open, Close close, Datagram datagram,
-        QObject* parent, Now now, std::unique_ptr<InputBackend> input, bool camera)
+        QObject* parent, Now now, std::unique_ptr<InputBackend> input, Kind kind)
     : QObject(parent), send_(std::move(send)), authorize_(std::move(authorize)), open_(std::move(open)),
       close_(std::move(close)), datagram_(std::move(datagram)), now_(now ? std::move(now) : monotonicMs),
-      camera_(camera), encoderWorker_(new QObject), decoderWorker_(new QObject), encoder_(std::make_unique<Encoder>()),
+      kind_(kind), camera_(kind == Kind::Camera), display_(kind == Kind::Display),
+      encoderWorker_(new QObject), decoderWorker_(new QObject), encoder_(std::make_unique<Encoder>()),
       input_(input ? std::move(input) : nativeInputBackend()) {
-    if (camera_) {
+    // Camera and display sessions are screen sessions under their own names
+    // on the wire: cam.* / dsp.* messages, their own datagram kinds.
+    if (camera_ || display_) {
+        const QString prefix = camera_ ? QStringLiteral("cam.") : QStringLiteral("dsp.");
         auto wireSend = std::move(send_);
-        send_ = [wireSend](const Peer& peer, QJsonObject msg) {
-            auto type = msg.value("t").toString(); if (type.startsWith("scr.")) type.replace(0, 4, "cam.");
+        send_ = [wireSend, prefix](const Peer& peer, QJsonObject msg) {
+            auto type = msg.value("t").toString(); if (type.startsWith("scr.")) type.replace(0, 4, prefix);
             msg["t"] = type; return wireSend(peer, msg);
         };
+        const bool display = display_;
         auto wireDatagram = std::move(datagram_);
-        datagram_ = [wireDatagram](const Peer& peer, QByteArray packet) {
-            if (packet.isEmpty() || packet[0] != 1) return false;
-            packet[0] = 3; return wireDatagram(peer, packet);
+        datagram_ = [wireDatagram, display](const Peer& peer, QByteArray packet) {
+            if (packet.isEmpty() || packet[0] != 1 && !(display && packet[0] == 2)) return false;
+            packet[0] = char(display ? packet[0] + 3 : 3); return wireDatagram(peer, packet);
         };
     }
     timer_.setParent(this); timer_.setInterval(2); timer_.setTimerType(Qt::PreciseTimer);
@@ -63,7 +68,8 @@ void ScreenService::configure(const ScreenSettings& settings) {
     settings_.controlOffered = controlOffered;
     settings_.maxFps = std::clamp(settings.maxFps, 1, MaxFps);
     settings_.maxWidth = std::clamp(settings.maxWidth, 320, 3840);
-    settings_.maxBitrate = std::clamp(settings.maxBitrate, 150000, 20000000);
+    // Extended displays run between nearby devices and need sharp text.
+    settings_.maxBitrate = std::clamp(settings.maxBitrate, 150000, display_ ? CongestionController::MaxBitrate : 20000000);
     settings_.maxViewers = std::clamp(settings.maxViewers, 1, 8);
     if (gpuChanged) {
         resetNative(); updateQtCapture();
@@ -71,7 +77,8 @@ void ScreenService::configure(const ScreenSettings& settings) {
     }
     settings_.monitor = std::clamp(settings.monitor, 0, std::max(0, int(settings.monitors.size()) - 1));
     while (int(hosts_.size()) > settings_.maxViewers) stop(hosts_.rbegin()->first, "viewer limit reduced");
-    if (!settings_.offered) stopHosting("screen service disabled");
+    // An extended display is not an offered service: DisplayService starts it.
+    if (!settings_.offered && !display_) stopHosting("screen service disabled");
 }
 void ScreenService::setOffered(bool offered) {
     settings_.offered = offered;
@@ -83,12 +90,48 @@ void ScreenService::setControlOffered(bool offered) {
 }
 bool ScreenService::controlAllowed(const Peer& peer) const {
     const auto access = authorize_(peer);
-    return !camera_ && settings_.controlOffered && access.trusted && access.permissions.contains(perm::ControlInput);
+    return !camera_ && !display_ && settings_.controlOffered && access.trusted && access.permissions.contains(perm::ControlInput);
 }
 
 bool ScreenService::allowed(const Peer& peer) const {
     const auto access = authorize_(peer);
+    // An extended display is sent only to a device this one trusts; the
+    // receiving side checks its own permission (viewerAllowed).
+    if (display_) return access.trusted;
     return settings_.offered && access.trusted && access.permissions.contains(camera_ ? perm::CameraView : perm::ScreenView);
+}
+
+bool ScreenService::viewerAllowed(const Peer& peer) const {
+    const auto access = authorize_(peer);
+    if (display_) return access.verified && access.trusted && access.permissions.contains(perm::DisplayShow);
+    return access.verified;
+}
+
+void ScreenService::failMedia(const Peer& peer, const QString& detail) {
+    const auto it = hosts_.find(peer);
+    if (it == hosts_.end()) return;
+    if (it->second.live) { auto failure = message("scr.error", it->second.token); failure["detail"] = detail; send_(peer, failure); }
+    stop(peer, detail);
+}
+
+bool ScreenService::startDisplayHost(const Peer& peer, quint32 request, int width, int fps) {
+    if (!display_ || !request || hosts_.contains(peer) || settings_.monitors.isEmpty() || !allowed(peer)) return false;
+    Host host; host.request = request; host.expires = now_() + 30000;
+    host.width = std::clamp(width, 320, 3840); host.fps = std::clamp(fps, 1, MaxFps);
+    hosts_.emplace(peer, std::move(host)); timer_.start();
+    startHost(peer);
+    return hosts_.contains(peer);
+}
+
+void ScreenService::expectDisplay(const Peer& peer, quint32 request, int maxWidth, int fps) {
+    if (!display_ || !request) return;
+    if (viewers_.contains(peer)) stop(peer);
+    Viewer viewer;
+    viewer.request = request;
+    viewer.width = std::clamp(maxWidth, 320, 3840); viewer.fps = std::clamp(fps, 1, MaxFps);
+    viewer.expires = now_() + 15000; viewer.reportAt = now_();
+    viewers_.emplace(peer, std::move(viewer)); timer_.start();
+    showViewer(peer, "requesting", {}, {{"pictured", false}, {"stalled", false}, {"hostStatus", QString()}});
 }
 
 void ScreenService::fail(const Peer& peer, quint32 request, const QString& code) {
@@ -141,13 +184,13 @@ void ScreenService::consent(const QString& peerId, quint32 requestId, bool allow
 
 void ScreenService::startHost(const Peer& peer) {
     auto& host = hosts_.at(peer);
-    if (!allowed(peer)) { fail(peer, host.request, "forbidden"); hosts_.erase(peer); return; }
+    if (!allowed(peer)) { fail(peer, host.request, "forbidden"); hosts_.erase(peer); emit hostEnded(hex(peer), "forbidden"); return; }
     host.token = quint16(QRandomGenerator::system()->bounded(1u, 65536u));
     host.live = true; host.lastReport = now_(); host.startedAt = now_();
     host.monitor = settings_.monitor;
     for (const auto& [other, existing] : hosts_) if (other != peer && existing.live) { host.monitor = existing.monitor; break; }
-    host.congestion.reset(host.path, host.fps, host.width, settings_.maxBitrate);
-    if (!open_(peer)) { fail(peer, host.request, "transport"); hosts_.erase(peer); return; }
+    host.congestion.reset(host.path, host.fps, host.width, settings_.maxBitrate, display_ ? DisplayStartBitrate : 0);
+    if (!open_(peer)) { fail(peer, host.request, "transport"); hosts_.erase(peer); emit hostEnded(hex(peer), "transport"); return; }
     emit consentClosed(hex(peer), host.request);
     host.control = host.wantControl && controlAllowed(peer) && input_.available().isEmpty();
     const auto bounds = settings_.monitors.value(host.monitor).toMap();
@@ -163,7 +206,7 @@ void ScreenService::startHost(const Peer& peer) {
         emit captureChanged(true, host.monitor);
     updateQtCapture();
     showHosting();
-    emit activity(QStringLiteral("Screen sharing started with %1").arg(authorize_(peer).name));
+    emit activity(QStringLiteral("%1 started with %2").arg(display_ ? "Extended display" : "Screen sharing", authorize_(peer).name));
 }
 
 void ScreenService::showViewer(const Peer& peer, const QString& state, const QString& detail, const QVariantMap& extra) {
@@ -171,7 +214,7 @@ void ScreenService::showViewer(const Peer& peer, const QString& state, const QSt
     const auto it = viewers_.find(peer);
     // The viewer's side of a session in the activity log: each state once.
     if (it == viewers_.end() || it->second.state != state)
-        emit activity(QStringLiteral("Watching %1 (%2): %3%4").arg(authorize_(peer).name, camera_ ? "camera" : "screen", state,
+        emit activity(QStringLiteral("Watching %1 (%2): %3%4").arg(authorize_(peer).name, camera_ ? "camera" : display_ ? "extended display" : "screen", state,
                                                                     detail.isEmpty() ? QString() : QStringLiteral(" - ") + detail));
     if (it != viewers_.end()) { it->second.state = state; update["path"] = it->second.path; }
     emit viewerChanged(hex(peer), update);
@@ -198,7 +241,8 @@ void ScreenService::stop(const Peer& peer, const QString& reason) {
         if (std::none_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.live; })) {
             resetNative(); lastPipeline_.clear(); updateQtCapture(); emit captureChanged(false, settings_.monitor);
         }
-        emit activity(QStringLiteral("Screen sharing stopped: %1").arg(reason));
+        emit activity(QStringLiteral("%1 stopped: %2").arg(display_ ? "Extended display" : "Screen sharing", reason));
+        emit hostEnded(hex(peer), reason);
     }
     const auto viewer = viewers_.find(peer);
     if (viewer != viewers_.end()) {
@@ -216,14 +260,16 @@ void ScreenService::captureFailed(const QString& error) {
 }
 
 void ScreenService::resetNative() {
-    ++generation_; nativeActive_ = nativeWorked_ = false; nativeDisabled_ = camera_ || !settings_.gpuCapture;
+    // An extended display is captured natively only: Qt's capture is not
+    // set up for the virtual monitor.
+    ++generation_; nativeActive_ = nativeWorked_ = false; nativeDisabled_ = camera_ || (!display_ && !settings_.gpuCapture);
     nativeRetryAt_ = nativeAttemptAt_ = 0; nativeFailures_ = 0;
     QMetaObject::invokeMethod(encoderWorker_, [this] { encoder_->reset(); desktop_.reset(); });
 }
 
 void ScreenService::updateQtCapture() {
     const bool watched = std::any_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.live; });
-    const bool wanted = watched && nativeDisabled_;
+    const bool wanted = watched && nativeDisabled_ && !display_;
     if (wanted != qtWanted_) { qtWanted_ = wanted; emit qtCaptureWanted(wanted); }
 }
 
@@ -239,7 +285,7 @@ void ScreenService::reset() {
 void ScreenService::policyChanged() {
     QVector<Peer> revoked;
     for (const auto& [peer, host] : hosts_) if (!allowed(peer)) revoked.push_back(peer);
-    for (const auto& [peer, viewer] : viewers_) if (!authorize_(peer).verified) revoked.push_back(peer);
+    for (const auto& [peer, viewer] : viewers_) if (!viewerAllowed(peer)) revoked.push_back(peer);
     for (const auto& peer : revoked) stop(peer, "permission withdrawn");
     QVector<Peer> controlRevoked;
     for (const auto& [peer, host] : hosts_) if (host.control && !controlAllowed(peer)) controlRevoked.push_back(peer);
@@ -248,12 +294,17 @@ void ScreenService::policyChanged() {
 
 bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
     QJsonObject msg = wire;
-    if (camera_) {
-        auto type = msg.value("t").toString(); if (!type.startsWith("cam.")) return false;
+    if (camera_ || display_) {
+        auto type = msg.value("t").toString(); if (!type.startsWith(camera_ ? "cam." : "dsp.")) return false;
         type.replace(0, 4, "scr."); msg["t"] = type;
     }
     const auto type = msg.value("t").toString();
     if (!type.startsWith("scr.") && !type.startsWith("in.")) return false;
+    // An extended display's handshake is DisplayService's, and it carries no
+    // input or source switching.
+    if (display_ && (type == "scr.request" || type == "scr.wait" || type == "scr.err" || type == "scr.accept" || type.startsWith("in.")))
+        return false;
+    if (display_ && (type == "scr.monitor" || type == "scr.control")) return true;
     const double requestValue = msg.value("request").toDouble();
     const quint32 requestId = requestValue >= 1 && requestValue <= 4294967295. && std::floor(requestValue) == requestValue
         ? quint32(requestValue) : 0;
@@ -299,7 +350,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             showViewer(peer, code == "busy" ? "busy" : "denied", detail);
         } else {
             const int token = msg.value("session").toInt();
-            if (token < 1 || token > 65535 || msg.value("codec") != "h264" || !authorize_(peer).verified) return true;
+            if (token < 1 || token > 65535 || msg.value("codec") != "h264" || !viewerAllowed(peer)) return true;
             viewer->second.token = quint16(token); viewer->second.expires = now_() + 10000;
             viewer->second.liveAt = now_();
             viewer->second.fps = std::clamp(msg.value("fps").toInt(30), 1, MaxFps);
@@ -398,10 +449,13 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
 
 void ScreenService::receive(const Peer& peer, const QByteArray& wire) {
     QByteArray packet = wire;
-    if (packet.isEmpty() || (camera_ ? packet[0] != 3 : packet[0] != 1 && packet[0] != 2)) return;
-    if (camera_) packet[0] = 1;
+    if (packet.isEmpty()) return;
+    // Back to the screen kinds: 1 video, 2 cursor.
+    if (camera_) { if (packet[0] != 3) return; packet[0] = 1; }
+    else if (display_) { if (packet[0] != 4 && packet[0] != 5) return; packet[0] = char(packet[0] - 3); }
+    else if (packet[0] != 1 && packet[0] != 2) return;
     const auto it = viewers_.find(peer);
-    if (it == viewers_.end() || !it->second.token || !authorize_(peer).verified) return;
+    if (it == viewers_.end() || !it->second.token || !viewerAllowed(peer)) return;
     auto& viewer = it->second;
     if (!packet.isEmpty() && packet[0] == 2) {
         const auto cursor = parseCursor(packet);
@@ -468,7 +522,14 @@ void ScreenService::decodeNext(const Peer& peer) {
 
 void ScreenService::pathChanged(const Peer& peer, const QString& path) {
     if (auto it = hosts_.find(peer); it != hosts_.end()) {
-        it->second.path = path; it->second.congestion.reset(path, it->second.fps, it->second.width, settings_.maxBitrate);
+        it->second.path = path;
+        it->second.congestion.reset(path, it->second.fps, it->second.width, settings_.maxBitrate, display_ ? DisplayStartBitrate : 0);
+        // An extended display needs the devices near each other: through the
+        // relay or over TCP it would lag too far behind the mouse.
+        if (display_ && it->second.live && path != "direct" && path != "opening") {
+            failMedia(peer, QStringLiteral("An extended display needs both devices on the same network (the connection is %1).").arg(path));
+            return;
+        }
     }
     if (auto it = viewers_.find(peer); it != viewers_.end()) {
         it->second.path = path; showViewer(peer, it->second.state);
@@ -538,7 +599,10 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
                     if (!nativeFailures_ && !nativeError.isEmpty()) emit activity(nativeError);
                     // Only a path that worked is tried again (it was lost to a display
                     // change, a UAC prompt, the lock screen): each try pauses Qt's capture.
-                    nativeRetryAt_ = nativeWorked_ ? now_() + std::min<qint64>(60000, qint64(2000) << std::min(nativeFailures_, 5)) : 0;
+                    // An extended display has no other way to be captured, and a
+                    // monitor that just arrived may take a moment to duplicate.
+                    nativeRetryAt_ = display_ ? now_() + 500
+                        : nativeWorked_ ? now_() + std::min<qint64>(60000, qint64(2000) << std::min(nativeFailures_, 5)) : 0;
                     ++nativeFailures_;
                 }
                 nativeDisabled_ = !gpu.active; nativeActive_ = gpu.active;
@@ -577,7 +641,7 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
 void ScreenService::logStats(qint64 now) {
     const qint64 span = std::max<qint64>(1, now - stats_.at);
     const auto rate = [&](double n) { return QString::number(n * 1000. / span, 'f', 1); };
-    QString line = QStringLiteral("[stats%1]").arg(camera_ ? " camera" : "");
+    QString line = QStringLiteral("[stats%1]").arg(camera_ ? " camera" : display_ ? " display" : "");
     for (const auto& [peer, host] : hosts_) if (host.live) {
         line += QStringLiteral(" host: offered %1/s (busy %2/s), throttled %3/s, encodes %4/s at %5 ms, frames %6/s, queued %7/s, refused %8/s,"
                                " sender drops %9 | target %10 fps %11 kbit/s %12 px | %13")
@@ -614,7 +678,12 @@ void ScreenService::tick() {
     if (!controlled && input_.pressedCount() && now - lastReleaseRetry_ >= 100) {
         lastReleaseRetry_ = now; input_.release();
     }
+    QVector<std::pair<Peer, QString>> displayFailures;
     for (auto& [peer, host] : hosts_) {
+        if (display_ && host.live && host.path == "opening" && now - host.startedAt > 5000)
+            displayFailures.push_back({peer, QStringLiteral("No direct connection to the other device: an extended display needs both devices on the same network.")});
+        else if (display_ && host.live && !host.framesSent && now - host.startedAt > 15000)
+            displayFailures.push_back({peer, QStringLiteral("The extended display could not be captured.")});
         if (!host.live && now >= host.expires) expired.push_back(peer);
         else if (host.live) {
             if (host.controlRequest && now >= host.controlExpires) setControl(peer, false, host.controlRequest, "control request timed out");
@@ -655,6 +724,7 @@ void ScreenService::tick() {
             viewer.bytes = 0; viewer.decoded = 0; viewer.reportAt = now;
         }
     }
+    for (const auto& [peer, detail] : displayFailures) { failMedia(peer, detail); expired.removeAll(peer); }
     for (const auto& peer : expired) stop(peer, "request or feedback timed out");
     if (hosts_.empty() && viewers_.empty() && !input_.pressedCount()) timer_.stop();
 }
@@ -692,7 +762,7 @@ void ScreenService::requestHostControl(const Peer& peer, quint32 request) {
     emit consentRequested(hex(peer), request, {{"name", access.name}, {"fingerprint", access.fingerprint}, {"control", true}, {"controlOnly", true}});
 }
 void ScreenService::requestControl(const Peer& peer, bool on) {
-    if (camera_) return;
+    if (camera_ || display_) return;
     const auto it = viewers_.find(peer); if (it == viewers_.end() || !it->second.token) return;
     auto& viewer = it->second;
     if (viewer.controlRequest && on) return;
@@ -706,7 +776,7 @@ void ScreenService::stopControl() {
     for (const auto& [peer, host] : hosts_) if (host.control || host.controlRequest) setControl(peer, false);
 }
 void ScreenService::sendInput(const Peer& peer, QJsonObject msg) {
-    if (camera_) return;
+    if (camera_ || display_) return;
     const auto it = viewers_.find(peer);
     if (it == viewers_.end() || !it->second.token || !it->second.control || !authorize_(peer).verified) return;
     if (!msg.value("t").toString().startsWith("in.")) return;

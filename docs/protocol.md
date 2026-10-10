@@ -5,7 +5,7 @@ repository and the separately maintained Flutter mobile app. An app that
 follows this document can talk to any other, whatever language it is
 written in.
 
-Revision: **storage 1.3, sync 1.0, screen/camera 1.0** (2026-10). Changes are listed at the end.
+Revision: **storage 1.3, sync 1.0, screen/camera 1.0, display 1.0** (2026-10). Changes are listed at the end.
 
 The words MUST, SHOULD and MAY are used as in RFC 2119.
 
@@ -57,7 +57,8 @@ As soon as a session with a peer is up, each side sends `hello`, `id` and
 
 - `name`: what the device is called. Receivers SHOULD cut it to 64 characters.
 - `os`: a short platform name, at most 32 characters.
-- `svc`: the services the device offers: `storage`, `camera`, `screen`, `control`.
+- `svc`: the services the device offers: `storage`, `camera`, `screen`, `control`,
+  `display` (it can be used as another device's extended display, 7.6).
 
 Everything in it is the peer's own claim. Show it as plain text, never as markup.
 
@@ -111,7 +112,8 @@ peer without a verified key gets the default set.
 | `storage.read` | `fs.read` |
 | `storage.upload` | `fs.write`, `fs.mkdir`, `fs.copy` |
 | `storage.write` | `fs.rename`, `fs.delete`, `fs.move`, and `fs.write` with `"replace":true` |
-| `camera.view`, `screen.view`, `control.input` | reserved; those services are not specified yet |
+| `camera.view`, `screen.view`, `screen.direct`, `control.input`, `control.direct` | screen, camera and control sessions (section 7) |
+| `display.show`, `display.direct` | extended display requests, and accepting them without asking (7.6) |
 
 A saved grant of `storage.download`, from an earlier version, means `storage.read`.
 
@@ -604,8 +606,8 @@ separate from reliable message kinds. A channel is delivered to the screen
 service only while a consented session is active. A media channel needs a
 proven identity; sharing additionally needs the host's trust (7.3).
 `screen.view`, `screen.direct`, `control.input`, `control.direct`, and
-`camera.view` are trusted-device grants, never default permissions. Datagram kinds are separate from the reliable envelope in section
-2: 1 = screen video, 2 = screen cursor, 3 = camera video.
+`camera.view`, `display.show` and `display.direct` are trusted-device grants, never default permissions. Datagram kinds are separate from the reliable envelope in section
+2: 1 = screen video, 2 = screen cursor, 3 = camera video, 4 = extended display video, 5 = extended display cursor.
 
 ### 7.1 Video fragments
 
@@ -773,6 +775,59 @@ the host keymap. Wayland control is unsupported. System-reserved shortcuts
 may be handled locally before Qt sees them. File transfer into the remote
 desktop and clipboard synchronization are outside this protocol version.
 
+### 7.6 Extended display
+
+A *host* asks a *display device* to act as one of its monitors. The host
+creates a virtual monitor of the agreed mode, captures it like any screen
+and sends it; the display device shows it, normally full screen. The
+handshake runs the other way round from 7.3: the sending side asks.
+
+**Who may ask.** The host asks only devices it trusts. The display device
+offers `display` in `hello`, and answers `forbidden` unless the host has
+proven a trusted identity holding `display.show`. Without `display.direct` it
+asks its user each time; remembering approval grants `display.direct`.
+
+| type | direction | fields / meaning |
+|---|---|---|
+| `dsp.request` | host → display | nonzero u32 `request`; `mode`: `"match"` (the display device's screen) or `{width, height, fps}`; `codecs:["h264"]` |
+| `dsp.wait` | display → host | `request`; the display device is asking its user |
+| `dsp.err` | either | `request`, `code` (`forbidden`, `busy`, `codec`, `denied`, `driver`, `transport`), optional human-readable `detail` |
+| `dsp.accept` | display → host | `request`; `screen {width, height, fps, dpi}`, the screen it will be shown on, in pixels; `maxWidth`, `maxFps`, what it decodes |
+| `dsp.stop` | either | before the media session starts: `request`; afterwards as `scr.stop` |
+
+Then the host starts a screen session (7.1-7.3, 7.5) under `dsp.*` names:
+`dsp.started` (matching `request`), `dsp.keyframe`, `dsp.nack`,
+`dsp.report`, `dsp.cursor`, `dsp.pipeline`, `dsp.status`, `dsp.error`,
+`dsp.stop`, with video on datagram kind 4 and cursor positions on kind 5.
+There is no input, no `dsp.monitor` and no `dsp.control` in this version.
+
+**Mode.** The host takes the requested mode, or for `"match"` the display
+device's `screen`, then keeps it within what it can encode (at most 3840
+pixels wide and 2400 high, shape kept), what the display device decodes,
+24 Hz to `maxFps`, and H.264 level 5.2 (2,073,600 macroblocks a second).
+`dsp.started` carries the resulting `width` and `fps`. A different mode is a
+new session.
+
+**Nearby only.** The media channel opens without a fallback: the session
+needs direct UDP. If the path is relay, TCP or failed, or not direct 5 s
+after the session starts, the host sends `dsp.error` and stops.
+
+**Timing.** The display device's prompt denies after 30 s; the host gives up
+on an unanswered request after 35 s. Creating the monitor takes up to a few
+seconds; a display device waits 15 s for `dsp.started` after accepting. A
+host that captures nothing for 15 s stops with `dsp.error`. Other timeouts
+are those of 7.2 and 7.3.
+
+**The monitor never outlives the session.** Every end (either side's stop,
+disconnect, the 5 s report timeout, the path, withdrawn trust, the app
+quitting) removes the virtual monitor. Hosts must also guarantee this when
+the app crashes or hangs, through the platform: on Windows the uConnect
+virtual display driver removes a monitor when its owner's handle closes or
+goes silent for 3 s; on macOS the system removes it with the process.
+
+One extended display at a time on each side in this version: a second
+request gets `busy`.
+
 ## Changes
 
 | revision | change |
@@ -783,6 +838,7 @@ desktop and clipboard synchronization are outside this protocol version.
 | storage 1.3 | `sha256` on `fs.read.end` and `fs.write.end`; `fs.read` `offset`; codes `corrupt`, `too_large`, `no_space`, `read_only`; `readOnly` in listings |
 | screen/camera 1.0 | consented screen/camera sessions, H.264 datagrams, feedback/recovery, trusted control, cursor, shared sources (section 7) |
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
+| display 1.0 | extended display (7.6): `display` service, `display.show` / `display.direct`, `dsp.request`, `dsp.wait`, `dsp.err`, `dsp.accept`, the screen session under `dsp.*`, datagram kinds 4 and 5 |
 
 Every change so far only adds messages, fields and codes, so an older peer
 ignores what it does not know. A request type that a peer does not

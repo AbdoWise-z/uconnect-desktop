@@ -21,6 +21,8 @@ inline const QString ScreenView      = QStringLiteral("screen.view");
 inline const QString ScreenDirect    = QStringLiteral("screen.direct");
 inline const QString ControlInput    = QStringLiteral("control.input");
 inline const QString ControlDirect   = QStringLiteral("control.direct");
+inline const QString DisplayShow     = QStringLiteral("display.show");
+inline const QString DisplayDirect   = QStringLiteral("display.direct");
 }  // namespace perm
 
 struct PermissionInfo {

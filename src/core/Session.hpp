@@ -30,6 +30,7 @@
 #include "core/screen/DatagramChannel.hpp"
 #ifdef UCD_HAS_SCREEN
 #include "core/screen/ScreenService.hpp"
+#include "core/display/DisplayService.hpp"
 #endif
 #include <atomic>
 #include <QByteArray>
@@ -117,12 +118,17 @@ public:
     void refreshNow();
     void requestServerStats();
     void requestTopicListing();
-    bool openMedia(const uconnect::DevId& peer);
+    // Datagram fallback: TCP for screen and camera; extended displays use
+    // none, since they only run between nearby devices.
+    bool openMedia(const uconnect::DevId& peer, uconnect::DatagramFallback fallback = uconnect::DatagramFallback::Tcp);
     void closeMedia(const uconnect::DevId& peer);
     bool sendMedia(const uconnect::DevId& peer, std::span<const uint8_t> bytes);
 #ifdef UCD_HAS_SCREEN
     screen::ScreenService* screen() const { return screen_; }
     screen::ScreenService* camera() const { return camera_; }
+    // Extended displays: the media session, and the handshake and monitors.
+    screen::ScreenService* display() const { return display_; }
+    display::DisplayService* displays() const { return displays_; }
 #endif
 
     // Storage: this device's shared folders, and requests to other devices'.
@@ -192,6 +198,9 @@ private:
     void          onIdentity(const uconnect::DevId& dev, const QJsonObject& message);
     void          onGrants(const uconnect::DevId& dev, const QJsonObject& message);
     PermissionSet permissionsFor(const uconnect::DevId& dev) const;
+#ifdef UCD_HAS_SCREEN
+    screen::PeerAccess accessFor(const uconnect::DevId& dev) const;
+#endif
 
     std::unique_ptr<uconnect::Node> node_;
     uconnect::Topic*                topic_ = nullptr;
@@ -222,6 +231,8 @@ private:
 #ifdef UCD_HAS_SCREEN
     screen::ScreenService* screen_ = nullptr;
     screen::ScreenService* camera_ = nullptr;
+    screen::ScreenService* display_ = nullptr;
+    display::DisplayService* displays_ = nullptr;
 #endif
 };
 

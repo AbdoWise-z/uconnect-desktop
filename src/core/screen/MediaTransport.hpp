@@ -120,12 +120,15 @@ private:
 // the frame rate and width.
 class CongestionController {
 public:
-    void reset(const QString& path, int maxFps = 30, int maxWidth = 1920, int maxBitrate = 8000000);
+    // `startBitrate` replaces the default start on a direct path (extended
+    // displays start high: they only run between nearby devices).
+    void reset(const QString& path, int maxFps = 30, int maxWidth = 1920, int maxBitrate = 8000000, int startBitrate = 0);
     void update(const Feedback& report);
     int bitrate() const { return bitrate_; }
     int fps() const { return fps_; }
     int width() const { return width_; }
     static constexpr int MinBitrate = 300000;
+    static constexpr int MaxBitrate = 100000000;
 private:
     int bitrate_ = 4000000, cap_ = 8000000, fps_ = 30, maxFps_ = 30;
     int width_ = 1920, maxWidth_ = 1920, bad_ = 0, good_ = 0, slowDecode_ = 0, cooldown_ = 0;

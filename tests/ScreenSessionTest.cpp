@@ -167,6 +167,73 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(hostState.back()[0].toList().isEmpty(), 3000);
         host.stop(); viewer.stop();
     }
+
+    // An extended display over two real Sessions: the reversed handshake, a
+    // (fake) virtual monitor, video on datagram kinds 4 and 5, and the monitor
+    // removed when the display device stops.
+    void twoRealSessionsExtendedDisplay() {
+        if (qEnvironmentVariableIsEmpty("UCD_TEST_OPENH264")) QSKIP("Install Cisco OpenH264 for synthetic end-to-end test");
+        static std::atomic_int monitors{0};
+        struct Fake final : display::VirtualDisplay {
+            ~Fake() override { destroy(); }
+            bool create(const QByteArray&, const QString&, const display::Mode& m, QString*) override { mode = m; made = true; ++monitors; return true; }
+            bool setMode(const display::Mode& m, QString*) override { mode = m; return true; }
+            void destroy() override { if (made) { made = false; --monitors; } }
+            void keepAlive() override {}
+            QString captureId() const override { return "fake"; }
+            QRect geometry() const override { return {0, 0, mode.width, mode.height}; }
+            QSize pixels() const override { return {mode.width, mode.height}; }
+            display::Mode mode; bool made = false;
+        };
+        uconnect::server::RendezvousConfig config; config.port = 0;
+        uconnect::server::Rendezvous server(config); QVERIFY(server.open());
+        std::jthread serverThread([&](std::stop_token stop) { while (!stop.stop_requested()) server.poll_once(5ms); });
+        Session host, shower;
+        const auto ih = Identity::generate(), is = Identity::generate();
+        host.setIdentity(ih); shower.setIdentity(is);
+        AccessPolicy hp, sp;
+        hp.trusted.insert(keyToHex(is.publicKey()), {});  // the host asks only devices it trusts
+        sp.trusted.insert(keyToHex(ih.publicKey()), {perm::DisplayShow, perm::DisplayDirect});
+        host.setAccessPolicy(hp); shower.setAccessPolicy(sp);
+        host.setLocalHello({"Host", "test", 0}); shower.setLocalHello({"Tablet", "test", ServiceDisplay});
+        host.displays()->setBackend([] { return std::make_unique<Fake>(); }, [] { return display::Status{display::Availability::Ready, {}}; });
+        host.displays()->setNativeCapture(false);
+        ScreenSettings codec; codec.ciscoLibrary = qEnvironmentVariable("UCD_TEST_OPENH264");
+        host.displays()->setCodecSettings(codec);
+        shower.displays()->setLocalScreens({QVariantMap{{"width", 640}, {"height", 480}, {"fps", 30}, {"dpi", 96}}});
+        QString hostId, showerId;
+        connect(&host, &Session::snapshotChanged, this, [&](const auto& s) { if (!s.selfId.isEmpty()) hostId = s.selfId; });
+        connect(&shower, &Session::snapshotChanged, this, [&](const auto& s) { if (!s.selfId.isEmpty()) showerId = s.selfId; });
+        int proven = 0;
+        connect(&host, &Session::peersChanged, this, [&](const auto& peers) {
+            for (const auto& p : peers) if (p.identityState == "verified" && p.stateCode == 3) proven |= 1;
+        });
+        connect(&shower, &Session::peersChanged, this, [&](const auto& peers) {
+            for (const auto& p : peers) if (p.identityState == "verified" && p.stateCode == 3) proven |= 2;
+        });
+        const auto creds = uconnect::TopicCreds::generate_keyed();
+        Session::Options options{QString::fromStdString("127.0.0.1:" + std::to_string(server.port())), QString::fromStdString(creds.to_uri())};
+        host.start(options); shower.start(options);
+        QTRY_VERIFY_WITH_TIMEOUT(proven == 3, 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(!hostId.isEmpty() && !showerId.isEmpty(), 2000);
+        const auto showerDev = *uconnect::from_hex<uconnect::kDevIdLen>(showerId.toStdString());
+        const auto hostDev = *uconnect::from_hex<uconnect::kDevIdLen>(hostId.toStdString());
+        QSignalSpy hostState(host.displays(), &display::DisplayService::hostStateChanged);
+        QSignalSpy shown(shower.displays(), &display::DisplayService::showRequested);
+        QSignalSpy images(shower.display(), &ScreenService::frameReady);
+        host.displays()->offer(showerDev, {});
+        QTRY_VERIFY_WITH_TIMEOUT(!hostState.isEmpty() && hostState.back()[1].toMap().value("state") == "live", 5000);
+        QCOMPARE(shown.size(), 1);
+        QCOMPARE(monitors.load(), 1);
+        QImage synthetic(640, 480, QImage::Format_RGBA8888); synthetic.fill(QColor(200, 60, 30));
+        for (int i = 0; i < 90 && images.isEmpty(); ++i) { host.display()->submitImage(synthetic); QTest::qWait(35); }
+        QVERIFY2(!images.isEmpty(), "No extended display frame crossed the real Session datagram channel");
+        QCOMPARE(qvariant_cast<QVideoFrame>(images.back()[1]).size(), synthetic.size());
+        shower.displays()->stop(hostDev);
+        QTRY_VERIFY_WITH_TIMEOUT(hostState.back()[1].toMap().value("state") == "ended", 3000);
+        QCOMPARE(monitors.load(), 0);
+        host.stop(); shower.stop();
+    }
 };
 QTEST_GUILESS_MAIN(ScreenSessionTest)
 #include "ScreenSessionTest.moc"

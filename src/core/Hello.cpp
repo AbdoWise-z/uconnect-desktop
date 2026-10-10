@@ -12,11 +12,12 @@
 namespace ucd {
 namespace {
 
-constexpr std::array<std::pair<Service, const char*>, 4> kServiceNames{{
+constexpr std::array<std::pair<Service, const char*>, 5> kServiceNames{{
     {ServiceStorage, "storage"},
     {ServiceCamera, "camera"},
     {ServiceScreen, "screen"},
     {ServiceControl, "control"},
+    {ServiceDisplay, "display"},
 }};
 
 constexpr qsizetype kMaxNameLength = 64;

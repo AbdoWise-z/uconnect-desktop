@@ -31,8 +31,18 @@ struct ScreenSettings {
     QVariantList monitors;
 };
 
+// What a service instance streams. Each has its own message prefix and
+// datagram kinds: screen scr.* (1 video, 2 cursor), camera cam.* (3), and
+// extended display dsp.* (4 video, 5 cursor).
+enum class Kind { Screen, Camera, Display };
+
 // Session-worker state machine. Capture and UI use signals; codec work has
 // dedicated threads with bounded submissions. The transport only moves bytes.
+//
+// An extended display reuses the screen session with the handshake reversed:
+// DisplayService agrees on the session first, then starts the sending side
+// with startDisplayHost() (its source is the virtual monitor, configured as
+// the only monitor) and the showing side with expectDisplay().
 class ScreenService : public QObject {
     Q_OBJECT
 public:
@@ -44,7 +54,17 @@ public:
     using Datagram = std::function<bool(const Peer&, const QByteArray&)>;
     using Now = std::function<qint64()>;
     ScreenService(Send send, Authorize authorize, Open open, Close close, Datagram datagram,
-        QObject* parent = nullptr, Now now = {}, std::unique_ptr<InputBackend> input = {}, bool camera = false);
+        QObject* parent = nullptr, Now now = {}, std::unique_ptr<InputBackend> input = {}, Kind kind = Kind::Screen);
+    Kind kind() const { return kind_; }
+    // Extended display, sending side: the session `request` was agreed and
+    // the virtual monitor is settings.monitors[0]. Streams it at `width`
+    // (its pixel width) and `fps`.
+    bool startDisplayHost(const Peer& peer, quint32 request, int width, int fps);
+    // Extended display, showing side: wait for the sender's started message
+    // for `request`.
+    void expectDisplay(const Peer& peer, quint32 request, int maxWidth, int fps);
+    // Extended displays start at this bitrate on a direct path.
+    static constexpr int DisplayStartBitrate = 20000000;
     ~ScreenService() override;
     void configure(const ScreenSettings& settings);
     void setOffered(bool offered);
@@ -79,6 +99,8 @@ signals:
     // A decoded picture, in its YUV layout: the video sink converts it on the GPU.
     void frameReady(const QString& peer, const QVideoFrame& frame);
     void hostingChanged(const QVariantList& viewers);
+    // A sending session (live or still asking) ended, for whatever reason.
+    void hostEnded(const QString& peer, const QString& reason);
     void captureChanged(bool active, int monitor);
     void activity(const QString& line);
     // Whether Qt's capture should run. The native path (desktop duplication)
@@ -127,6 +149,10 @@ private:
     };
     void startHost(const Peer& peer);
     bool allowed(const Peer& peer) const;
+    // May keep showing what `peer` sends: a proven identity, and for an
+    // extended display also trust and the display permission.
+    bool viewerAllowed(const Peer& peer) const;
+    void failMedia(const Peer& peer, const QString& detail);
     bool controlAllowed(const Peer& peer) const;
     void setControl(const Peer& peer, bool on, quint32 request = 0, const QString& detail = {});
     void requestHostControl(const Peer& peer, quint32 request);
@@ -142,7 +168,8 @@ private:
     Datagram datagram_;
     Now now_;
     ScreenSettings settings_;
-    bool camera_ = false;
+    Kind kind_ = Kind::Screen;
+    bool camera_ = false, display_ = false;
     std::map<Peer, Host> hosts_;
     std::map<Peer, Viewer> viewers_;
     quint32 nextRequest_ = 1, nextFrame_ = 0;

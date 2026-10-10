@@ -5,8 +5,15 @@
 #include <QtQml>
 
 #include "app/AppController.hpp"
+#ifdef UCD_HAS_SCREEN
+#include "core/display/DriverSetup.hpp"
+#endif
 
 int main(int argc, char* argv[]) {
+#ifdef UCD_HAS_SCREEN
+    // Run elevated by the app itself to install or remove the display driver.
+    if (const int code = ucd::display::handleDriverCommand(argc, argv); code >= 0) return code;
+#endif
     QGuiApplication app(argc, argv);
     QGuiApplication::setOrganizationName(QStringLiteral("uConnect"));
     QGuiApplication::setApplicationName(QStringLiteral("uConnect Desktop"));

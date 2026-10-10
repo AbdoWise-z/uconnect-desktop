@@ -64,6 +64,22 @@ const std::vector<PermissionInfo>& permissionTable() {
          false,
 #endif
          true},
+        {perm::DisplayShow, "display", tr("Use as display"),
+         tr("Ask to use this device's screen as an extra monitor."),
+#ifdef UCD_HAS_SCREEN
+         true,
+#else
+         false,
+#endif
+         true},
+        {perm::DisplayDirect, "display", tr("Without asking"),
+         tr("Use this device's screen as a monitor without a consent prompt. Trusted devices only."),
+#ifdef UCD_HAS_SCREEN
+         true,
+#else
+         false,
+#endif
+         true},
     };
     return table;
 }

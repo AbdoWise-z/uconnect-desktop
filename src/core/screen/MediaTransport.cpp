@@ -218,11 +218,13 @@ Feedback Reassembler::report(double decodeMs) {
     return result;
 }
 
-void CongestionController::reset(const QString& path, int maxFps, int maxWidth, int maxBitrate) {
-    cap_ = std::clamp(maxBitrate, MinBitrate, 20000000);
+void CongestionController::reset(const QString& path, int maxFps, int maxWidth, int maxBitrate, int startBitrate) {
+    cap_ = std::clamp(maxBitrate, MinBitrate, MaxBitrate);
     maxFps_ = fps_ = std::clamp(maxFps, 1, MaxFps);
     maxWidth_ = width_ = std::clamp(maxWidth, 320, 3840);
-    bitrate_ = std::min(cap_, path == "direct" ? 4000000 : path == "relayed" ? 1500000 : 1000000);
+    const int start = startBitrate > 0 && path == "direct" ? startBitrate
+        : path == "direct" ? 4000000 : path == "relayed" ? 1500000 : 1000000;
+    bitrate_ = std::min(cap_, start);
     bad_ = good_ = slowDecode_ = cooldown_ = 0;
 }
 
