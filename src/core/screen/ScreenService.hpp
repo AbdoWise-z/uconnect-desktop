@@ -75,7 +75,11 @@ public:
     void submitCursor(const QPoint& position, bool visible, const QByteArray& shape, const QPoint& hotspot);
     void request(const Peer& peer, bool control = false, int maxWidth = 1920, int fps = 30);
     void consent(const QString& peerId, quint32 request, bool allow, bool remember);
+    // Ends both roles with `peer` (a disconnect); the others end one: this
+    // device sharing with it, or this device watching it.
     void stop(const Peer& peer, const QString& reason = "ended");
+    void stopHost(const Peer& peer, const QString& reason = "ended");
+    void stopViewer(const Peer& peer, const QString& reason = "ended");
     void stopHosting(const QString& reason = "stopped by host");
     // Qt's screen capture failed. That ends hosting only while Qt's capture
     // is the one in use (see qtCaptureWanted).
@@ -148,6 +152,7 @@ private:
         bool haveCursor = false;
     };
     void startHost(const Peer& peer);
+    void endRoles(const Peer& peer, const QString& reason, bool asHost, bool asViewer);
     bool allowed(const Peer& peer) const;
     // May keep showing what `peer` sends: a proven identity, and for an
     // extended display also trust and the display permission.
@@ -174,6 +179,9 @@ private:
     std::map<Peer, Viewer> viewers_;
     quint32 nextRequest_ = 1, nextFrame_ = 0;
     quint64 generation_ = 0;
+    // Decoding has its own: an encoder restart (one session's capture
+    // changing) must not orphan another session's decodes in flight.
+    quint64 decoderGeneration_ = 0;
     double nextCapture_ = 0;  // when the next frame is due, in fractional ms
     // Diagnostics: per-second counters, logged when UCD_SCREEN_STATS is set.
     struct Stats {

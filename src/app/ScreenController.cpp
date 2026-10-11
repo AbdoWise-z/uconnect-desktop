@@ -190,7 +190,7 @@ void ScreenController::request(const QString& id, bool control) {
 void ScreenController::stop(const QString& id) {
 #ifdef UCD_HAS_SCREEN
     const auto peer = uconnect::from_hex<uconnect::kDevIdLen>(id.toStdString()); if (!peer) return;
-    auto* service = this->service(); QMetaObject::invokeMethod(service, [service, peer] { service->stop(*peer); });
+    auto* service = this->service(); QMetaObject::invokeMethod(service, [service, peer] { service->stopViewer(*peer); });
 #else
     Q_UNUSED(id);
 #endif

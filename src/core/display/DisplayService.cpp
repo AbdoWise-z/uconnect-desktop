@@ -118,7 +118,7 @@ void DisplayService::stop(const Peer& peer, const QString& reason) {
         const auto request = it->second.request;
         shown_.erase(it);
         emit consentClosed(hex(peer), request);
-        media_->stop(peer, reason);
+        media_->stopViewer(peer, reason);
     }
 }
 
@@ -131,7 +131,7 @@ void DisplayService::end(const Peer& peer, const QString& state, const QString& 
     const bool live = it->second.live;
     hosted_.erase(it);
     if (monitor) monitor->destroy();
-    if (live) media_->stop(peer, detail);  // tells the peer; its hostEnded finds nothing left here
+    if (live) media_->stopHost(peer, detail);  // tells the peer; its hostEnded finds nothing left here
     else if (tellPeer) send_(peer, {{"t", "dsp.stop"}, {"request", double(request)}});
     emit hostStateChanged(hex(peer), {{"state", state}, {"detail", detail}});
     if (monitor) emit activity(tr("Extended display on %1 ended: %2").arg(authorize_(peer).name, detail));
@@ -330,7 +330,7 @@ bool DisplayService::handle(const Peer& peer, const QJsonObject& message) {
             end(peer, "ended", detail, false);
         } else if (const auto shown = shown_.find(peer); shown != shown_.end() && shown->second.request == request) {
             shown_.erase(shown);
-            media_->stop(peer, detail);
+            media_->stopViewer(peer, detail);
         }
         return true;
     }

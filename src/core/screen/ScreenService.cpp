@@ -76,7 +76,7 @@ void ScreenService::configure(const ScreenSettings& settings) {
         for (auto& [peer, host] : hosts_) host.forceKey = true;
     }
     settings_.monitor = std::clamp(settings.monitor, 0, std::max(0, int(settings.monitors.size()) - 1));
-    while (int(hosts_.size()) > settings_.maxViewers) stop(hosts_.rbegin()->first, "viewer limit reduced");
+    while (int(hosts_.size()) > settings_.maxViewers) stopHost(hosts_.rbegin()->first, "viewer limit reduced");
     // An extended display is not an offered service: DisplayService starts it.
     if (!settings_.offered && !display_) stopHosting("screen service disabled");
 }
@@ -111,7 +111,7 @@ void ScreenService::failMedia(const Peer& peer, const QString& detail) {
     const auto it = hosts_.find(peer);
     if (it == hosts_.end()) return;
     if (it->second.live) { auto failure = message("scr.error", it->second.token); failure["detail"] = detail; send_(peer, failure); }
-    stop(peer, detail);
+    stopHost(peer, detail);
 }
 
 bool ScreenService::startDisplayHost(const Peer& peer, quint32 request, int width, int fps) {
@@ -125,7 +125,7 @@ bool ScreenService::startDisplayHost(const Peer& peer, quint32 request, int widt
 
 void ScreenService::expectDisplay(const Peer& peer, quint32 request, int maxWidth, int fps) {
     if (!display_ || !request) return;
-    if (viewers_.contains(peer)) stop(peer);
+    if (viewers_.contains(peer)) stopViewer(peer);
     Viewer viewer;
     viewer.request = request;
     viewer.width = std::clamp(maxWidth, 320, 3840); viewer.fps = std::clamp(fps, 1, MaxFps);
@@ -146,7 +146,7 @@ void ScreenService::request(const Peer& peer, bool control, int maxWidth, int fp
         showViewer(peer, "denied", "This device has not proven its identity yet. Wait a moment and try again.");
         return;
     }
-    if (viewers_.contains(peer)) stop(peer);
+    if (viewers_.contains(peer)) stopViewer(peer);
     Viewer viewer;
     viewer.wantControl = control && !camera_;
     viewer.request = nextRequest_++; if (!nextRequest_) ++nextRequest_;
@@ -156,7 +156,7 @@ void ScreenService::request(const Peer& peer, bool control, int maxWidth, int fp
     showViewer(peer, "requesting", {}, {{"pictured", false}, {"stalled", false}, {"hostStatus", QString()}});
     if (!send_(peer, {{"t", "scr.request"}, {"request", double(viewers_.at(peer).request)},
         {"wantControl", viewers_.at(peer).wantControl}, {"maxWidth", maxWidth}, {"maxFps", fps}, {"codecs", QJsonArray{"h264"}}}))
-        stop(peer, "connection unavailable");
+        stopViewer(peer, "connection unavailable");
 }
 
 void ScreenService::consent(const QString& peerId, quint32 requestId, bool allow, bool remember) {
@@ -227,9 +227,15 @@ void ScreenService::showHosting() {
     emit hostingChanged(viewers);
 }
 
-void ScreenService::stop(const Peer& peer, const QString& reason) {
+// Two devices may watch each other: each role ends on its own, and only a
+// disconnect (stop) ends both.
+void ScreenService::stop(const Peer& peer, const QString& reason) { endRoles(peer, reason, true, true); }
+void ScreenService::stopHost(const Peer& peer, const QString& reason) { endRoles(peer, reason, true, false); }
+void ScreenService::stopViewer(const Peer& peer, const QString& reason) { endRoles(peer, reason, false, true); }
+
+void ScreenService::endRoles(const Peer& peer, const QString& reason, bool asHost, bool asViewer) {
     int channels = 0;
-    const auto host = hosts_.find(peer);
+    const auto host = asHost ? hosts_.find(peer) : hosts_.end();
     if (host != hosts_.end()) {
         if (host->second.control) input_.release();
         if (host->second.controlRequest) emit consentClosed(hex(peer), host->second.controlRequest);
@@ -244,7 +250,7 @@ void ScreenService::stop(const Peer& peer, const QString& reason) {
         emit activity(QStringLiteral("%1 stopped: %2").arg(display_ ? "Extended display" : "Screen sharing", reason));
         emit hostEnded(hex(peer), reason);
     }
-    const auto viewer = viewers_.find(peer);
+    const auto viewer = asViewer ? viewers_.find(peer) : viewers_.end();
     if (viewer != viewers_.end()) {
         if (viewer->second.channel) ++channels;
         auto msg = message("scr.stop", viewer->second.token); msg["request"] = double(viewer->second.request);
@@ -274,19 +280,20 @@ void ScreenService::updateQtCapture() {
 }
 
 void ScreenService::stopHosting(const QString& reason) {
-    while (!hosts_.empty()) stop(hosts_.begin()->first, reason);
+    while (!hosts_.empty()) stopHost(hosts_.begin()->first, reason);
 }
 void ScreenService::peerGone(const Peer& peer) { stop(peer, "device disconnected"); }
 void ScreenService::reset() {
-    ++generation_;
-    while (!hosts_.empty()) stop(hosts_.begin()->first);
-    while (!viewers_.empty()) stop(viewers_.begin()->first);
+    ++generation_; ++decoderGeneration_;
+    while (!hosts_.empty()) stopHost(hosts_.begin()->first);
+    while (!viewers_.empty()) stopViewer(viewers_.begin()->first);
 }
 void ScreenService::policyChanged() {
-    QVector<Peer> revoked;
-    for (const auto& [peer, host] : hosts_) if (!allowed(peer)) revoked.push_back(peer);
-    for (const auto& [peer, viewer] : viewers_) if (!viewerAllowed(peer)) revoked.push_back(peer);
-    for (const auto& peer : revoked) stop(peer, "permission withdrawn");
+    QVector<Peer> revokedHosts, revokedViewers;
+    for (const auto& [peer, host] : hosts_) if (!allowed(peer)) revokedHosts.push_back(peer);
+    for (const auto& [peer, viewer] : viewers_) if (!viewerAllowed(peer)) revokedViewers.push_back(peer);
+    for (const auto& peer : revokedHosts) stopHost(peer, "permission withdrawn");
+    for (const auto& peer : revokedViewers) stopViewer(peer, "permission withdrawn");
     QVector<Peer> controlRevoked;
     for (const auto& [peer, host] : hosts_) if (host.control && !controlAllowed(peer)) controlRevoked.push_back(peer);
     for (const auto& peer : controlRevoked) setControl(peer, false, 0, "control permission withdrawn");
@@ -356,7 +363,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             viewer->second.fps = std::clamp(msg.value("fps").toInt(30), 1, MaxFps);
             viewer->second.receiver.reset(quint16(token), viewer->second.fps);
             viewer->second.control = viewer->second.wantControl && !camera_ && msg.value("control").toBool();
-            if (!open_(peer)) { stop(peer, "transport unavailable"); return true; }
+            if (!open_(peer)) { stopViewer(peer, "transport unavailable"); return true; }
             viewer->second.channel = true;
             showViewer(peer, "live", msg.value("controlDetail").toString().left(300), {{"monitors", msg.value("monitors").toArray().toVariantList()},
                 {"monitor", msg.value("monitor").toInt()}, {"control", viewer->second.control},
@@ -376,10 +383,14 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         return true;
     }
     if (type == "scr.stop") {
-        if (forHost || forViewer || (host != hosts_.end() && !host->second.live && requestId == host->second.request))
-            stop(peer, "stopped by peer");
+        // A viewer's stop names its request; a host's does not. That tells
+        // the two sessions of devices watching each other apart.
+        const bool fromViewer = host != hosts_.end() && requestId && requestId == host->second.request;
+        const bool fromHost = forViewer && !requestId;
+        if (fromViewer && (forHost || !host->second.live)) stopHost(peer, "stopped by peer");
+        if (fromHost) stopViewer(peer, "stopped by peer");
     } else if (forViewer && type == "scr.error") {
-        stop(peer, msg.value("detail").toString("media error"));
+        stopViewer(peer, msg.value("detail").toString("media error"));
     } else if (forViewer && type == "scr.controlled") {
         if (requestId && requestId != viewer->second.controlRequest) return true;
         if (msg.value("on").toBool() && (!requestId || !viewer->second.wantControl || camera_)) return true;
@@ -405,7 +416,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         showViewer(peer, "live", {}, {{"cursorImage", "data:image/png;base64," + QString::fromLatin1(base64)},
             {"cursorHotspotX", hx}, {"cursorHotspotY", hy}});
     } else if (forHost) {
-        if (!allowed(peer)) { stop(peer, "permission withdrawn"); return true; }
+        if (!allowed(peer)) { stopHost(peer, "permission withdrawn"); return true; }
         if (type == "scr.control") {
             if (msg.value("on").toBool()) requestHostControl(peer, requestId);
             else setControl(peer, false, requestId);
@@ -486,7 +497,7 @@ void ScreenService::decodeNext(const Peer& peer) {
     viewer.decoding = true; ++stats_.decodes;
     auto complete = std::move(viewer.toDecode);
     viewer.toDecode.clear();
-    const auto token = viewer.token; const auto generation = generation_; const auto started = monotonicMs();
+    const auto token = viewer.token; const auto generation = decoderGeneration_; const auto started = monotonicMs();
     QMetaObject::invokeMethod(decoderWorker_, [this, peer, token, generation, complete = std::move(complete), started] {
         auto& decoder = decoders_[peer]; if (!decoder) decoder = std::make_unique<Decoder>();
         // Only the last frame of a batch is shown; the others just advance the decoder.
@@ -501,7 +512,7 @@ void ScreenService::decodeNext(const Peer& peer) {
         const double elapsed = double(monotonicMs() - started) / std::max<qsizetype>(1, complete.size());
         QMetaObject::invokeMethod(this, [this, peer, token, generation, image, any, elapsed] {
             const auto it = viewers_.find(peer);
-            if (generation != generation_ || it == viewers_.end() || it->second.token != token) return;
+            if (generation != decoderGeneration_ || it == viewers_.end() || it->second.token != token) return;
             it->second.decoding = false; it->second.decodeMs = elapsed; stats_.decodeMs += elapsed;
             if (!any) {
                 it->second.toDecode.clear();
@@ -626,7 +637,7 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
                     else { ++it->second.framesSent; ++stats_.queued; }
                 } else if (!error.isEmpty()) {
                     auto failure = message("scr.error", token); failure["detail"] = error;
-                    send_(peer, failure); stop(peer, error);
+                    send_(peer, failure); stopHost(peer, error);
                 }
             }
             if (!name.isEmpty() && name != lastPipeline_) {
@@ -666,7 +677,7 @@ void ScreenService::logStats(qint64 now) {
 }
 
 void ScreenService::tick() {
-    const auto now = now_(); QVector<Peer> expired;
+    const auto now = now_(); QVector<Peer> expired, expiredViewers;
     if (statsOn_ && now - stats_.at >= 1000) logStats(now);
     // The native path (desktop duplication) captures by itself. Try it as
     // soon as someone watches instead of waiting for Qt's capture to deliver
@@ -705,7 +716,7 @@ void ScreenService::tick() {
         }
     }
     for (auto& [peer, viewer] : viewers_) {
-        if (!viewer.token) { if (now >= viewer.expires) expired.push_back(peer); continue; }
+        if (!viewer.token) { if (now >= viewer.expires) expiredViewers.push_back(peer); continue; }
         if (!viewer.pictured && !viewer.stalledTold && now - viewer.liveAt > 8000) {
             viewer.stalledTold = true;
             showViewer(peer, "live", {}, {{"stalled", true}});
@@ -728,7 +739,8 @@ void ScreenService::tick() {
         }
     }
     for (const auto& [peer, detail] : displayFailures) { failMedia(peer, detail); expired.removeAll(peer); }
-    for (const auto& peer : expired) stop(peer, "request or feedback timed out");
+    for (const auto& peer : expired) stopHost(peer, "request or feedback timed out");
+    for (const auto& peer : expiredViewers) stopViewer(peer, "request timed out");
     if (hosts_.empty() && viewers_.empty() && !input_.pressedCount()) timer_.stop();
 }
 void ScreenService::monitor(const Peer& peer, int index) {
@@ -784,7 +796,7 @@ void ScreenService::sendInput(const Peer& peer, QJsonObject msg) {
     if (it == viewers_.end() || !it->second.token || !it->second.control || !authorize_(peer).verified) return;
     if (!msg.value("t").toString().startsWith("in.")) return;
     msg["session"] = it->second.token;
-    if (!send_(peer, msg)) stop(peer, "input connection unavailable");
+    if (!send_(peer, msg)) stopViewer(peer, "input connection unavailable");
 }
 
 void ScreenService::submitCursor(const QPoint& position, bool visible, const QByteArray& shape, const QPoint& hotspot) {

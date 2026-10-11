@@ -168,6 +168,61 @@ private slots:
         host.stop(); viewer.stop();
     }
 
+    // Two devices watching each other at once: each is host and viewer of
+    // the same peer. Stopping one direction leaves the other running.
+    void twoRealSessionsWatchEachOther() {
+        if (qEnvironmentVariableIsEmpty("UCD_TEST_OPENH264")) QSKIP("Install Cisco OpenH264 for synthetic end-to-end test");
+        uconnect::server::RendezvousConfig config; config.port = 0;
+        uconnect::server::Rendezvous server(config); QVERIFY(server.open());
+        std::jthread serverThread([&](std::stop_token stop) { while (!stop.stop_requested()) server.poll_once(5ms); });
+        Session a, b;
+        const auto ia = Identity::generate(), ib = Identity::generate();
+        a.setIdentity(ia); b.setIdentity(ib);
+        AccessPolicy pa, pb;
+        pa.trusted.insert(keyToHex(ib.publicKey()), {perm::ScreenView, perm::ScreenDirect});
+        pb.trusted.insert(keyToHex(ia.publicKey()), {perm::ScreenView, perm::ScreenDirect});
+        a.setAccessPolicy(pa); b.setAccessPolicy(pb);
+        a.setLocalHello({"A", "test", ServiceScreen}); b.setLocalHello({"B", "test", ServiceScreen});
+        ScreenSettings settings; settings.ciscoLibrary = qEnvironmentVariable("UCD_TEST_OPENH264"); settings.gpuCapture = false;
+        settings.monitors = {QVariantMap{{"name", "Synthetic"}, {"width", 256}, {"height", 128}}};
+        a.screen()->configure(settings); b.screen()->configure(settings);
+        QString idA, idB;
+        connect(&a, &Session::snapshotChanged, this, [&](const auto& s) { if (!s.selfId.isEmpty()) idA = s.selfId; });
+        connect(&b, &Session::snapshotChanged, this, [&](const auto& s) { if (!s.selfId.isEmpty()) idB = s.selfId; });
+        int proven = 0;
+        connect(&a, &Session::peersChanged, this, [&](const auto& peers) { for (const auto& p : peers) if (p.identityState == "verified" && p.stateCode == 3) proven |= 1; });
+        connect(&b, &Session::peersChanged, this, [&](const auto& peers) { for (const auto& p : peers) if (p.identityState == "verified" && p.stateCode == 3) proven |= 2; });
+        const auto creds = uconnect::TopicCreds::generate_keyed();
+        Session::Options options{QString::fromStdString("127.0.0.1:" + std::to_string(server.port())), QString::fromStdString(creds.to_uri())};
+        a.start(options); b.start(options);
+        QTRY_VERIFY_WITH_TIMEOUT(proven == 3, 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(!idA.isEmpty() && !idB.isEmpty(), 2000);
+        const auto devA = *uconnect::from_hex<uconnect::kDevIdLen>(idA.toStdString());
+        const auto devB = *uconnect::from_hex<uconnect::kDevIdLen>(idB.toStdString());
+        QSignalSpy atA(a.screen(), &ScreenService::frameReady), atB(b.screen(), &ScreenService::frameReady);
+        QStringList log;
+        connect(a.screen(), &ScreenService::activity, this, [&](const QString& l) { log << "A: " + l; });
+        connect(b.screen(), &ScreenService::activity, this, [&](const QString& l) { log << "B: " + l; });
+        a.screen()->request(devB);  // A watches B
+        QTest::qWait(200);
+        b.screen()->request(devA);  // and B watches A
+        QImage red(256, 128, QImage::Format_RGBA8888); red.fill(QColor(200, 40, 40));
+        QImage blue(256, 128, QImage::Format_RGBA8888); blue.fill(QColor(40, 40, 200));
+        for (int i = 0; i < 120 && (atA.isEmpty() || atB.isEmpty()); ++i) {
+            a.screen()->submitImage(red); b.screen()->submitImage(blue); QTest::qWait(35);
+        }
+        QVERIFY2(!atA.isEmpty() && !atB.isEmpty(), "Both directions should deliver pictures");
+        // A stops watching B: B keeps watching A.
+        a.screen()->stopViewer(devB);  // as closing the viewer window does
+        QTest::qWait(300);
+        const auto before = atB.size();
+        for (int i = 0; i < 60 && atB.size() == before; ++i) { a.screen()->submitImage(red); b.screen()->submitImage(blue); QTest::qWait(35); }
+        QVERIFY2(atB.size() > before, qPrintable("Stopping one direction stopped the other: " + log.join(" | ")));
+        b.screen()->stopViewer(devA);
+        QTest::qWait(300);
+        a.stop(); b.stop();
+    }
+
     // An extended display over two real Sessions: the reversed handshake, a
     // (fake) virtual monitor, video on datagram kinds 4 and 5, and the monitor
     // removed when the display device stops.
