@@ -370,6 +370,7 @@ if (UCD_BUILD_TESTS)
         ucd_add_test(ScreenInputTest)
         ucd_add_test(ScreenSpreadTest)
         ucd_add_test(DisplayServiceTest)
+        ucd_add_test(VirtualDisplayTest)  # opt in: UCD_TEST_VIRTUAL_DISPLAY=1
         target_link_libraries(ScreenInputTest PRIVATE uconnect_desktop_screen_ui)
         target_link_libraries(ScreenSessionTest PRIVATE uconnect_rendezvous)
         set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest ScreenSpreadTest PROPERTIES

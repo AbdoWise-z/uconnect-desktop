@@ -138,7 +138,7 @@ public:
         for (;;) {
             const auto path = findPath(added_.AdapterLuid, added_.TargetId);
             if (path.found) { gdiName_ = path.gdiName; break; }
-            if (!extended && timer.elapsed() > 2500) {
+            if (!extended && timer.elapsed() > 1000) {
                 extended = true;
                 SetDisplayConfig(0, nullptr, 0, nullptr, SDC_TOPOLOGY_EXTEND | SDC_APPLY);
             }

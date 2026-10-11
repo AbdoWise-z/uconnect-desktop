@@ -63,9 +63,26 @@ Execution notes:
     sharing (its existing `screenRemoved` rule), so ending an extended
     display also ends a screen share running at the same time.
 - **Not started:** LAN tuning (phase 5).
-- **Waiting on you:** an elevated run of `scripts/dev-install.ps1` and
-  `vddctl selftest` in the fork (phase 0/1 acceptance), then a real session;
-  the Mac's current address for the macOS build.
+- **Verified on this Windows 11 laptop (2026-10-11)**, driver installed with
+  `scripts/dev-install.ps1` (the build's test certificate trusted in
+  LocalMachine Root and TrustedPublisher):
+  - **No test-signing mode needed:** the user-mode driver loads with a locally
+    trusted certificate. A release signature then only replaces the trust step.
+  - **Windows does not turn the new monitor on** with one screen (the laptop
+    panel): it knows the path but leaves it inactive. Extending the desktop
+    (`SDC_TOPOLOGY_EXTEND`) turns it on; the app now does that after 1 s.
+  - **Capture:** desktop duplication captures the virtual monitor on the RTX
+    3050 Ti, and the app's DXGI + NVENC path encodes it at 1920×1080 and,
+    after a mode change, 2560×1440 (`VirtualDisplayTest`, opt-in with
+    `UCD_TEST_VIRTUAL_DISPLAY=1`).
+  - **Removal:** on remove 50 ms, on closing the handle 62 ms, on killing the
+    owning process 63 ms, by the watchdog 3052 ms after pings stop. All 20
+    `vddctl selftest` checks and all 5 `VirtualDisplayTest` cases pass.
+  - The cursor (hardware cursor, outside the frames) and a session to a real
+    second device are not verified yet.
+- **Waiting on you:** a second device for a real session (the Mac's current
+  address; WSL cannot be the display device, since its link to Windows is
+  never direct), and the Mac for the macOS build.
 
 ## The feature
 
