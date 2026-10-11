@@ -47,9 +47,11 @@ ApplicationWindow {
     function quitApp() {
         App.screen.stopHosting()
         App.camera.stopHosting()
+        App.display.stopAll()
         Qt.exit(0)
     }
     Loader { source: App.screen.available ? Qt.resolvedUrl("ScreenSafety.qml") : "" }
+    Loader { source: App.display.available ? Qt.resolvedUrl("DisplaySafety.qml") : "" }
     Loader {
         active: App.camera.available
         Component.onCompleted: if (active) setSource(Qt.resolvedUrl("ScreenSafety.qml"), {controller: App.camera, camera: true})
@@ -69,7 +71,9 @@ ApplicationWindow {
         if (w && service === "control" && App.screen.available) App.screen.requestControl(devId, true)
         if (!w) {
             // No parent: each service gets an independent top-level window.
-            w = serviceWindowComponent.createObject(null, { service: service, devId: devId })
+            w = service === "display"
+                ? Qt.createComponent("DisplaySetup.qml").createObject(null, { devId: devId })
+                : serviceWindowComponent.createObject(null, { service: service, devId: devId })
             w.closing.connect(() => {
                 delete root.serviceWindows[key]
                 Qt.callLater(w.destroy)
@@ -216,6 +220,11 @@ ApplicationWindow {
             }
             ServiceMenu {
                 service: "control"
+                onOpenRequested: devId => root.openService(service, devId)
+            }
+            ServiceMenu {
+                service: "display"
+                enabled: App.display.available
                 onOpenRequested: devId => root.openService(service, devId)
             }
             UMenuSeparator {}

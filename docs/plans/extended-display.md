@@ -42,7 +42,30 @@ Execution notes:
     leaves none behind, including ending while the monitor is being made)
     and `ScreenSessionTest::twoRealSessionsExtendedDisplay` (two real
     Sessions, H.264 on kinds 4/5). All 14 suites pass on Windows.
-- **Not started:** the UI (phase 4) and LAN tuning (phase 5).
+- **App, phase 4 in code:**
+  - `DisplayController` (GUI thread): driver state and install/remove
+    through the elevated relaunch, local screens, consent, host and display
+    states, video sinks, the host's pointer fed at 60 Hz while live, and the
+    display device kept awake (Windows `SetThreadExecutionState`, macOS
+    `IOPMAssertion`; nothing on Linux yet).
+  - QML: `DisplaySetup` (Services > Extended Display > device: mode, start,
+    stop, driver banner), `DisplaySafety` (consent with a screen choice, the
+    host's "Extending to" bar, opening the views), `DisplayView` (full screen
+    on the chosen screen, local pointer hidden, remote pointer drawn, bar on
+    mouse move or Esc, hold Esc to stop), Settings > Services > Extended
+    Display (bitrate cap, keep awake, driver).
+  - The stop hotkey and quitting stop extended displays too.
+  - `scripts/package-windows.ps1 -DriverPackage <folder>` ships the driver
+    in `drivers/uconnect-vdd`, where the install button looks for it.
+  - `SettingsTest` loads the three QML files and checks the settings
+    survive a restart. Nothing has been looked at on a real screen yet.
+  - Known limit: removing a monitor makes `ScreenController` stop screen
+    sharing (its existing `screenRemoved` rule), so ending an extended
+    display also ends a screen share running at the same time.
+- **Not started:** LAN tuning (phase 5).
+- **Waiting on you:** an elevated run of `scripts/dev-install.ps1` and
+  `vddctl selftest` in the fork (phase 0/1 acceptance), then a real session;
+  the Mac's current address for the macOS build.
 
 ## The feature
 

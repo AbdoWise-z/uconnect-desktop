@@ -26,6 +26,7 @@ namespace ucd {
 
 class DebugWindow;
 class ScreenController;
+class DisplayController;
 
 struct LaunchOptions {
     QString server;
@@ -43,6 +44,7 @@ class AppController : public QObject {
     Q_PROPERTY(bool firstRun READ firstRun NOTIFY firstRunChanged)
     Q_PROPERTY(QObject* screen READ screen CONSTANT)
     Q_PROPERTY(QObject* camera READ camera CONSTANT)
+    Q_PROPERTY(QObject* display READ display CONSTANT)
     Q_PROPERTY(QString serverAddress READ serverAddress WRITE setServerAddress NOTIFY settingsChanged)
     Q_PROPERTY(QString deviceName READ deviceName WRITE setDeviceName NOTIFY settingsChanged)
     Q_PROPERTY(QStringList offeredServices READ offeredServices NOTIFY settingsChanged)
@@ -91,6 +93,7 @@ class AppController : public QObject {
 public:
     QObject* screen() const;
     QObject* camera() const;
+    QObject* display() const;
     explicit AppController(const LaunchOptions& options, QObject* parent = nullptr);
     ~AppController() override;
 
@@ -390,6 +393,7 @@ private:
     Session* session_ = nullptr;  // lives on worker_
     ScreenController* screen_ = nullptr;
     ScreenController* camera_ = nullptr;
+    DisplayController* display_ = nullptr;
     std::unique_ptr<screen::StopShortcut> mediaStop_;
     QString mediaShortcutSequence_, mediaShortcutError_;
     bool mediaShortcutActive_ = false;

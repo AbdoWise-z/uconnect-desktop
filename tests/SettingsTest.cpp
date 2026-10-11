@@ -178,6 +178,34 @@ private slots:
         std::unique_ptr<QObject> host(safety.create());
         QVERIFY2(host, qPrintable(safety.errorString()));
     }
+
+    void loadsExtendedDisplayQml() {
+        const QString devId(32, 'a');
+        QQmlComponent setup(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/DisplaySetup.qml"));
+        QVERIFY2(setup.isReady(), qPrintable(setup.errorString()));
+        std::unique_ptr<QObject> window(setup.createWithInitialProperties({{"devId", devId}}));
+        QVERIFY2(window, qPrintable(setup.errorString()));
+        QQmlComponent safety(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/DisplaySafety.qml"));
+        QVERIFY2(safety.isReady(), qPrintable(safety.errorString()));
+        std::unique_ptr<QObject> prompts(safety.create());
+        QVERIFY2(prompts, qPrintable(safety.errorString()));
+        QQmlComponent viewer(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/DisplayView.qml"));
+        QVERIFY2(viewer.isReady(), qPrintable(viewer.errorString()));
+        std::unique_ptr<QObject> view(viewer.createWithInitialProperties({{"devId", devId}, {"screenIndex", 0}}));
+        QVERIFY2(view, qPrintable(viewer.errorString()));
+    }
+
+    void displaySettingsSurviveApplyAndRestart() {
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "setDisplaySetting",
+            Q_ARG(QVariant, QVariant("maxBitrate")), Q_ARG(QVariant, QVariant(60000000))));
+        QTRY_VERIFY(dialog_->property("modified").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QCOMPARE(controller_->display()->property("settings").toMap().value("maxBitrate").toInt(), 60000000);
+        QVERIFY(!dialog_->property("modified").toBool());
+        QSettings().sync();
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QCOMPARE(restarted.display()->property("settings").toMap().value("maxBitrate").toInt(), 60000000);
+    }
 #endif
 
     void appliesTheUploadLimit() {

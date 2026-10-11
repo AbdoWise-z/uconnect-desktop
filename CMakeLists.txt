@@ -157,12 +157,14 @@ if (NOT UCD_SCREEN_AVAILABLE)
     set(_ucd_deploy_qmldir "${CMAKE_BINARY_DIR}/deploy-qml")
     file(MAKE_DIRECTORY "${_ucd_deploy_qmldir}")
     file(GLOB _ucd_base_qml "${CMAKE_SOURCE_DIR}/qml/*.qml")
-    list(REMOVE_ITEM _ucd_base_qml "${CMAKE_SOURCE_DIR}/qml/ScreenView.qml" "${CMAKE_SOURCE_DIR}/qml/ScreenSafety.qml")
+    list(REMOVE_ITEM _ucd_base_qml "${CMAKE_SOURCE_DIR}/qml/ScreenView.qml" "${CMAKE_SOURCE_DIR}/qml/ScreenSafety.qml"
+        "${CMAKE_SOURCE_DIR}/qml/DisplaySetup.qml" "${CMAKE_SOURCE_DIR}/qml/DisplaySafety.qml" "${CMAKE_SOURCE_DIR}/qml/DisplayView.qml")
     file(COPY ${_ucd_base_qml} DESTINATION "${_ucd_deploy_qmldir}")
 endif ()
 
 add_library(uconnect_desktop_screen_ui STATIC
     src/app/ScreenController.cpp src/app/ScreenController.hpp
+    src/app/DisplayController.cpp src/app/DisplayController.hpp
     src/core/screen/StopShortcut.cpp src/core/screen/StopShortcut.hpp)
 if (UCD_SCREEN_AVAILABLE)
     target_sources(uconnect_desktop_screen_ui PRIVATE src/app/InputCapture.cpp src/app/InputCapture.hpp)
@@ -176,7 +178,7 @@ if (UCD_SCREEN_AVAILABLE)
 endif ()
 target_link_libraries(uconnect_desktop_screen_ui PUBLIC uconnect_desktop_core Qt6::Gui)
 if (APPLE)
-    target_link_libraries(uconnect_desktop_screen_ui PRIVATE "-framework Carbon")
+    target_link_libraries(uconnect_desktop_screen_ui PRIVATE "-framework Carbon" "-framework IOKit")
 elseif (UNIX)
     find_package(X11 QUIET)
     if (X11_FOUND)
@@ -208,7 +210,7 @@ if (QT_KNOWN_POLICY_QTP0004)
 endif ()
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 if (UCD_SCREEN_AVAILABLE)
-    set(_ucd_screen_qml qml/ScreenView.qml qml/ScreenSafety.qml)
+    set(_ucd_screen_qml qml/ScreenView.qml qml/ScreenSafety.qml qml/DisplaySetup.qml qml/DisplaySafety.qml qml/DisplayView.qml)
 endif ()
 qt_add_qml_module(uconnect_desktop
     URI UConnectDesktop

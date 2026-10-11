@@ -40,3 +40,17 @@ It pins FFmpeg 7.1.5's source archive and disables dependency autodetection;
 it never enables GPL or nonfree components. Building this script requires
 native compiler tools, make, pkg-config and nasm on x86. The other pinned
 Cisco archive hashes are listed in `scripts/install-openh264.py`.
+
+## Extended display driver (Windows)
+
+Extended displays on Windows use the uConnect virtual display driver
+(<https://github.com/AbdoWise-z/uconnect-vdd>), a fork of SudoVDA built on
+Microsoft's indirect display driver sample. It is a separate program: the
+app talks to it only through its control interface
+(`src/core/display/uconnect-vdd.h`, copied from the fork's
+`include/uconnect-vdd.h`, protocol 1.0). Microsoft's sample code is under
+the MS-PL, SudoMaker's changes MIT/CC0 and uConnect's changes MIT; the
+fork's `LICENSE` has the full texts. `scripts/package-windows.ps1
+-DriverPackage <folder>` ships the driver package in `drivers/uconnect-vdd`.
+
+macOS uses the system's `CGVirtualDisplay`; no third-party code is involved.

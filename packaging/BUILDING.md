@@ -11,6 +11,11 @@ ctest --test-dir cmake-build-pkg --output-on-failure
 powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Label test1
 ```
 
+Add `-DriverPackage <folder>` to include the extended display driver: the
+`uconnect-vdd-x64` CI artifact of github.com/AbdoWise-z/uconnect-vdd, or a
+local build's `x64/Release/UConnectVDD` folder. Until the driver has a
+release signature, Windows asks once whether to trust its publisher.
+
 macOS requires Xcode Command Line Tools, CMake 4.3+, Ninja and Qt 6.5+ for macOS.
 With Homebrew installed, dependencies can be installed with `brew install cmake ninja qt`.
 Then run:
