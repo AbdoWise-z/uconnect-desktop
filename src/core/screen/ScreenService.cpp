@@ -619,7 +619,10 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
                 if (it == hosts_.end() || it->second.token != token) continue;
                 if (result) {
                     auto frame = *result; frame.session = token;
-                    if (!it->second.sender.enqueue(frame, now_(), 1000 / fps)) { it->second.forceKey = true; ++stats_.refused; }
+                    // Extended displays run on a direct path with room to spare: a
+                    // shorter spread costs less latency.
+                    const double spread = display_ && it->second.path == "direct" ? 0.25 : 0.5;
+                    if (!it->second.sender.enqueue(frame, now_(), 1000 / fps, spread)) { it->second.forceKey = true; ++stats_.refused; }
                     else { ++it->second.framesSent; ++stats_.queued; }
                 } else if (!error.isEmpty()) {
                     auto failure = message("scr.error", token); failure["detail"] = error;

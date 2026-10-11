@@ -33,13 +33,13 @@ QVector<QByteArray> fragment(const EncodedFrame& frame) {
     return result;
 }
 
-bool PacedSender::enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs) {
+bool PacedSender::enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs, double spread) {
     if (int(queue_.size()) >= MaxQueuedFrames) { ++dropped_; return false; }
     Queued queued{fragment(frame), 0, nowMs, nowMs, nowMs};
     if (queued.packets.isEmpty()) return false;
     interval_ = std::clamp(intervalMs, 1000 / MaxFps, 1000);
     queued.start = queue_.empty() ? nowMs : std::max(nowMs, queue_.back().due);
-    queued.due   = queued.start + std::max(4, interval_ / 2);
+    queued.due   = queued.start + std::max(spread < 0.5 ? 2 : 4, int(interval_ * std::clamp(spread, 0.1, 1.0)));
     while (!history_.empty() && (history_.front().expires < nowMs || history_.size() >= 16)) history_.pop_front();
     history_.push_back({frame.number, queued.packets, nowMs + 500});
     queue_.push_back(std::move(queued));
