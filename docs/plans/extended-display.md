@@ -78,11 +78,31 @@ Execution notes:
   - **Removal:** on remove 50 ms, on closing the handle 62 ms, on killing the
     owning process 63 ms, by the watchdog 3052 ms after pings stop. All 20
     `vddctl selftest` checks and all 5 `VirtualDisplayTest` cases pass.
-  - The cursor (hardware cursor, outside the frames) and a session to a real
-    second device are not verified yet.
-- **Waiting on you:** a second device for a real session (the Mac's current
-  address; WSL cannot be the display device, since its link to Windows is
-  never direct), and the Mac for the macOS build.
+- **macOS (M5, macOS 26.6.2), 2026-10-11:** the macOS backend compiles
+  without warnings and all display suites pass there. A real
+  `CGVirtualDisplay` is created (also from an SSH session), seen by other
+  processes, removed by `destroy()` while the process lives, and gone within
+  0.2 s of the owning process being killed. Capturing it needs Screen
+  Recording, which a test binary run over SSH does not have, so capture on a
+  Mac host is not verified. CoreGraphics in a long-running process can keep a
+  stale display list; the test asks `system_profiler` instead.
+- **First real session, Windows laptop (host, real driver) → Mac (display),
+  same Wi-Fi network, 2026-10-11:**
+  - The Mac's screen was matched at 2940×1912, 60 Hz; Windows created
+    `\\.\DISPLAY15` at that mode; the path was direct.
+  - Host: DXGI / D3D11 NV12 / `h264_nvenc`, 45-59 encodes/s at 8-11 ms,
+    18-35 Mbit/s as congestion control moved.
+  - Mac: VideoToolbox decoding at 5.7-8 ms a frame, 60 fps shown at first,
+    then dips (15-50 fps, one near-stall) while congestion control cut the
+    rate and frame rate: loss or delay on the link, not decoding. Tuning
+    this is phase 5 (and a wired link should be measured for comparison).
+  - Killing the host app: the virtual monitor was gone at once on Windows,
+    and the Mac's view ended ("device disconnected").
+  - Not checked yet: the pointer on the Mac, consent through the UI (the run
+    used a temporary hook granting `display.direct`), glass-to-glass latency.
+- **Waiting on you:** looking at the result on the Mac's screen during a
+  session (picture, pointer, text sharpness), and a wired run for the
+  latency and loss numbers.
 
 ## The feature
 

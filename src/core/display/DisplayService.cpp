@@ -227,7 +227,8 @@ void DisplayService::showHost(const Peer& peer, const QVariantMap& extra) {
     QVariantMap state = extra;
     state["state"] = it->second.state;
     state["detail"] = QString();
-    if (it->second.mode.refreshMilliHz) {
+    // The mode is known once the other device answered with its screen.
+    if (it->second.state == "creating" || it->second.live) {
         state["width"] = it->second.mode.width; state["height"] = it->second.mode.height;
         state["fps"] = it->second.mode.refreshMilliHz / 1000;
     }

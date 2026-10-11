@@ -25,7 +25,14 @@ class VirtualDisplayTest : public QObject {
         DEVMODEW mode{}; mode.dmSize = sizeof(mode);
         return EnumDisplaySettingsExW(reinterpret_cast<const wchar_t*>(captureId.utf16()), ENUM_CURRENT_SETTINGS, &mode, 0);
 #else
-        return !captureId.isEmpty() && CGDisplayIsActive(captureId.toUInt());
+        // CoreGraphics in a long-running process can keep a stale display
+        // list; a fresh process sees the window server's. Test monitors are
+        // all named "uConnect test", and one exists at a time.
+        if (captureId.isEmpty()) return false;
+        QProcess profiler;
+        profiler.start("system_profiler", {"SPDisplaysDataType"});
+        profiler.waitForFinished(15000);
+        return profiler.readAllStandardOutput().contains("uConnect test:");
 #endif
     }
     // Encodes the monitor until a frame decodes; returns its size.
@@ -36,6 +43,7 @@ class VirtualDisplayTest : public QObject {
         Decoder decoder;
         for (int i = 0; i < 60; ++i) {
             const auto result = native->encode(captureId, options, quint32(i), quint32(ScreenService::monotonicMs()), i == 0);
+            if (!result.active && i == 59) qWarning().noquote() << "capture:" << result.detail << result.pipeline;
             if (result.frame) {
                 const auto image = decoder.decode(*result.frame);
                 if (!image.isNull()) return image.size();
@@ -72,7 +80,7 @@ private slots:
 
         monitor->keepAlive();
         monitor->destroy();
-        QTRY_VERIFY_WITH_TIMEOUT(!exists(id), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!exists(id), 8000);
     }
 
     // The same device comes back as the same monitor.
@@ -84,13 +92,13 @@ private slots:
             QVERIFY2(monitor->create(identity, "uConnect test", {1920, 1080, 60000, false}, &error), qPrintable(error));
             first = monitor->captureId();
         }  // the destructor removes it
-        QTRY_VERIFY_WITH_TIMEOUT(!exists(first), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!exists(first), 8000);
         auto monitor = display::create();
         QVERIFY2(monitor->create(identity, "uConnect test", {1920, 1080, 60000, false}, &error), qPrintable(error));
         second = monitor->captureId();
         QVERIFY(!second.isEmpty());
         monitor->destroy();
-        QTRY_VERIFY_WITH_TIMEOUT(!exists(second), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!exists(second), 8000);
     }
 
     // A process that dies takes its monitor with it.
@@ -109,7 +117,7 @@ private slots:
         QVERIFY(exists(id));
         child.kill();
         child.waitForFinished();
-        QTRY_VERIFY_WITH_TIMEOUT(!exists(id), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!exists(id), 8000);
     }
 };
 
@@ -127,6 +135,18 @@ int main(int argc, char* argv[]) {
         QTimer ping;
         QObject::connect(&ping, &QTimer::timeout, [&] { monitor->keepAlive(); });
         ping.start(500);
+        return app.exec();
+    }
+    // Diagnosis: make a monitor, remove it after 3 s, stay alive 5 s more, so
+    // another process can watch it go while this one still runs.
+    if (app.arguments().contains("--destroy-check")) {
+        auto monitor = display::create();
+        QString error;
+        if (!monitor || !monitor->create(display::monitorIdentity(QString(64, 'd')), "uConnect test", {1280, 720, 60000, false}, &error))
+            return 1;
+        printf("MONITOR %s\n", qPrintable(monitor->captureId())); fflush(stdout);
+        QTimer::singleShot(3000, [&] { monitor->destroy(); printf("DESTROYED\n"); fflush(stdout); });
+        QTimer::singleShot(8000, &app, &QCoreApplication::quit);
         return app.exec();
     }
     VirtualDisplayTest test;
