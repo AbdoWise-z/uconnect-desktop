@@ -100,9 +100,26 @@ Execution notes:
     and the Mac's view ended ("device disconnected").
   - Not checked yet: the pointer on the Mac, consent through the UI (the run
     used a temporary hook granting `display.direct`), glass-to-glass latency.
-- **Waiting on you:** looking at the result on the Mac's screen during a
-  session (picture, pointer, text sharpness), and a wired run for the
-  latency and loss numbers.
+- **Driver crash found and fixed (2026-10-11):** WUDFHost crashed three
+  times (an access violation inside IddCx, from the swap-chain thread) while
+  monitors were removed or re-moded: the thread kept calling into a swap
+  chain IddCx was tearing down. A monitor's thread is now stopped before
+  `IddCxMonitorDeparture`, a departing monitor refuses new swap chains, and
+  the thread handle is locked. After reinstalling: 5 of 5 `VirtualDisplayTest`
+  runs and `vddctl selftest` pass with no driver crash (2026-10-19).
+- **Second real session, Mac (host) → Windows laptop (display), Wi-Fi,
+  2026-10-19:**
+  - The laptop's panel was matched at 1920×1080, 165 Hz; the Mac created the
+    virtual display ("Laptop") and captured it once Screen Recording was
+    granted (the first run, without it, ended cleanly after 15 s).
+  - Mac: ScreenCaptureKit / IOSurface / VideoToolbox, 78-92 encodes/s under
+    1 ms each, 23-34 Mbit/s; congestion control settled at a 92 fps target.
+  - Laptop: 4-8 ms decoding, 30-92 fps shown, the dips following the link.
+  - Killing the Mac app: its virtual display was gone within 2 s, and the
+    laptop's view ended ("device disconnected").
+- **Waiting on you:** looking at the result on screen during a session
+  (picture, pointer, text sharpness), and a wired run for the latency and
+  loss numbers.
 
 ## The feature
 
