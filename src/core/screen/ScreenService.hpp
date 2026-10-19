@@ -128,6 +128,7 @@ private:
         double reportLoss = 0, reportTrendMs = 0;  // the last report, for the stats log
         bool stalledTold = false;
         std::optional<quint32> nackedFrame;
+        int nackRepeats = 0;  // repeated requests for nackedFrame answered so far
         QString path = "opening";
         PacedSender sender;
         CongestionController congestion;

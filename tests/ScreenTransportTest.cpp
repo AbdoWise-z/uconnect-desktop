@@ -242,9 +242,24 @@ private slots:
             QCOMPARE(first.nacks.size(), 1); QVERIFY(!first.keyframe);
             const auto later = receiver.expire(130);  // still missing at +70 ms
             QCOMPARE(later.keyframe, !patient);
+            QCOMPARE(later.nacks.size(), patient ? 1 : 0);  // the patient one asks again
             const auto completed = receiver.receive(pieces.back(), 135);
             QCOMPARE(completed.size(), patient ? 1 : 0);
         }
+        // Even patient, a frame whose piece never comes is given up after
+        // three repair requests.
+        Reassembler receiver; receiver.setPatient(true); receiver.reset(1, 60);
+        auto key = frame(0, true); key.session = 1;
+        for (const auto& part : fragment(key)) receiver.receive(part, 0);
+        auto delta = frame(1, false, 30000); delta.session = 1;
+        const auto pieces = fragment(delta);
+        for (int i = 0; i + 1 < pieces.size(); ++i) receiver.receive(pieces[i], 10);
+        int nacks = 0; bool keyframe = false;
+        for (qint64 now = 60; now <= 400 && !keyframe; now += 10) {
+            const auto recovery = receiver.expire(now);
+            nacks += int(recovery.nacks.size()); keyframe = recovery.keyframe;
+        }
+        QCOMPARE(nacks, 3); QVERIFY(keyframe);
     }
 
     // Extended displays on Wi-Fi: a lone bad report, or loss under 10%, does

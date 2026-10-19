@@ -809,10 +809,11 @@ pixels wide and 2400 high, shape kept), what the display device decodes,
 new session.
 
 **Wi-Fi tolerance.** Nearby links are usually Wi-Fi, where packets arrive in
-bursts and are held up for a moment rather than lost. A display device
-waits up to 150 ms after a `dsp.nack` before dropping a frame (7.1 says
-30 ms), keeps up to 16 frames in flight (7.1 says 8), and shows decoded
-frames one per frame interval. A host cuts the bitrate only for more than
+bursts, are held up for a moment, or are lost in bursts. A display device
+sends up to three `dsp.nack` for an incomplete frame, 50 ms apart, before
+dropping it (7.1: one, then 30 ms), keeps up to 16 frames in flight (7.1
+says 8), and shows decoded frames one per frame interval. A host answers up
+to three repair requests per frame (7.1: one). A host cuts the bitrate only for more than
 10% loss or a 30 ms delay trend in two reports running, and lowers the
 frame rate for slow decoding only after six reports (7.2 says 5%, 15 ms,
 one report, three reports).

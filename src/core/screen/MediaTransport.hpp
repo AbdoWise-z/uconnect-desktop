@@ -85,10 +85,10 @@ struct Recovery {
 class Reassembler {
 public:
     void reset(quint16 session, int fps = 30);
-    // Patient (extended displays on Wi-Fi, kept across resets): a frame that
-    // is still incomplete after its repair request waits up to 150 ms for
-    // packets held up by the radio, and 16 frames may be in flight, before
-    // it is dropped and a keyframe asked for.
+    // Patient (extended displays on Wi-Fi, kept across resets): an incomplete
+    // frame gets up to three repair requests 50 ms apart (in a burst of
+    // loss the resent packets can be lost too) and 16 frames may be in
+    // flight, before it is dropped and a keyframe asked for.
     void setPatient(bool patient) { patient_ = patient; }
     QVector<EncodedFrame> receive(const QByteArray& packet, qint64 nowMs);
     Recovery expire(qint64 nowMs);
@@ -102,7 +102,8 @@ private:
         QVector<QByteArray> parts;
         int received = 0;
         qint64 deadline = 0;
-        bool nacked = false, complete = false;
+        int nacks = 0;  // repair requests sent for it
+        bool complete = false;
     };
     QVector<EncodedFrame> deliver();
     void erase(std::map<quint32, Assembly>::iterator it);

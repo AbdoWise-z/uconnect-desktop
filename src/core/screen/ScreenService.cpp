@@ -434,7 +434,10 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             const double frameValue = msg.value("frame").toDouble(-1);
             if (frameValue < 0 || frameValue > 4294967295. || std::floor(frameValue) != frameValue) return true;
             const auto frame = quint32(frameValue);
-            if (host->second.nackedFrame == frame) return true;
+            // An extended display may ask again (up to three times) for a frame
+            // whose resent packets were lost too; otherwise once per frame.
+            if (host->second.nackedFrame == frame && ++host->second.nackRepeats >= (display_ ? 3 : 1)) return true;
+            if (host->second.nackedFrame != frame) host->second.nackRepeats = 0;
             host->second.nackedFrame = frame;
             const auto array = msg.value("indexes").toArray();
             if (array.size() > MaxFragments) return true;

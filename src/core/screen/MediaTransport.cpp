@@ -194,11 +194,11 @@ Recovery Reassembler::expire(qint64 nowMs) {
         if (nowMs < assembly.deadline) { ++it; continue; }
         // Ask once for what is missing, unless it could not be decoded anyway
         // (a delta while waiting for a keyframe).
-        if (!assembly.complete && !assembly.nacked && (assembly.frame.keyframe || !waiting_)) {
+        if (!assembly.complete && assembly.nacks < (patient_ ? 3 : 1) && (assembly.frame.keyframe || !waiting_)) {
             Recovery::Nack nack{it->first, {}};
             for (int i = 0; i < assembly.parts.size(); ++i) if (assembly.parts[i].isEmpty()) nack.indexes.push_back(i);
             recovery.nacks.push_back(std::move(nack));
-            assembly.nacked = true; assembly.deadline = nowMs + std::max(patient_ ? 150 : 30, interval_);
+            ++assembly.nacks; assembly.deadline = nowMs + std::max(patient_ ? 50 : 30, interval_);
             ++it; continue;
         }
         stats_.lost += std::max(1, int(assembly.parts.size()) - assembly.received);
