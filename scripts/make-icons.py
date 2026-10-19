@@ -35,18 +35,18 @@ HOLE_R = 40                         # the nodes' holes, showing what is behind
 
 # The C band, measured along the top-left to bottom-right diagonal (u, from
 # the top-left corner) and across it (v, from the diagonal): its back spans
-# u 364-511 within |v| <= 365, its arms run on to the far corner with
-# 215 <= |v| <= 365.
+# u 364-511 within |v| <= 365, its arms run on with 215 <= |v| <= 365 and
+# end square at u 1075, short of the far corner.
 C_BACK = (364, 511)
 C_ARMS = (215, 365)
-FAR = 1600  # past the far corner
+ARM_END = 1075
 
 
 def c_band():
     """The C's outline as (x, y) points on the 1024 grid."""
     (b0, b1), (inner, outer) = C_BACK, C_ARMS
-    uv = [(FAR, -outer), (b0, -outer), (b0, outer), (FAR, outer),
-          (FAR, inner), (b1, inner), (b1, -inner), (FAR, -inner)]
+    uv = [(ARM_END, -outer), (b0, -outer), (b0, outer), (ARM_END, outer),
+          (ARM_END, inner), (b1, inner), (b1, -inner), (ARM_END, -inner)]
     r = math.sqrt(0.5)
     return [((u - v) * r, (u + v) * r) for u, v in uv]
 
