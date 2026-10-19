@@ -131,6 +131,11 @@ the rest.
 | `docs/protocol.md` | The app protocol on top of uconnect: messages, permissions, every service |
 | `docs/plans/` | Design notes for screen sharing and the extended display |
 
+## License
+
+uConnect Desktop is released under the [MIT License](LICENSE). The
+third-party software it uses keeps its own licenses, below.
+
 ## Third-party software
 
 uConnect uses [Qt](https://www.qt.io) (LGPL v3), [FFmpeg](https://ffmpeg.org)
