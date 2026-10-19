@@ -223,6 +223,90 @@ private slots:
         bad["lost"] = "100"; QVERIFY(!Feedback::parse(bad));
         controller.reset("tcp"); QCOMPARE(controller.bitrate(), 1000000);
     }
+
+    // A big keyframe is paced by its size: at 24 Mbit/s, 150 KB takes 50 ms,
+    // not the 4 ms a quarter interval would give it. Small frames keep the
+    // time-based spread.
+    void bigFramesArePacedBySize() {
+        for (int paceBps : {0, 24000000}) {
+            PacedSender sender;
+            const auto key = frame(0, true, 150000);
+            QVERIFY(sender.enqueue(key, 0, 16, .25, paceBps));
+            int sent = 0;
+            QVERIFY(sender.pump(10, [&](const QByteArray&) { ++sent; return true; }));
+            const int total = int(fragment(key).size());
+            if (paceBps) QVERIFY2(sent < total / 2, qPrintable(QString("%1 of %2 by 10 ms").arg(sent).arg(total)));
+            else QCOMPARE(sent, total);
+            QVERIFY(sender.pump(60, [&](const QByteArray&) { ++sent; return true; }));
+            QCOMPARE(sent, total);
+        }
+    }
+
+    // A frame whose last packet the radio holds up for ~120 ms: the patient
+    // receiver (extended displays) still completes it after asking for the
+    // repair; the default one gives up and wants a keyframe.
+    void patientReassemblerWaitsForHeldUpPackets() {
+        for (bool patient : {false, true}) {
+            Reassembler receiver; receiver.setPatient(patient); receiver.reset(1, 60);
+            auto key = frame(0, true); key.session = 1;
+            const auto parts = fragment(key);
+            QVector<EncodedFrame> done;
+            for (int i = 0; i < parts.size(); ++i) done += receiver.receive(parts[i], 0);
+            QCOMPARE(done.size(), 1);
+            auto delta = frame(1, false, 30000); delta.session = 1;
+            const auto pieces = fragment(delta);
+            for (int i = 0; i + 1 < pieces.size(); ++i) QVERIFY(receiver.receive(pieces[i], 10).isEmpty());
+            const auto first = receiver.expire(60);   // past the deadline: ask for the missing piece
+            QCOMPARE(first.nacks.size(), 1); QVERIFY(!first.keyframe);
+            const auto later = receiver.expire(130);  // still missing at +70 ms
+            QCOMPARE(later.keyframe, !patient);
+            QCOMPARE(later.nacks.size(), patient ? 1 : 0);  // the patient one asks again
+            const auto completed = receiver.receive(pieces.back(), 135);
+            QCOMPARE(completed.size(), patient ? 1 : 0);
+        }
+        // Even patient, a frame whose piece never comes is given up after
+        // three repair requests.
+        Reassembler receiver; receiver.setPatient(true); receiver.reset(1, 60);
+        auto key = frame(0, true); key.session = 1;
+        for (const auto& part : fragment(key)) receiver.receive(part, 0);
+        auto delta = frame(1, false, 30000); delta.session = 1;
+        const auto pieces = fragment(delta);
+        for (int i = 0; i + 1 < pieces.size(); ++i) receiver.receive(pieces[i], 10);
+        int nacks = 0; bool keyframe = false;
+        for (qint64 now = 60; now <= 400 && !keyframe; now += 10) {
+            const auto recovery = receiver.expire(now);
+            nacks += int(recovery.nacks.size()); keyframe = recovery.keyframe;
+        }
+        QCOMPARE(nacks, 3); QVERIFY(keyframe);
+    }
+
+    // Extended displays on Wi-Fi: a lone bad report, or loss under 10%, does
+    // not cut the bitrate (each cut costs a hardware encoder a keyframe), but
+    // sustained loss still does.
+    void tolerantCongestionRidesOutBursts() {
+        CongestionController controller; controller.setTolerant(true);
+        controller.reset("direct", 60, 2940, 40000000, 20000000);
+        for (int i = 0; i < 40; ++i) controller.update({100, 0, 0, 0, 0, 5});
+        const int clean = controller.bitrate();
+        QCOMPARE(clean, 40000000);
+        controller.update({100, 8, 0, 5, 10, 5});   // 7% loss
+        controller.update({100, 0, 0, 5, 20, 5});   // a delay bump
+        controller.update({100, 15, 0, 5, 10, 5});  // one bad report alone
+        controller.update({100, 0, 0, 5, 0, 5});
+        QCOMPARE(controller.bitrate(), clean);
+        controller.update({100, 20, 0, 5, 10, 5});
+        controller.update({100, 20, 0, 5, 10, 5});  // two running: congestion
+        QVERIFY(controller.bitrate() < clean);
+        // Decoding that looks slow for a report or two leaves the frame rate.
+        for (int i = 0; i < 40; ++i) controller.update({100, 0, 0, 0, 0, 5});
+        for (int i = 0; i < 3; ++i) controller.update({100, 0, 0, 0, 0, 30});
+        QCOMPARE(controller.fps(), 60);
+        // The strict default cuts on the first bad report.
+        CongestionController strict; strict.reset("direct", 60, 1920, 8000000);
+        const int before = strict.bitrate();
+        strict.update({100, 8, 0, 5, 10, 5});
+        QVERIFY(strict.bitrate() < before);
+    }
 };
 
 QTEST_GUILESS_MAIN(ScreenTransportTest)

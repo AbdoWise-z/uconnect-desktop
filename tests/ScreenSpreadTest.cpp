@@ -53,7 +53,7 @@ private slots:
         PeerAccess access{"key", "Viewer", "fp", {perm::CameraView, perm::ScreenDirect, perm::ControlDirect}, true};
         ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
             [&](const auto&) { return access; }, [](const auto&) { return true; }, [](const auto&) {},
-            [&](const auto&, const auto& data) { packets.push_back(data); return true; }, nullptr, {}, {}, true);
+            [&](const auto&, const auto& data) { packets.push_back(data); return true; }, nullptr, {}, {}, Kind::Camera);
         ScreenSettings settings; settings.ciscoLibrary = qEnvironmentVariable("UCD_TEST_OPENH264"); service.configure(settings); service.setOffered(true);
         QSignalSpy prompt(&service, &ScreenService::consentRequested);
         QVERIFY(!service.handle(peer(1), request("scr.request", 1)));

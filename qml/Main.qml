@@ -10,7 +10,7 @@ ApplicationWindow {
     height: 680
     minimumWidth: 900
     minimumHeight: 560
-    visible: true
+    visible: !App.startsHidden  // --minimized: opened later, from the tray
     color: Theme.canvas
     font.pixelSize: Theme.fontSize
     title: inWorkspace && App.topicId.length > 0
@@ -39,17 +39,37 @@ ApplicationWindow {
                                  : "connect"
     readonly property bool inWorkspace: page === "workspace"
 
-    // Closing this window also closes the debug and service windows.
-    onClosing: root.quitApp()
+    // Closing this window leaves the app in the tray, still connected and
+    // sharing; Exit (here or in the tray) ends it. Without a tray, or with
+    // that setting off, closing exits, which also closes the other windows.
+    onClosing: {
+        if (App.tray.available && App.closeToTray) App.tray.windowHidden()
+        else root.quitApp()
+    }
+    function restore() {
+        if (root.visibility === Window.Minimized) root.showNormal()
+        else root.show()
+        root.raise()
+        root.requestActivate()
+    }
+    Connections {
+        target: App.tray
+        function onShowRequested() { root.restore() }
+        function onSettingsRequested() { root.restore(); root.openSettings("") }
+        function onExitRequested() { root.quitApp() }
+        function onReopened() { if (!root.visible) root.restore() }
+    }
     // Qt.quit() first asks every visible window to close and gives up if one
     // refuses; the sharing bar refuses (it stops sharing instead), which left
     // the app running with no window. Stop sharing, then leave regardless.
     function quitApp() {
         App.screen.stopHosting()
         App.camera.stopHosting()
+        App.display.stopAll()
         Qt.exit(0)
     }
     Loader { source: App.screen.available ? Qt.resolvedUrl("ScreenSafety.qml") : "" }
+    Loader { source: App.display.available ? Qt.resolvedUrl("DisplaySafety.qml") : "" }
     Loader {
         active: App.camera.available
         Component.onCompleted: if (active) setSource(Qt.resolvedUrl("ScreenSafety.qml"), {controller: App.camera, camera: true})
@@ -69,7 +89,9 @@ ApplicationWindow {
         if (w && service === "control" && App.screen.available) App.screen.requestControl(devId, true)
         if (!w) {
             // No parent: each service gets an independent top-level window.
-            w = serviceWindowComponent.createObject(null, { service: service, devId: devId })
+            w = service === "display"
+                ? Qt.createComponent("DisplaySetup.qml").createObject(null, { devId: devId })
+                : serviceWindowComponent.createObject(null, { service: service, devId: devId })
             w.closing.connect(() => {
                 delete root.serviceWindows[key]
                 Qt.callLater(w.destroy)
@@ -216,6 +238,11 @@ ApplicationWindow {
             }
             ServiceMenu {
                 service: "control"
+                onOpenRequested: devId => root.openService(service, devId)
+            }
+            ServiceMenu {
+                service: "display"
+                enabled: App.display.available
                 onOpenRequested: devId => root.openService(service, devId)
             }
             UMenuSeparator {}

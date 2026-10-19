@@ -1,13 +1,23 @@
+#include <QApplication>
 #include <QCommandLineParser>
-#include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QtQml>
 
 #include "app/AppController.hpp"
+#include "app/SingleInstance.hpp"
+#include "app/TrayIcon.hpp"
+#ifdef UCD_HAS_SCREEN
+#include "core/display/DriverSetup.hpp"
+#endif
 
 int main(int argc, char* argv[]) {
-    QGuiApplication app(argc, argv);
+#ifdef UCD_HAS_SCREEN
+    // Run elevated by the app itself to install or remove the display driver.
+    if (const int code = ucd::display::handleDriverCommand(argc, argv); code >= 0) return code;
+#endif
+    // QApplication, not QGuiApplication: the tray's menu is a widget.
+    QApplication app(argc, argv);
     QGuiApplication::setOrganizationName(QStringLiteral("uConnect"));
     QGuiApplication::setApplicationName(QStringLiteral("uConnect Desktop"));
     QGuiApplication::setApplicationVersion(QStringLiteral("0.1.0"));
@@ -24,16 +34,23 @@ int main(int argc, char* argv[]) {
         "profile", "Use a separate settings profile, e.g. to run two instances on one machine.", "name");
     const QCommandLineOption connectOpt("connect", "Connect immediately on start.");
     const QCommandLineOption debugOpt("debug", "Open the debug window on start.");
+    const QCommandLineOption minimizedOpt("minimized", "Start in the system tray, without opening the window.");
     const QCommandLineOption verboseOpt("verbose", "Verbose uconnect library logging.");
     const QCommandLineOption relayOpt("force-relay",
         "Skip hole punching: connect through the server's relay and send media over TCP.");
-    cli.addOptions({serverOpt, topicOpt, nameOpt, profileOpt, connectOpt, debugOpt, verboseOpt, relayOpt});
+    cli.addOptions({serverOpt, topicOpt, nameOpt, profileOpt, connectOpt, debugOpt, minimizedOpt, verboseOpt, relayOpt});
     cli.process(app);
 
     if (cli.isSet(profileOpt)) {
         QGuiApplication::setApplicationName(
             QStringLiteral("uConnect Desktop (%1)").arg(cli.value(profileOpt)));
     }
+
+    // Already running (perhaps in the tray): bring that one back instead.
+    ucd::SingleInstance instance;
+    if (instance.forwarded()) return 0;
+    // Closing the window leaves the app in the tray; it ends through Exit.
+    QGuiApplication::setQuitOnLastWindowClosed(false);
 
     qRegisterMetaType<ucd::PeerRecord>();
     qRegisterMetaType<QVector<ucd::PeerRecord>>();
@@ -47,12 +64,16 @@ int main(int argc, char* argv[]) {
     options.showDebug   = cli.isSet(debugOpt);
     options.verbose     = cli.isSet(verboseOpt);
     options.forceRelay  = cli.isSet(relayOpt);
+    options.profile     = cli.value(profileOpt);
+    options.minimized   = cli.isSet(minimizedOpt);
 
     // Basic is the style meant to be restyled; the look comes from qml/Theme.qml.
     QQuickStyle::setStyle(QStringLiteral("Basic"));
 
     ucd::AppController controller(options);
     qmlRegisterSingletonInstance("UConnect", 1, 0, "App", &controller);
+    QObject::connect(&instance, &ucd::SingleInstance::activated,
+                     static_cast<ucd::TrayIcon*>(controller.tray()), &ucd::TrayIcon::showRequested);
 
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,

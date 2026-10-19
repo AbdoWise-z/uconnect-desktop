@@ -22,13 +22,13 @@ void DatagramChannel::close(const uconnect::DevId& peer) {
 
 bool DatagramChannel::send(const uconnect::DevId& peer, std::span<const uint8_t> bytes) {
     if (!active(peer) || bytes.empty() || bytes.size() > uconnect::Topic::max_datagram()) return false;
-    if (bytes.front() != 1 && bytes.front() != 2 && bytes.front() != 3) return false;
+    if (bytes.front() < 1 || bytes.front() > 5) return false;  // screen 1-2, camera 3, display 4-5
     return topic_ && topic_->send_datagram(peer, bytes);
 }
 
 bool DatagramChannel::receive(const uconnect::DevId& peer, std::span<const uint8_t> bytes) {
     if (!active(peer) || bytes.empty() || bytes.size() > uconnect::Topic::max_datagram()) return false;
-    if (bytes.front() != 1 && bytes.front() != 2 && bytes.front() != 3) return false;
+    if (bytes.front() < 1 || bytes.front() > 5) return false;  // screen 1-2, camera 3, display 4-5
     receive_(peer, bytes.front(), bytes);
     return true;
 }

@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QJSValue>
+#include <QProcess>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickStyle>
@@ -16,6 +17,11 @@
 #include <memory>
 
 #include "app/AppController.hpp"
+#include "app/LoginItem.hpp"
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 class SettingsTest : public QObject {
     Q_OBJECT
@@ -80,6 +86,7 @@ private slots:
     }
 
     void cleanup() {
+        ucd::login::setEnabled(QCoreApplication::applicationName(), false);
         dialog_.reset();
         engine_.reset();
         controller_.reset();
@@ -178,6 +185,34 @@ private slots:
         std::unique_ptr<QObject> host(safety.create());
         QVERIFY2(host, qPrintable(safety.errorString()));
     }
+
+    void loadsExtendedDisplayQml() {
+        const QString devId(32, 'a');
+        QQmlComponent setup(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/DisplaySetup.qml"));
+        QVERIFY2(setup.isReady(), qPrintable(setup.errorString()));
+        std::unique_ptr<QObject> window(setup.createWithInitialProperties({{"devId", devId}}));
+        QVERIFY2(window, qPrintable(setup.errorString()));
+        QQmlComponent safety(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/DisplaySafety.qml"));
+        QVERIFY2(safety.isReady(), qPrintable(safety.errorString()));
+        std::unique_ptr<QObject> prompts(safety.create());
+        QVERIFY2(prompts, qPrintable(safety.errorString()));
+        QQmlComponent viewer(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/DisplayView.qml"));
+        QVERIFY2(viewer.isReady(), qPrintable(viewer.errorString()));
+        std::unique_ptr<QObject> view(viewer.createWithInitialProperties({{"devId", devId}, {"screenIndex", 0}}));
+        QVERIFY2(view, qPrintable(viewer.errorString()));
+    }
+
+    void displaySettingsSurviveApplyAndRestart() {
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "setDisplaySetting",
+            Q_ARG(QVariant, QVariant("maxBitrate")), Q_ARG(QVariant, QVariant(60000000))));
+        QTRY_VERIFY(dialog_->property("modified").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QCOMPARE(controller_->display()->property("settings").toMap().value("maxBitrate").toInt(), 60000000);
+        QVERIFY(!dialog_->property("modified").toBool());
+        QSettings().sync();
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QCOMPARE(restarted.display()->property("settings").toMap().value("maxBitrate").toInt(), 60000000);
+    }
 #endif
 
     void appliesTheUploadLimit() {
@@ -210,6 +245,75 @@ private slots:
         const QVariantList trusted = restarted.trustedDevices();
         QCOMPARE(trusted.size(), 1);
         QCOMPARE(trusted.first().toMap().value("permissions").toStringList(), QStringList{"storage.read"});
+    }
+
+    void closeToTraySurvivesApplyAndRestart() {
+        QVERIFY(controller_->closeToTray());
+        QObject* settingsDraft = draft();
+        QVERIFY(settingsDraft);
+        QVERIFY(settingsDraft->setProperty("closeToTray", false));
+        QTRY_VERIFY(dialog_->property("modified").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QVERIFY(!controller_->closeToTray());
+        QSettings().sync();
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QVERIFY(!restarted.closeToTray());
+        // No QApplication here, so no tray: the window would simply exit.
+        QVERIFY(!restarted.tray()->property("available").toBool());
+    }
+
+    void launchAtLoginRegistersWithTheSystem() {
+        const QString name = QCoreApplication::applicationName();
+        const QString exe = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
+        QVERIFY(!controller_->launchAtLogin());
+        QObject* settingsDraft = draft();
+        QVERIFY(settingsDraft);
+        QVERIFY(settingsDraft->setProperty("launchAtLogin", true));
+        QTRY_VERIFY(dialog_->property("modified").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QVERIFY(controller_->launchAtLogin());
+        QVERIFY(ucd::login::isEnabled(name));
+        QVERIFY2(ucd::login::command(name).contains(exe), qPrintable(ucd::login::command(name)));
+        QVERIFY(ucd::login::command(name).endsWith("--minimized"));  // hidden by default
+#ifdef Q_OS_MACOS
+        // launchd skips a LaunchAgent it cannot parse, silently.
+        QCOMPARE(QProcess::execute("plutil", {"-lint", ucd::login::location(name)}), 0);
+#elif defined(Q_OS_LINUX)
+        if (!QStandardPaths::findExecutable("desktop-file-validate").isEmpty())
+            QCOMPARE(QProcess::execute("desktop-file-validate", {ucd::login::location(name)}), 0);
+#endif
+        controller_->applySettings({{"startHidden", false}});
+        QVERIFY(!ucd::login::command(name).contains("--minimized"));
+        {
+            ucd::AppController restarted(ucd::LaunchOptions{});
+            QVERIFY(restarted.launchAtLogin());
+            QVERIFY(!restarted.startHidden());
+        }
+#ifdef Q_OS_WIN
+        // Turned off in Task Manager's Startup apps: off here too, until turned on again.
+        const BYTE off[12] = {3};
+        const std::wstring value = name.toStdWString();
+        const wchar_t* approved = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
+        QCOMPARE(RegSetKeyValueW(HKEY_CURRENT_USER, approved, value.c_str(), REG_BINARY, off, sizeof(off)), ERROR_SUCCESS);
+        QVERIFY(!ucd::login::isEnabled(name));
+        {
+            ucd::AppController restarted(ucd::LaunchOptions{});
+            QVERIFY(!restarted.launchAtLogin());
+            restarted.applySettings({{"launchAtLogin", true}});
+            QVERIFY(ucd::login::isEnabled(name));
+        }
+#endif
+        controller_->applySettings({{"launchAtLogin", false}});
+        QVERIFY(!controller_->launchAtLogin());
+        QVERIFY(!ucd::login::isEnabled(name));
+        QVERIFY(ucd::login::command(name).isEmpty());
+    }
+
+    void minimizedOpensTheWindowWithoutATray() {
+        ucd::LaunchOptions options;
+        options.minimized = true;
+        ucd::AppController hidden(options);
+        QVERIFY(!hidden.startsHidden());  // no QApplication here, so no tray to open it from
     }
 
     void emptyFolderListRemovesSavedFolders() {

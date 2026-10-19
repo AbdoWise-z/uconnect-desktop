@@ -22,7 +22,7 @@ if (APPLE)
     set(WrapOpenGL_AGL "-framework OpenGL" CACHE STRING "Framework Qt links in place of AGL")
 endif ()
 find_package(Qt6 6.5 REQUIRED
-    COMPONENTS Core Gui Network Qml Quick QuickControls2 OpenGL Test
+    COMPONENTS Core Gui Widgets Network Qml Quick QuickControls2 OpenGL Test
     HINTS ${_ucd_qt_hints})
 qt_standard_project_setup(REQUIRES 6.5)
 set(_ucd_deploy_qmldir "${CMAKE_SOURCE_DIR}/qml")
@@ -31,7 +31,13 @@ set(_ucd_deploy_qmldir "${CMAKE_SOURCE_DIR}/qml")
 include(FetchContent)
 include(cmake/ScreenDependencies.cmake)
 set(UCONNECT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(UCONNECT_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+# The rendezvous server, uconnect-rendezvous, ships in the packages so anyone
+# can run their own. On Linux it is linked statically: one binary for any distro.
+option(UCD_BUILD_SERVER "Build the uConnect rendezvous server (uconnect-rendezvous) too" ON)
+set(UCONNECT_BUILD_SERVER ${UCD_BUILD_SERVER} CACHE BOOL "" FORCE)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(UCONNECT_STATIC_SERVER ${UCD_BUILD_SERVER} CACHE BOOL "" FORCE)
+endif ()
 FetchContent_Declare(
     uconnect
     GIT_REPOSITORY https://github.com/AbdoWise-z/uconnect.git
@@ -42,6 +48,13 @@ FetchContent_MakeAvailable(uconnect)
 # own headers when it is the top-level project. Here it resolves to this
 # project's root, so mirror the public headers there.
 file(COPY ${uconnect_SOURCE_DIR}/include/ DESTINATION ${CMAKE_SOURCE_DIR}/include)
+if (TARGET uconnect-rendezvous)
+    # Next to the app, with its example configuration and systemd unit, where
+    # the packaging scripts pick them up.
+    set_target_properties(uconnect-rendezvous PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    configure_file("${uconnect_SOURCE_DIR}/server/rendezvous.example.yaml" "${CMAKE_BINARY_DIR}/rendezvous.example.yaml" COPYONLY)
+    configure_file("${uconnect_SOURCE_DIR}/deploy/uconnect-rendezvous.service" "${CMAKE_BINARY_DIR}/uconnect-rendezvous.service" COPYONLY)
+endif ()
 
 # --- Monocypher (Ed25519 device identities) ------------------------------------
 # Small, audited, dependency-free. The optional ed25519 module is RFC 8032
@@ -123,15 +136,25 @@ if (UCD_SCREEN_AVAILABLE)
         src/core/screen/DesktopEncoder.cpp src/core/screen/DesktopEncoder.hpp)
     target_sources(uconnect_desktop_core PRIVATE src/core/screen/Input.cpp src/core/screen/Input.hpp src/core/screen/NativeInput.cpp)
     target_sources(uconnect_desktop_core PRIVATE src/core/screen/Cursor.cpp src/core/screen/Cursor.hpp)
+    # Extended display: the handshake and virtual monitors.
+    target_sources(uconnect_desktop_core PRIVATE
+        src/core/display/DisplayService.cpp src/core/display/DisplayService.hpp
+        src/core/display/VirtualDisplay.cpp src/core/display/VirtualDisplay.hpp
+        src/core/display/DriverSetup.hpp)
     target_compile_definitions(uconnect_desktop_core PUBLIC UCD_HAS_SCREEN)
     target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Multimedia ucd_ffmpeg_shared)
     if (WIN32)
         target_sources(uconnect_desktop_core PRIVATE src/core/screen/DesktopEncoder_win.cpp)
-        target_link_libraries(uconnect_desktop_core PRIVATE d3d11 dxgi)
+        target_sources(uconnect_desktop_core PRIVATE src/core/display/VirtualDisplay_win.cpp
+            src/core/display/DriverSetup_win.cpp src/core/display/uconnect-vdd.h)
+        target_link_libraries(uconnect_desktop_core PRIVATE d3d11 dxgi setupapi newdev)
     elseif (APPLE)
         enable_language(OBJCXX)
         set_source_files_properties(src/core/screen/DesktopEncoder_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         target_sources(uconnect_desktop_core PRIVATE src/core/screen/DesktopEncoder_mac.mm)
+        set_source_files_properties(src/core/display/VirtualDisplay_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_sources(uconnect_desktop_core PRIVATE src/core/display/VirtualDisplay_mac.mm)
+        target_link_libraries(uconnect_desktop_core PRIVATE "-framework Foundation" "-framework CoreGraphics")
         target_link_libraries(uconnect_desktop_core PRIVATE "-framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreVideo")
         target_link_libraries(uconnect_desktop_core PRIVATE "-framework ApplicationServices")
     elseif (UNIX)
@@ -147,12 +170,15 @@ if (NOT UCD_SCREEN_AVAILABLE)
     set(_ucd_deploy_qmldir "${CMAKE_BINARY_DIR}/deploy-qml")
     file(MAKE_DIRECTORY "${_ucd_deploy_qmldir}")
     file(GLOB _ucd_base_qml "${CMAKE_SOURCE_DIR}/qml/*.qml")
-    list(REMOVE_ITEM _ucd_base_qml "${CMAKE_SOURCE_DIR}/qml/ScreenView.qml" "${CMAKE_SOURCE_DIR}/qml/ScreenSafety.qml")
+    list(REMOVE_ITEM _ucd_base_qml "${CMAKE_SOURCE_DIR}/qml/ScreenView.qml" "${CMAKE_SOURCE_DIR}/qml/ScreenSafety.qml"
+        "${CMAKE_SOURCE_DIR}/qml/DisplaySetup.qml" "${CMAKE_SOURCE_DIR}/qml/DisplaySafety.qml" "${CMAKE_SOURCE_DIR}/qml/DisplayView.qml")
     file(COPY ${_ucd_base_qml} DESTINATION "${_ucd_deploy_qmldir}")
 endif ()
 
 add_library(uconnect_desktop_screen_ui STATIC
     src/app/ScreenController.cpp src/app/ScreenController.hpp
+    src/app/DisplayController.cpp src/app/DisplayController.hpp
+    src/app/KeepAwake.cpp src/app/KeepAwake.hpp
     src/core/screen/StopShortcut.cpp src/core/screen/StopShortcut.hpp)
 if (UCD_SCREEN_AVAILABLE)
     target_sources(uconnect_desktop_screen_ui PRIVATE src/app/InputCapture.cpp src/app/InputCapture.hpp)
@@ -166,8 +192,14 @@ if (UCD_SCREEN_AVAILABLE)
 endif ()
 target_link_libraries(uconnect_desktop_screen_ui PUBLIC uconnect_desktop_core Qt6::Gui)
 if (APPLE)
-    target_link_libraries(uconnect_desktop_screen_ui PRIVATE "-framework Carbon")
+    target_link_libraries(uconnect_desktop_screen_ui PRIVATE "-framework Carbon" "-framework IOKit")
 elseif (UNIX)
+    # Keeps a screen showing an extended display awake (DisplayController).
+    find_package(Qt6 QUIET COMPONENTS DBus HINTS ${_ucd_qt_hints})
+    if (TARGET Qt6::DBus)
+        target_compile_definitions(uconnect_desktop_screen_ui PRIVATE UCD_HAS_DBUS)
+        target_link_libraries(uconnect_desktop_screen_ui PRIVATE Qt6::DBus)
+    endif ()
     find_package(X11 QUIET)
     if (X11_FOUND)
         target_compile_definitions(uconnect_desktop_screen_ui PRIVATE UCD_HAS_X11)
@@ -191,6 +223,12 @@ qt_add_executable(uconnect_desktop
     src/app/PeerListModel.hpp
     src/app/TransferListModel.cpp
     src/app/TransferListModel.hpp
+    src/app/LoginItem.cpp
+    src/app/LoginItem.hpp
+    src/app/SingleInstance.cpp
+    src/app/SingleInstance.hpp
+    src/app/TrayIcon.cpp
+    src/app/TrayIcon.hpp
 )
 
 if (QT_KNOWN_POLICY_QTP0004)
@@ -198,7 +236,7 @@ if (QT_KNOWN_POLICY_QTP0004)
 endif ()
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 if (UCD_SCREEN_AVAILABLE)
-    set(_ucd_screen_qml qml/ScreenView.qml qml/ScreenSafety.qml)
+    set(_ucd_screen_qml qml/ScreenView.qml qml/ScreenSafety.qml qml/DisplaySetup.qml qml/DisplaySafety.qml qml/DisplayView.qml)
 endif ()
 qt_add_qml_module(uconnect_desktop
     URI UConnectDesktop
@@ -243,10 +281,14 @@ qt_add_qml_module(uconnect_desktop
         qml/Banner.qml
 )
 
+if (APPLE)
+    target_sources(uconnect_desktop PRIVATE src/app/DockReopen_mac.mm)
+    target_link_libraries(uconnect_desktop PRIVATE "-framework AppKit")
+endif ()
 target_link_libraries(uconnect_desktop PRIVATE
     uconnect_desktop_core
     uconnect_desktop_screen_ui
-    Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+    Qt6::Gui Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2)
 ucd_deploy_screen(uconnect_desktop)
 
 if (UCD_DEBUG_UI)
@@ -268,10 +310,34 @@ endif ()
 set_target_properties(uconnect_desktop PROPERTIES
     WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
     MACOSX_BUNDLE TRUE)
+# The app icon (packaging/icons, drawn by scripts/make-icons.py): the window
+# icon at runtime, the exe's icon on Windows, the bundle's on macOS.
+qt_add_resources(uconnect_desktop "app_icons" PREFIX "/icons" BASE "packaging/icons" FILES
+    packaging/icons/uconnect-16.png packaging/icons/uconnect-24.png packaging/icons/uconnect-32.png
+    packaging/icons/uconnect-48.png packaging/icons/uconnect-64.png packaging/icons/uconnect-128.png
+    packaging/icons/uconnect-256.png
+    packaging/icons/tray-black-16.png packaging/icons/tray-black-20.png packaging/icons/tray-black-24.png
+    packaging/icons/tray-black-32.png packaging/icons/tray-black-48.png packaging/icons/tray-black-64.png
+    packaging/icons/tray-white-16.png packaging/icons/tray-white-20.png packaging/icons/tray-white-24.png
+    packaging/icons/tray-white-32.png packaging/icons/tray-white-48.png packaging/icons/tray-white-64.png)
+if (WIN32)
+    enable_language(RC)
+    set(UCD_ICON_FILE "${CMAKE_SOURCE_DIR}/packaging/icons/uconnect.ico")
+    configure_file(packaging/icons/uconnect.rc.in "${CMAKE_BINARY_DIR}/uconnect.rc" @ONLY)
+    target_sources(uconnect_desktop PRIVATE "${CMAKE_BINARY_DIR}/uconnect.rc")
+    # Rebuilt when the icon is redrawn.
+    set_source_files_properties("${CMAKE_BINARY_DIR}/uconnect.rc" PROPERTIES OBJECT_DEPENDS "${UCD_ICON_FILE}")
+elseif (APPLE)
+    set_source_files_properties(packaging/icons/uconnect.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    target_sources(uconnect_desktop PRIVATE packaging/icons/uconnect.icns)
+    set_target_properties(uconnect_desktop PROPERTIES MACOSX_BUNDLE_ICON_FILE uconnect.icns)
+endif ()
 if (APPLE)
     set_target_properties(uconnect_desktop PROPERTIES
         MACOSX_BUNDLE_GUI_IDENTIFIER "dev.uconnect.desktop"
         MACOSX_BUNDLE_BUNDLE_NAME "uConnect"
+        # uConnect.app: the Dock and Finder name an app by its bundle's name.
+        OUTPUT_NAME "uConnect"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
@@ -348,7 +414,9 @@ if (UCD_BUILD_TESTS)
     ucd_add_test(IdentityTest)
     ucd_add_test(ScreenFoundationTest)
     ucd_add_test(ScreenTransportTest)
-    add_subdirectory(${uconnect_SOURCE_DIR}/server ${uconnect_BINARY_DIR}/server)
+    if (NOT TARGET uconnect_rendezvous)  # uconnect adds it itself when building the server
+        add_subdirectory(${uconnect_SOURCE_DIR}/server ${uconnect_BINARY_DIR}/server)
+    endif ()
     target_link_libraries(ScreenFoundationTest PRIVATE uconnect_rendezvous)
     if (UCD_SCREEN_AVAILABLE)
         set(UCD_TEST_OPENH264 "" CACHE FILEPATH "Separately installed Cisco library for codec and integration tests")
@@ -357,7 +425,17 @@ if (UCD_BUILD_TESTS)
         ucd_add_test(ScreenCaptureTest)
         ucd_add_test(ScreenInputTest)
         ucd_add_test(ScreenSpreadTest)
+        ucd_add_test(DisplayServiceTest)
+        ucd_add_test(VirtualDisplayTest)  # opt in: UCD_TEST_VIRTUAL_DISPLAY=1
+        ucd_add_test(KeepAwakeTest)
+        target_link_libraries(KeepAwakeTest PRIVATE uconnect_desktop_screen_ui)
+        if (TARGET Qt6::DBus AND UNIX AND NOT APPLE)  # as for the screen library
+            target_compile_definitions(KeepAwakeTest PRIVATE UCD_HAS_DBUS)
+            target_link_libraries(KeepAwakeTest PRIVATE Qt6::DBus)
+        endif ()
         target_link_libraries(ScreenInputTest PRIVATE uconnect_desktop_screen_ui)
+        ucd_add_test(NativeCursorTest)
+        target_link_libraries(NativeCursorTest PRIVATE uconnect_desktop_screen_ui Qt6::Gui)
         target_link_libraries(ScreenSessionTest PRIVATE uconnect_rendezvous)
         set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest ScreenSpreadTest PROPERTIES
             ENVIRONMENT "UCD_TEST_OPENH264=${UCD_TEST_OPENH264}")
@@ -387,8 +465,14 @@ if (UCD_BUILD_TESTS)
     target_sources(SettingsTest PRIVATE
         src/app/AppController.cpp src/app/AppController.hpp
         src/app/PeerListModel.cpp src/app/PeerListModel.hpp
-        src/app/TransferListModel.cpp src/app/TransferListModel.hpp)
-    target_link_libraries(SettingsTest PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+        src/app/TransferListModel.cpp src/app/TransferListModel.hpp
+        src/app/TrayIcon.cpp src/app/TrayIcon.hpp
+        src/app/LoginItem.cpp src/app/LoginItem.hpp)
+    if (APPLE)
+        target_sources(SettingsTest PRIVATE src/app/DockReopen_mac.mm)
+        target_link_libraries(SettingsTest PRIVATE "-framework AppKit")
+    endif ()
+    target_link_libraries(SettingsTest PRIVATE Qt6::Gui Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2)
     target_link_libraries(SettingsTest PRIVATE uconnect_desktop_screen_ui)
     target_compile_definitions(SettingsTest PRIVATE UCD_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
     get_property(_ucd_gui_test_environment TEST StorageViewTest PROPERTY ENVIRONMENT)

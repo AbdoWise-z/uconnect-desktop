@@ -13,6 +13,8 @@
 #include "app/InputCapture.hpp"
 #endif
 
+class QScreen;
+
 namespace ucd {
 class ScreenController : public QObject {
     Q_OBJECT
@@ -52,7 +54,7 @@ signals:
     void rememberPermission(const QString& key, const QString& permission);
     void notify(const QString& text);
 private:
-    void pushSettings();
+    void pushSettings(const QScreen* removed = nullptr);
     Session* session_;
     bool camera_ = false;
     QVariantMap settings_;

@@ -1,6 +1,10 @@
 param(
     [string]$BuildDirectory = 'cmake-build-pkg',
-    [string]$Label = 'test'
+    [string]$Label = 'test',
+    # The uconnect-vdd driver package (UConnectVDD.inf, .dll, .cat): a release
+    # or CI artifact of github.com/AbdoWise-z/uconnect-vdd, or a local build's
+    # x64\Release\UConnectVDD. Without it the package has no extended display.
+    [string]$DriverPackage = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,11 +36,30 @@ foreach ($directory in @('generic', 'iconengines', 'imageformats', 'networkinfor
         Copy-Item -LiteralPath $sourcePath -Destination $packagePath -Recurse
     }
 }
+# The rendezvous server, beside the app (it uses the same compiler runtime).
+foreach ($file in @('uconnect-rendezvous.exe', 'rendezvous.example.yaml')) {
+    $sourcePath = Join-Path $buildPath $file
+    if (-not (Test-Path -LiteralPath $sourcePath)) { throw "The build has no $file (configure with UCD_BUILD_SERVER=ON)." }
+    Copy-Item -LiteralPath $sourcePath -Destination $packagePath
+}
+Copy-Item -LiteralPath (Join-Path $projectDirectory 'packaging/SERVER.txt') -Destination $packagePath
 foreach ($notice in @('third-party-screen.md', 'FFmpeg-LICENSE.txt', 'GPL-3.0.txt', 'OpenH264-BINARY-LICENSE.txt')) {
     $sourcePath = Join-Path $buildPath $notice
     if (Test-Path -LiteralPath $sourcePath) {
         Copy-Item -LiteralPath $sourcePath -Destination $packagePath
     }
+}
+if ($DriverPackage) {
+    foreach ($file in @('UConnectVDD.inf', 'UConnectVDD.dll', 'uconnectvdd.cat')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $DriverPackage $file))) { throw "The driver package has no $file." }
+    }
+    $driverPath = Join-Path $packagePath 'drivers/uconnect-vdd'
+    New-Item -ItemType Directory -Path $driverPath -Force | Out-Null
+    Get-ChildItem -LiteralPath $DriverPackage -File |
+        Where-Object Extension -In '.inf', '.dll', '.cat', '.cer', '.txt' |
+        Copy-Item -Destination $driverPath
+} else {
+    Write-Warning 'No -DriverPackage: extended displays will ask for a driver this package does not have.'
 }
 @'
 [Paths]

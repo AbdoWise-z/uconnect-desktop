@@ -14,13 +14,14 @@ Window {
     property string query: ""
 
     readonly property var pages: [
-        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address startup automatically" },
+        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address startup automatically tray close minimize background login sign in boot hidden" },
         { id: "device", title: qsTr("Device"), depth: 0, keywords: "name computer" },
         { id: "services", title: qsTr("Services"), depth: 0, keywords: "offer share" },
         { id: "storage", title: Theme.serviceLabel("storage"), depth: 1, parent: "services", keywords: "files shared folders download upload drag drop" },
         { id: "camera", title: Theme.serviceLabel("camera"), depth: 1, parent: "services", keywords: "video webcam" },
         { id: "screen", title: Theme.serviceLabel("screen"), depth: 1, parent: "services", keywords: "display" },
         { id: "control", title: Theme.serviceLabel("control"), depth: 1, parent: "services", keywords: "mouse keyboard" },
+        { id: "display", title: Theme.serviceLabel("display"), depth: 1, parent: "services", keywords: "monitor second screen extend driver tablet" },
         { id: "permissions", title: qsTr("Permissions"), depth: 0, keywords: "trust trusted untrust identity fingerprint default access" },
         { id: "security", title: qsTr("Security"), depth: 0, keywords: "invite link key remember store" },
         { id: "advanced", title: qsTr("Advanced"), depth: 0, keywords: "debug verbose logging diagnostics" }
@@ -43,6 +44,9 @@ Window {
         property bool rememberTopic
         property bool verboseLogging
         property bool debugOnStartup
+        property bool closeToTray
+        property bool launchAtLogin
+        property bool startHidden
         property var sharedFolders: []
         property var readOnlyFolders: []
         property string downloadFolder
@@ -50,6 +54,7 @@ Window {
         property var defaultPermissions: []
         property var untrust: []  // public keys
         property var screen: ({})
+        property var display: ({})
     }
 
     function sameServices(a, b) {
@@ -64,6 +69,9 @@ Window {
                                      || draft.rememberTopic !== App.rememberTopic
                                      || draft.verboseLogging !== App.verboseLogging
                                      || draft.debugOnStartup !== App.debugOnStartup
+                                     || draft.closeToTray !== App.closeToTray
+                                     || draft.launchAtLogin !== App.launchAtLogin
+                                     || draft.startHidden !== App.startHidden
                                      || draft.sharedFolders.join("
 ") !== App.sharedFolders.join("
 ")
@@ -73,6 +81,7 @@ Window {
                                      || !sameServices(draft.defaultPermissions, App.defaultPermissions)
                                      || draft.untrust.length > 0
                                      || JSON.stringify(draft.screen) !== JSON.stringify(App.screen.settings)
+                                     || JSON.stringify(draft.display) !== JSON.stringify(App.display.settings)
 
     function load() {
         draft.server = App.serverAddress
@@ -82,6 +91,9 @@ Window {
         draft.rememberTopic = App.rememberTopic
         draft.verboseLogging = App.verboseLogging
         draft.debugOnStartup = App.debugOnStartup
+        draft.closeToTray = App.closeToTray
+        draft.launchAtLogin = App.launchAtLogin
+        draft.startHidden = App.startHidden
         draft.sharedFolders = App.sharedFolders.slice()
         draft.readOnlyFolders = App.readOnlyFolders.slice()
         draft.downloadFolder = App.downloadFolder
@@ -89,6 +101,7 @@ Window {
         draft.defaultPermissions = App.defaultPermissions.slice()
         draft.untrust = []
         draft.screen = Object.assign({}, App.screen.settings)
+        draft.display = Object.assign({}, App.display.settings)
     }
 
     function apply() {
@@ -100,13 +113,17 @@ Window {
             rememberTopic: draft.rememberTopic,
             verboseLogging: draft.verboseLogging,
             debugOnStartup: draft.debugOnStartup,
+            closeToTray: draft.closeToTray,
+            launchAtLogin: draft.launchAtLogin,
+            startHidden: draft.startHidden,
             sharedFolders: draft.sharedFolders,
             readOnlyFolders: draft.readOnlyFolders.filter(f => draft.sharedFolders.indexOf(f) >= 0),
             downloadFolder: draft.downloadFolder,
             maxUploadMB: draft.maxUploadMB,
             defaultPermissions: draft.defaultPermissions,
             untrust: draft.untrust,
-            screen: draft.screen
+            screen: draft.screen,
+            display: draft.display
         })
         load()  // the draft now matches what was applied
     }
@@ -120,6 +137,11 @@ Window {
         const next = Object.assign({}, draft.screen)
         next[key] = value
         draft.screen = next
+    }
+    function setDisplaySetting(key, value) {
+        const next = Object.assign({}, draft.display)
+        next[key] = value
+        draft.display = next
     }
     function toggleUntrust(key) {
         draft.untrust = draft.untrust.indexOf(key) >= 0 ? draft.untrust.filter(k => k !== key)
@@ -243,6 +265,41 @@ Window {
                     text: draft.rememberTopic
                           ? qsTr("Reconnects to the last topic, using its remembered invite link.")
                           : qsTr("Needs “Remember the invite link” under Security.")
+                }
+            }
+            UCheckBox {
+                text: qsTr("Start uConnect when you sign in")
+                checked: draft.launchAtLogin
+                onToggled: draft.launchAtLogin = checked
+            }
+            UCheckBox {
+                Layout.leftMargin: 24
+                text: qsTr("Start hidden in the system tray")
+                enabled: draft.launchAtLogin && App.tray.available
+                checked: draft.startHidden && App.tray.available
+                onToggled: draft.startHidden = checked
+            }
+            Indented {
+                Layout.leftMargin: 48
+                Help {
+                    text: App.tray.available
+                          ? qsTr("When it starts at sign-in, it waits in the tray without opening its window. Opening uConnect yourself always shows it.")
+                          : qsTr("This desktop has no system tray, so the window always opens.")
+                }
+            }
+
+            TitledSeparator { text: qsTr("Closing the window") }
+            UCheckBox {
+                text: qsTr("Keep running in the system tray")
+                enabled: App.tray.available
+                checked: draft.closeToTray
+                onToggled: draft.closeToTray = checked
+            }
+            Indented {
+                Help {
+                    text: App.tray.available
+                          ? qsTr("Stays connected, and keeps sharing, with the window closed. Open it again or exit from the tray icon.")
+                          : qsTr("This desktop has no system tray, so closing the window exits.")
                 }
             }
         }
@@ -580,8 +637,54 @@ Window {
                 text: qsTr("Quality, viewer limits and keyboard release are configured under Screen Sharing.")
             }
             Help {
-                visible: svcPage.service !== "screen" && svcPage.service !== "camera" && svcPage.service !== "control"
+                visible: svcPage.service !== "screen" && svcPage.service !== "camera" && svcPage.service !== "control" && svcPage.service !== "display"
                 text: qsTr("Options for this service will appear here once it is implemented.")
+            }
+            ColumnLayout {
+                visible: svcPage.service === "display"
+                Layout.fillWidth: true
+                spacing: 8
+                Help { text: qsTr("Offering it lets trusted devices ask to use this screen as a monitor; each request asks first unless you allow it without asking. To use another device as a monitor for this one, pick it under Services > Extended Display.") }
+                GridLayout {
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum bitrate (Mbit/s)") }
+                    USpinBox { from: 2; to: 100; value: (draft.display.maxBitrate || 40000000) / 1000000; onValueModified: dlg.setDisplaySetting("maxBitrate", value * 1000000) }
+                }
+                UCheckBox {
+                    text: qsTr("Keep the screen awake while showing a display")
+                    checked: draft.display.keepAwake !== false
+                    onToggled: dlg.setDisplaySetting("keepAwake", checked)
+                }
+                TitledSeparator { text: qsTr("Virtual Display Driver"); visible: App.display.driver.needsDriver === true }
+                ColumnLayout {
+                    visible: App.display.driver.needsDriver === true
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Help {
+                        text: App.display.driver.state === "ready" ? qsTr("Installed. Windows asks for administrator permission to change it.")
+                              : App.display.driver.detail || ""
+                    }
+                    RowLayout {
+                        spacing: 8
+                        UButton {
+                            text: App.display.driver.state === "outdated" ? qsTr("Update") : App.display.driver.state === "ready" ? qsTr("Reinstall") : qsTr("Install")
+                            enabled: App.display.driver.bundled === true && App.display.driver.busy !== true
+                            onClicked: App.display.installDriver()
+                        }
+                        UButton {
+                            text: qsTr("Remove")
+                            enabled: App.display.driver.state !== "notInstalled" && App.display.driver.busy !== true
+                            onClicked: App.display.removeDriver()
+                        }
+                        UButton { text: qsTr("Check again"); onClicked: App.display.refreshDriver() }
+                    }
+                    Help {
+                        visible: App.display.driver.bundled !== true
+                        text: qsTr("This build has no driver package (drivers/uconnect-vdd next to the program).")
+                    }
+                }
             }
             ColumnLayout {
                 visible: svcPage.service === "screen"
@@ -683,7 +786,8 @@ Window {
         case "storage": return storagePage
         case "camera":
         case "screen":
-        case "control": return servicePage
+        case "control":
+        case "display": return servicePage
         case "permissions": return permissionsPage
         case "security": return securityPage
         case "advanced": return advancedPage

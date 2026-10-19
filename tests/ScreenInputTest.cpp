@@ -170,7 +170,7 @@ private slots:
             ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
                 // Watching needs the host's identity proven, not trusted.
                 [](const auto&) { return PeerAccess{"key", "Host", "fp", {}, false, true}; },
-                [](const auto&) { return true; }, [](const auto&) {}, [](const auto&, const auto&) { return true; }, nullptr, {}, {}, camera);
+                [](const auto&) { return true; }, [](const auto&) {}, [](const auto&, const auto&) { return true; }, nullptr, {}, {}, camera ? Kind::Camera : Kind::Screen);
             QSignalSpy state(&service, &ScreenService::viewerChanged);
             service.request(peer());
             service.handle(peer(), {{"t", camera ? "cam.started" : "scr.started"}, {"request", 1}, {"session", 14}, {"codec", "h264"}, {"control", true}});

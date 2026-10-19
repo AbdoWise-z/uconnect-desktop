@@ -1,5 +1,8 @@
 #include "AppController.hpp"
 #include "ScreenController.hpp"
+#include "DisplayController.hpp"
+#include "LoginItem.hpp"
+#include "TrayIcon.hpp"
 
 #include <algorithm>
 
@@ -9,6 +12,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
@@ -44,6 +48,8 @@ constexpr auto AutoConnect    = "autoConnect";
 constexpr auto RememberTopic  = "rememberTopic";
 constexpr auto Verbose        = "verboseLogging";
 constexpr auto DebugOnStartup = "debugOnStartup";
+constexpr auto CloseToTray    = "closeToTray";
+constexpr auto StartHidden    = "startHidden";
 constexpr auto SharedFolders  = "storage/sharedFolders";
 constexpr auto ReadOnly       = "storage/readOnlyFolders";
 constexpr auto DownloadFolder = "storage/downloadFolder";
@@ -108,6 +114,14 @@ QStringList knownOnly(const QStringList& permissions, bool trusted = true) {
 }  // namespace
 
 AppController::AppController(const LaunchOptions& options, QObject* parent) : QObject(parent) {
+    // Every window's icon (title bars, the taskbar, Alt-Tab), in each size drawn.
+    // Not on macOS: there it would replace the bundle's icon in the Dock, which
+    // is drawn on Apple's grid to match the icons around it.
+#ifndef Q_OS_MACOS
+    QIcon icon;
+    for (int size : {16, 24, 32, 48, 64, 128, 256}) icon.addFile(QStringLiteral(":/icons/uconnect-%1.png").arg(size), QSize(size, size));
+    QGuiApplication::setWindowIcon(icon);
+#endif
     QSettings settings;
     firstRun_       = !settings.contains(Key::Server) && options.server.isEmpty();
     serverAddress_  = settings.value(Key::Server).toString();
@@ -118,6 +132,13 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     verbose_        = settings.value(Key::Verbose, false).toBool() || options.verbose;
     forceRelay_     = options.forceRelay;
     debugOnStartup_ = settings.value(Key::DebugOnStartup, false).toBool();
+    closeToTray_    = settings.value(Key::CloseToTray, true).toBool();
+    startHidden_    = settings.value(Key::StartHidden, true).toBool();
+    profile_        = options.profile;
+    // Registered with the system, not in settings; registering again keeps
+    // the command current when the app has moved or been updated.
+    launchAtLogin_  = login::isEnabled(QCoreApplication::applicationName());
+    if (launchAtLogin_) registerLogin(true);
     sharedFolders_  = settings.value(Key::SharedFolders).toStringList();
     readOnlyFolders_ = settings.value(Key::ReadOnly).toStringList();
     downloadFolder_ = settings.value(Key::DownloadFolder,
@@ -147,11 +168,19 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     session_->moveToThread(&worker_);
     screen_ = new ScreenController(session_, this);
     camera_ = new ScreenController(session_, this, true);
+    display_ = new DisplayController(session_, this);
+    tray_ = new TrayIcon(this, screen_, camera_, display_);
+    // Only where the window can be opened again, and never before setup.
+    startsHidden_ = options.minimized && tray_->available() && !firstRun_;
     connect(camera_, &ScreenController::notify, this, &AppController::notify);
-    auto stopMedia = [this] { screen_->stopHosting(); camera_->stopHosting(); };
+    connect(display_, &DisplayController::notify, this, &AppController::notify);
+    connect(display_, &DisplayController::rememberPermission, this, [this](const QString& key, const QString& permission) {
+        setDevicePermission(key, permission, true);
+    });
+    auto stopMedia = [this] { screen_->stopHosting(); camera_->stopHosting(); display_->stopAll(); };
     mediaStop_ = std::make_unique<screen::StopShortcut>(stopMedia);
     auto updateMediaShortcut = [this] {
-        const bool active = !screen_->hosting().isEmpty() || !camera_->hosting().isEmpty();
+        const bool active = !screen_->hosting().isEmpty() || !camera_->hosting().isEmpty() || !display_->hosting().isEmpty();
         const auto sequence = active ? screen_->settings().value("stopShortcut").toString() : QString();
         if (sequence != mediaShortcutSequence_ || active != mediaShortcutActive_) {
             mediaShortcutSequence_ = sequence; mediaShortcutActive_ = active;
@@ -162,6 +191,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     };
     connect(screen_, &ScreenController::hostingChanged, this, updateMediaShortcut);
     connect(camera_, &ScreenController::hostingChanged, this, updateMediaShortcut);
+    connect(display_, &DisplayController::hostingChanged, this, updateMediaShortcut);
     connect(screen_, &ScreenController::settingsChanged, this, updateMediaShortcut);
     connect(screen_, &ScreenController::rememberPermission, this, [this](const QString& key, const QString& permission) {
         setDevicePermission(key, permission, true);
@@ -287,7 +317,8 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
 
 AppController::~AppController() {
     mediaStop_.reset();
-    delete screen_; screen_ = nullptr; delete camera_; camera_ = nullptr;
+    delete tray_; tray_ = nullptr;
+    delete screen_; screen_ = nullptr; delete camera_; camera_ = nullptr; delete display_; display_ = nullptr;
     QMetaObject::invokeMethod(session_, [s = session_] { s->stop(); }, Qt::BlockingQueuedConnection);
     worker_.quit();
     worker_.wait();
@@ -347,7 +378,11 @@ void AppController::completeFirstRun(const QString& server, const QString& name)
 }
 
 void AppController::applySettings(const QVariantMap& values) {
-    if (values.contains("screen")) { screen_->configure(values.value("screen").toMap()); camera_->configure(values.value("screen").toMap()); }
+    if (values.contains("screen")) {
+        screen_->configure(values.value("screen").toMap()); camera_->configure(values.value("screen").toMap());
+        display_->refreshCodec();
+    }
+    if (values.contains("display")) display_->configure(values.value("display").toMap());
     QSettings settings;
     if (values.contains(Key::Server) && isValidServer(values.value(Key::Server).toString()))
         setServerAddress(values.value(Key::Server).toString());
@@ -432,6 +467,20 @@ void AppController::applySettings(const QVariantMap& values) {
     applyBool(Key::AutoConnect, autoConnect_);
     applyBool(Key::Verbose, verbose_);
     applyBool(Key::DebugOnStartup, debugOnStartup_);
+    applyBool(Key::CloseToTray, closeToTray_);
+
+    const bool hiddenBefore = startHidden_;
+    applyBool(Key::StartHidden, startHidden_);
+    const bool login = values.value(QStringLiteral("launchAtLogin"), launchAtLogin_).toBool();
+    if (login != launchAtLogin_ || (login && startHidden_ != hiddenBefore)) {
+        if (!registerLogin(login)) {
+            emit notify(login ? tr("Could not set uConnect to start when you sign in.")
+                              : tr("Could not stop uConnect from starting when you sign in."));
+        } else if (login != launchAtLogin_) {
+            launchAtLogin_ = login;
+            emit settingsChanged();
+        }
+    }
 
     const bool rememberBefore = rememberTopic_;
     applyBool(Key::RememberTopic, rememberTopic_);
@@ -443,6 +492,15 @@ void AppController::applySettings(const QVariantMap& values) {
 
 QObject* AppController::screen() const { return screen_; }
 QObject* AppController::camera() const { return camera_; }
+QObject* AppController::display() const { return display_; }
+QObject* AppController::tray() const { return tray_; }
+
+bool AppController::registerLogin(bool enabled) {
+    QStringList arguments;
+    if (startHidden_) arguments << QStringLiteral("--minimized");
+    if (!profile_.isEmpty()) arguments << QStringLiteral("--profile") << profile_;
+    return login::setEnabled(QCoreApplication::applicationName(), enabled, arguments);
+}
 
 // --- topic ---------------------------------------------------------------------
 

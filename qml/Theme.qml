@@ -50,7 +50,7 @@ QtObject {
     readonly property int stateFailed: 4
     readonly property int stateClosed: 5
 
-    readonly property var services: ["storage", "camera", "screen", "control"]
+    readonly property var services: ["storage", "camera", "screen", "control", "display"]
 
     function serviceLabel(service) {
         switch (service) {
@@ -58,6 +58,7 @@ QtObject {
         case "camera": return qsTr("Camera")
         case "screen": return qsTr("Screen Sharing")
         case "control": return qsTr("Remote Control")
+        case "display": return qsTr("Extended Display")
         }
         return service
     }
@@ -68,6 +69,7 @@ QtObject {
         case "camera": return qsTr("View a live feed from the device's camera.")
         case "screen": return qsTr("Watch the device's screen.")
         case "control": return qsTr("See the device's screen and control its mouse and keyboard.")
+        case "display": return qsTr("Let a trusted nearby device use this screen as an extra monitor.")
         }
         return ""
     }

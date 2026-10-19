@@ -7,6 +7,7 @@
 <key>CFBundleShortVersionString</key><string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
 <key>CFBundleVersion</key><string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleIconFile</key><string>${MACOSX_BUNDLE_ICON_FILE}</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSCameraUsageDescription</key><string>Share your camera with a trusted device after you approve its request.</string>
 <key>NSScreenCaptureUsageDescription</key><string>Share your screen with a trusted device after you approve its request.</string>

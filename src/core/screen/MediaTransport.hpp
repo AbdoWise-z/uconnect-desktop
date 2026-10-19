@@ -39,7 +39,9 @@ class PacedSender {
 public:
     static constexpr int MaxQueuedFrames = 3;
     // False if the queue is full: the frame is dropped.
-    bool enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs);
+    // `spread`: the share of the frame interval its datagrams are spread over.
+    // `paceBps`: if set, no frame goes out faster than that.
+    bool enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs, double spread = 0.5, int paceBps = 0);
     // False if queued frames were dropped for being too old.
     bool pump(qint64 nowMs, const std::function<bool(const QByteArray&)>& send);
     // Fragments of a frame sent in the last half second, marked as repairs.
@@ -84,6 +86,11 @@ struct Recovery {
 class Reassembler {
 public:
     void reset(quint16 session, int fps = 30);
+    // Patient (extended displays on Wi-Fi, kept across resets): an incomplete
+    // frame gets up to three repair requests 50 ms apart (in a burst of
+    // loss the resent packets can be lost too) and 16 frames may be in
+    // flight, before it is dropped and a keyframe asked for.
+    void setPatient(bool patient) { patient_ = patient; }
     QVector<EncodedFrame> receive(const QByteArray& packet, qint64 nowMs);
     Recovery expire(qint64 nowMs);
     Feedback report(double decodeMs = 0);
@@ -96,13 +103,14 @@ private:
         QVector<QByteArray> parts;
         int received = 0;
         qint64 deadline = 0;
-        bool nacked = false, complete = false;
+        int nacks = 0;  // repair requests sent for it
+        bool complete = false;
     };
     QVector<EncodedFrame> deliver();
     void erase(std::map<quint32, Assembly>::iterator it);
     quint16 session_ = 0;
     int interval_ = 33;
-    bool waiting_ = true, haveLast_ = false, requestKey_ = false;
+    bool waiting_ = true, haveLast_ = false, requestKey_ = false, patient_ = false;
     quint32 last_ = 0;
     qint64 lastKeyRequest_ = -1000;
     std::map<quint32, Assembly> frames_;
@@ -120,15 +128,22 @@ private:
 // the frame rate and width.
 class CongestionController {
 public:
-    void reset(const QString& path, int maxFps = 30, int maxWidth = 1920, int maxBitrate = 8000000);
+    // `startBitrate` replaces the default start on a direct path (extended
+    // displays start high: they only run between nearby devices).
+    void reset(const QString& path, int maxFps = 30, int maxWidth = 1920, int maxBitrate = 8000000, int startBitrate = 0);
     void update(const Feedback& report);
+    // Ride out short bursts of loss and delay (kept across resets).
+    void setTolerant(bool tolerant) { tolerant_ = tolerant; }
     int bitrate() const { return bitrate_; }
     int fps() const { return fps_; }
     int width() const { return width_; }
     static constexpr int MinBitrate = 300000;
+    static constexpr int MaxBitrate = 100000000;
 private:
     int bitrate_ = 4000000, cap_ = 8000000, fps_ = 30, maxFps_ = 30;
     int width_ = 1920, maxWidth_ = 1920, bad_ = 0, good_ = 0, slowDecode_ = 0, cooldown_ = 0;
+    bool tolerant_ = false;
+    int congestedStreak_ = 0;
 };
 
 }  // namespace ucd::screen

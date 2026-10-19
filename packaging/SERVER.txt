@@ -1,0 +1,35 @@
+uConnect rendezvous server (uconnect-rendezvous)
+
+Your devices find each other through a rendezvous server. It introduces
+them, then gets out of the way; when their networks will not let a direct
+connection through, it relays their traffic. It holds no keys and cannot
+read or impersonate what the devices send each other.
+
+Run it
+------
+Windows:  uconnect-rendezvous.exe --port 4433
+macOS:    ./uconnect-rendezvous --port 4433
+          (not notarized: allow it under System Settings > Privacy & Security,
+          or run: xattr -d com.apple.quarantine uconnect-rendezvous)
+Linux:    ./uconnect-rendezvous --port 4433
+          (one static binary; it runs on any x86_64 distribution)
+
+Then, in uConnect on every device, set Settings > Connection > Server to
+this machine's address and port, for example  203.0.113.7:4433
+
+Open the port for TCP AND UDP, in the OS firewall and in any cloud firewall
+(security group) or router in front of it. A server with only one of the two
+open starts cleanly and then cannot be reached.
+
+Options
+-------
+  --port <n>           TCP and UDP port (default 4433)
+  --config <file>      settings and limits from a file; rendezvous.example.yaml
+                       lists every key at its default
+  --no-relay           never relay traffic (devices that cannot connect
+                       directly will then not connect at all)
+  --nat-check          report this machine's NAT behaviour and exit
+  --help               every option
+
+On a Linux server, uconnect-rendezvous.service is a systemd unit to run it
+at boot; its first lines say how to install it.

@@ -33,13 +33,18 @@ QVector<QByteArray> fragment(const EncodedFrame& frame) {
     return result;
 }
 
-bool PacedSender::enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs) {
+bool PacedSender::enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs, double spread, int paceBps) {
     if (int(queue_.size()) >= MaxQueuedFrames) { ++dropped_; return false; }
     Queued queued{fragment(frame), 0, nowMs, nowMs, nowMs};
     if (queued.packets.isEmpty()) return false;
     interval_ = std::clamp(intervalMs, 1000 / MaxFps, 1000);
     queued.start = queue_.empty() ? nowMs : std::max(nowMs, queue_.back().due);
-    queued.due   = queued.start + std::max(4, interval_ / 2);
+    int duration = std::max(spread < 0.5 ? 2 : 4, int(interval_ * std::clamp(spread, 0.1, 1.0)));
+    // A big frame (a keyframe) no faster than paceBps: sent in a few
+    // milliseconds it is a burst Wi-Fi drops, which asks for another keyframe.
+    // At most 60 ms, so the frames behind it are not held up past their use.
+    if (paceBps > 0) duration = std::max(duration, int(std::min<qint64>(60, qint64(frame.bytes.size()) * 8000 / paceBps)));
+    queued.due   = queued.start + duration;
     while (!history_.empty() && (history_.front().expires < nowMs || history_.size() >= 16)) history_.pop_front();
     history_.push_back({frame.number, queued.packets, nowMs + 500});
     queue_.push_back(std::move(queued));
@@ -126,7 +131,7 @@ QVector<EncodedFrame> Reassembler::receive(const QByteArray& packet, qint64 nowM
         (index + 1 < count && packet.size() != 1100)) return {};
     if (haveLast_ && !newer(number, last_)) { ++stats_.late; return {}; }
     if (!frames_.contains(number)) {
-        if (frames_.size() >= 8 || buffered_ + packet.size() > MaxFrameBytes * 2) {
+        if (frames_.size() >= (patient_ ? 16u : 8u) || buffered_ + packet.size() > MaxFrameBytes * 2) {
             requestKey_ = true; return {};
         }
         Assembly assembly;
@@ -194,11 +199,11 @@ Recovery Reassembler::expire(qint64 nowMs) {
         if (nowMs < assembly.deadline) { ++it; continue; }
         // Ask once for what is missing, unless it could not be decoded anyway
         // (a delta while waiting for a keyframe).
-        if (!assembly.complete && !assembly.nacked && (assembly.frame.keyframe || !waiting_)) {
+        if (!assembly.complete && assembly.nacks < (patient_ ? 3 : 1) && (assembly.frame.keyframe || !waiting_)) {
             Recovery::Nack nack{it->first, {}};
             for (int i = 0; i < assembly.parts.size(); ++i) if (assembly.parts[i].isEmpty()) nack.indexes.push_back(i);
             recovery.nacks.push_back(std::move(nack));
-            assembly.nacked = true; assembly.deadline = nowMs + std::max(30, interval_);
+            ++assembly.nacks; assembly.deadline = nowMs + std::max(patient_ ? 50 : 30, interval_);
             ++it; continue;
         }
         stats_.lost += std::max(1, int(assembly.parts.size()) - assembly.received);
@@ -218,25 +223,34 @@ Feedback Reassembler::report(double decodeMs) {
     return result;
 }
 
-void CongestionController::reset(const QString& path, int maxFps, int maxWidth, int maxBitrate) {
-    cap_ = std::clamp(maxBitrate, MinBitrate, 20000000);
+void CongestionController::reset(const QString& path, int maxFps, int maxWidth, int maxBitrate, int startBitrate) {
+    cap_ = std::clamp(maxBitrate, MinBitrate, MaxBitrate);
     maxFps_ = fps_ = std::clamp(maxFps, 1, MaxFps);
     maxWidth_ = width_ = std::clamp(maxWidth, 320, 3840);
-    bitrate_ = std::min(cap_, path == "direct" ? 4000000 : path == "relayed" ? 1500000 : 1000000);
-    bad_ = good_ = slowDecode_ = cooldown_ = 0;
+    const int start = startBitrate > 0 && path == "direct" ? startBitrate
+        : path == "direct" ? 4000000 : path == "relayed" ? 1500000 : 1000000;
+    bitrate_ = std::min(cap_, start);
+    bad_ = good_ = slowDecode_ = cooldown_ = congestedStreak_ = 0;
 }
 
 void CongestionController::update(const Feedback& report) {
     if (cooldown_ > 0) --cooldown_;
     // Decoding slower than frames arrive: fewer frames, same quality.
     if (report.decodeMs > 1000. / fps_ * 1.2) {
-        if (++slowDecode_ >= 3 && fps_ > 5) { fps_ = std::max(5, fps_ * 3 / 4); slowDecode_ = 0; }
+        // A burst of frames decoded together can look slow for a report or two.
+        if (++slowDecode_ >= (tolerant_ ? 6 : 3) && fps_ > 5) { fps_ = std::max(5, fps_ * 3 / 4); slowDecode_ = 0; }
     } else {
         slowDecode_ = 0;
     }
     const double loss = double(report.lost) / std::max(1., double(report.received + report.lost));
-    if (loss > .05 || report.owdTrendMs > 15) {
+    // Tolerant (extended displays, nearby on Wi-Fi): short bursts of loss and
+    // delay are the radio, not a full link, and every cut costs a hardware
+    // encoder a keyframe; only sustained trouble lowers the bitrate.
+    const bool congested = tolerant_ ? loss > .10 || report.owdTrendMs > 30 : loss > .05 || report.owdTrendMs > 15;
+    if (congested) {
         good_ = 0;
+        if (tolerant_ && ++congestedStreak_ < 2) return;
+        congestedStreak_ = 0;
         if (cooldown_ > 0) return;  // already eased off for this patch
         bitrate_ = std::max(MinBitrate, int(bitrate_ * .8)); cooldown_ = 3;
         if (++bad_ >= 3 && bitrate_ <= MinBitrate * 2) {
@@ -246,7 +260,7 @@ void CongestionController::update(const Feedback& report) {
         }
         return;
     }
-    bad_ = 0; ++good_;
+    bad_ = 0; ++good_; congestedStreak_ = 0;
     if (report.received > 0) bitrate_ = std::min(cap_, bitrate_ + std::max(50000, bitrate_ / 20));
     if (good_ >= 10) {
         width_ = std::min(maxWidth_, width_ + 160);

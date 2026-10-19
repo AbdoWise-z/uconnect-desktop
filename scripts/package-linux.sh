@@ -19,7 +19,7 @@ dist="$project_dir/dist"
 echo "== build"
 cmake -S "$project_dir" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$qt" -DUCD_FFMPEG_ROOT="$ffmpeg" -DUCD_BUILD_TESTS=OFF > "$build.configure.log"
-cmake --build "$build" --target uconnect_desktop
+cmake --build "$build" --target uconnect_desktop uconnect-rendezvous
 
 echo "== deployment tools"
 mkdir -p "$tools"
@@ -39,32 +39,14 @@ meta="$build/deploy-meta"; mkdir -p "$meta"
 cat > "$meta/uconnect-desktop.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=uConnect Desktop
+Name=uConnect
 Comment=Share files, folders and screens between your devices
 Exec=uconnect_desktop
 Icon=uconnect-desktop
 Categories=Network;FileTransfer;
 Terminal=false
 EOF
-python3 - "$meta/uconnect-desktop.png" <<'EOF'
-# A plain 256x256 icon (accent-coloured rounded square, white ring) in pure Python.
-import struct, sys, zlib
-n = 256; rows = []
-for y in range(n):
-    row = bytearray([0])
-    for x in range(n):
-        cx, cy = x - 127.5, y - 127.5
-        corner = max(abs(cx) - 88, 0) ** 2 + max(abs(cy) - 88, 0) ** 2 <= 40 ** 2
-        r = (cx * cx + cy * cy) ** 0.5
-        if not corner: row += bytes([0, 0, 0, 0])
-        elif 52 <= r <= 74: row += bytes([255, 255, 255, 255])
-        else: row += bytes([0x35, 0x74, 0xF0, 255])
-    rows.append(bytes(row))
-def chunk(kind, data): return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, 6, 0, 0, 0)) \
-    + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b"")
-open(sys.argv[1], "wb").write(png)
-EOF
+cp "$project_dir/packaging/icons/uconnect-256.png" "$meta/uconnect-desktop.png"  # see scripts/make-icons.py
 
 echo "== bundle"
 appdir="$build/AppDir"; rm -rf "$appdir"
@@ -77,6 +59,13 @@ export PATH="$tools/bin:$PATH"
 "$tools/bin/linuxdeploy" --appdir "$appdir" -e "$build/uconnect_desktop" \
     -d "$meta/uconnect-desktop.desktop" -i "$meta/uconnect-desktop.png" --plugin qt > "$build.deploy.log" 2>&1 \
     || { tail -40 "$build.deploy.log"; exit 1; }
+# linuxdeploy-plugin-qt leaves out the Wayland client's buffer integrations;
+# without wayland-egl, Qt Quick has no OpenGL on Wayland and the app aborts.
+cp -r "$qt/plugins/wayland-graphics-integration-client" "$appdir/usr/plugins/"
+# The rendezvous server (static: runs on any distribution), at the top of the
+# folder, with its configuration example, systemd unit and notes.
+cp "$build/uconnect-rendezvous" "$build/rendezvous.example.yaml" "$build/uconnect-rendezvous.service" \
+    "$project_dir/packaging/SERVER.txt" "$appdir/"
 cp "$ffmpeg/LICENSE.txt" "$appdir/usr/FFmpeg-LICENSE.txt" 2>/dev/null || true
 cp "$project_dir/docs/OpenH264-BINARY-LICENSE.txt" "$project_dir/docs/third-party-screen.md" "$appdir/usr/" 2>/dev/null || true
 
