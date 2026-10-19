@@ -662,7 +662,8 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
                     // Extended displays run on a direct path with room to spare: a
                     // shorter spread costs less latency.
                     const double spread = display_ && it->second.path == "direct" ? 0.25 : 0.5;
-                    if (!it->second.sender.enqueue(frame, now_(), 1000 / fps, spread)) { it->second.forceKey = true; ++stats_.refused; }
+                    const int paceBps = display_ ? 3 * it->second.congestion.bitrate() : 0;
+                    if (!it->second.sender.enqueue(frame, now_(), 1000 / fps, spread, paceBps)) { it->second.forceKey = true; ++stats_.refused; }
                     else { ++it->second.framesSent; ++stats_.queued; }
                 } else if (!error.isEmpty()) {
                     auto failure = message("scr.error", token); failure["detail"] = error;

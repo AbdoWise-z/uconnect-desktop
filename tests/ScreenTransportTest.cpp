@@ -224,6 +224,24 @@ private slots:
         controller.reset("tcp"); QCOMPARE(controller.bitrate(), 1000000);
     }
 
+    // A big keyframe is paced by its size: at 24 Mbit/s, 150 KB takes 50 ms,
+    // not the 4 ms a quarter interval would give it. Small frames keep the
+    // time-based spread.
+    void bigFramesArePacedBySize() {
+        for (int paceBps : {0, 24000000}) {
+            PacedSender sender;
+            const auto key = frame(0, true, 150000);
+            QVERIFY(sender.enqueue(key, 0, 16, .25, paceBps));
+            int sent = 0;
+            QVERIFY(sender.pump(10, [&](const QByteArray&) { ++sent; return true; }));
+            const int total = int(fragment(key).size());
+            if (paceBps) QVERIFY2(sent < total / 2, qPrintable(QString("%1 of %2 by 10 ms").arg(sent).arg(total)));
+            else QCOMPARE(sent, total);
+            QVERIFY(sender.pump(60, [&](const QByteArray&) { ++sent; return true; }));
+            QCOMPARE(sent, total);
+        }
+    }
+
     // A frame whose last packet the radio holds up for ~120 ms: the patient
     // receiver (extended displays) still completes it after asking for the
     // repair; the default one gives up and wants a keyframe.

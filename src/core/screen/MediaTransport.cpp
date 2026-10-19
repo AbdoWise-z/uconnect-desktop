@@ -33,13 +33,18 @@ QVector<QByteArray> fragment(const EncodedFrame& frame) {
     return result;
 }
 
-bool PacedSender::enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs, double spread) {
+bool PacedSender::enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs, double spread, int paceBps) {
     if (int(queue_.size()) >= MaxQueuedFrames) { ++dropped_; return false; }
     Queued queued{fragment(frame), 0, nowMs, nowMs, nowMs};
     if (queued.packets.isEmpty()) return false;
     interval_ = std::clamp(intervalMs, 1000 / MaxFps, 1000);
     queued.start = queue_.empty() ? nowMs : std::max(nowMs, queue_.back().due);
-    queued.due   = queued.start + std::max(spread < 0.5 ? 2 : 4, int(interval_ * std::clamp(spread, 0.1, 1.0)));
+    int duration = std::max(spread < 0.5 ? 2 : 4, int(interval_ * std::clamp(spread, 0.1, 1.0)));
+    // A big frame (a keyframe) no faster than paceBps: sent in a few
+    // milliseconds it is a burst Wi-Fi drops, which asks for another keyframe.
+    // At most 60 ms, so the frames behind it are not held up past their use.
+    if (paceBps > 0) duration = std::max(duration, int(std::min<qint64>(60, qint64(frame.bytes.size()) * 8000 / paceBps)));
+    queued.due   = queued.start + duration;
     while (!history_.empty() && (history_.front().expires < nowMs || history_.size() >= 16)) history_.pop_front();
     history_.push_back({frame.number, queued.packets, nowMs + 500});
     queue_.push_back(std::move(queued));

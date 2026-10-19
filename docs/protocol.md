@@ -813,7 +813,9 @@ bursts, are held up for a moment, or are lost in bursts. A display device
 sends up to three `dsp.nack` for an incomplete frame, 50 ms apart, before
 dropping it (7.1: one, then 30 ms), keeps up to 16 frames in flight (7.1
 says 8), and shows decoded frames one per frame interval. A host answers up
-to three repair requests per frame (7.1: one). A host cuts the bitrate only for more than
+to three repair requests per frame (7.1: one), and spreads each frame over
+a quarter of a frame interval but no faster than three times its bitrate,
+at most 60 ms (7.2: half an interval), so a keyframe is not one burst. A host cuts the bitrate only for more than
 10% loss or a 30 ms delay trend in two reports running, and lowers the
 frame rate for slow decoding only after six reports (7.2 says 5%, 15 ms,
 one report, three reports).

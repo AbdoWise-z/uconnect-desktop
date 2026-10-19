@@ -40,7 +40,8 @@ public:
     static constexpr int MaxQueuedFrames = 3;
     // False if the queue is full: the frame is dropped.
     // `spread`: the share of the frame interval its datagrams are spread over.
-    bool enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs, double spread = 0.5);
+    // `paceBps`: if set, no frame goes out faster than that.
+    bool enqueue(const EncodedFrame& frame, qint64 nowMs, int intervalMs, double spread = 0.5, int paceBps = 0);
     // False if queued frames were dropped for being too old.
     bool pump(qint64 nowMs, const std::function<bool(const QByteArray&)>& send);
     // Fragments of a frame sent in the last half second, marked as repairs.
