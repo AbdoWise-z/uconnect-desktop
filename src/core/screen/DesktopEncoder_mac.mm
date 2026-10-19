@@ -64,7 +64,14 @@ class VideoToolboxDesktop : public DesktopEncoder {
     QString open(const QString& monitor, const CodecOptions& options) {
         if (@available(macOS 12.3, *)) {
             if (!lgplCodecBuild()) return QStringLiteral("this build has no VideoToolbox encoder");
-            if (!CGPreflightScreenCaptureAccess()) return QStringLiteral("no Screen Recording permission");
+            if (!CGPreflightScreenCaptureAccess()) {
+                // Checking never asks; ask once, which shows macOS's prompt. A
+                // grant takes effect when the app is next opened.
+                static std::once_flag asked;
+                std::call_once(asked, [] { dispatch_async(dispatch_get_main_queue(), ^{ CGRequestScreenCaptureAccess(); }); });
+                return QStringLiteral("no Screen Recording permission: allow uConnect under System Settings > "
+                                      "Privacy & Security > Screen & System Audio Recording, then reopen uConnect");
+            }
             __block SCShareableContent* content = nil;
             __block NSError* listError = nil;
             auto ready = dispatch_semaphore_create(0);
@@ -134,7 +141,7 @@ public:
             if (!codec_) {
                 if (const QString why = open(monitor, options); !why.isEmpty()) {
                     close();
-                    return {false, {}, {}, QStringLiteral("Native capture unavailable (%1); using Qt capture.").arg(why)};
+                    return {false, {}, {}, QStringLiteral("Native capture unavailable: %1.").arg(why)};
                 }
             }
             CVPixelBufferRef buffer = nullptr;

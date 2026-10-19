@@ -668,9 +668,10 @@ void ScreenService::encodeCapture(const QVideoFrame& video, const QImage& image,
             if (generation != generation_) return;
             if (native) {
                 if (gpu.active) {
-                    nativeFailures_ = 0; nativeRetryAt_ = 0; nativeWorked_ = true;
+                    nativeFailures_ = 0; nativeRetryAt_ = 0; nativeWorked_ = true; lastNativeError_.clear();
                 } else {
                     if (!nativeFailures_ && !nativeError.isEmpty()) emit activity(nativeError);
+                    if (!nativeError.isEmpty()) lastNativeError_ = nativeError;
                     // Only a path that worked is tried again (it was lost to a display
                     // change, a UAC prompt, the lock screen): each try pauses Qt's capture.
                     // An extended display has no other way to be captured, and a
@@ -761,7 +762,9 @@ void ScreenService::tick() {
         if (display_ && host.live && host.path == "opening" && now - host.startedAt > 5000)
             displayFailures.push_back({peer, QStringLiteral("No direct connection to the other device: an extended display needs both devices on the same network.")});
         else if (display_ && host.live && !host.framesSent && now - host.startedAt > 15000)
-            displayFailures.push_back({peer, QStringLiteral("The extended display could not be captured.")});
+            displayFailures.push_back({peer, lastNativeError_.isEmpty()
+                ? QStringLiteral("The extended display could not be captured.")
+                : QStringLiteral("The extended display could not be captured. %1").arg(lastNativeError_)});
         if (!host.live && now >= host.expires) expired.push_back(peer);
         else if (host.live) {
             if (host.controlRequest && now >= host.controlExpires) setControl(peer, false, host.controlRequest, "control request timed out");

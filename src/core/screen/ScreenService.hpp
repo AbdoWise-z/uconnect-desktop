@@ -222,6 +222,7 @@ private:
     void resetNative();
     void updateQtCapture();
     QString lastPipeline_;
+    QString lastNativeError_;  // why native capture last failed; empty once it works
     std::map<Peer, std::unique_ptr<Decoder>> decoders_;
     std::atomic_bool capturePending_{false};
     InputState input_;
