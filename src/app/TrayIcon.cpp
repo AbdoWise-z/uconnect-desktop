@@ -3,10 +3,12 @@
 #include <QAction>
 #include <QApplication>
 #include <QMenu>
+#include <QPointer>
 #include <QSettings>
 #include <QSystemTrayIcon>
 
 #include "AppController.hpp"
+#include "DockReopen.hpp"
 #include "DisplayController.hpp"
 #include "ScreenController.hpp"
 
@@ -32,11 +34,8 @@ TrayIcon::TrayIcon(AppController* app, ScreenController* screen, ScreenControlle
     // The menu is a widget, so it needs a QApplication (tests run without).
     available_ = qobject_cast<QApplication*>(QCoreApplication::instance()) && QSystemTrayIcon::isSystemTrayAvailable();
 #ifdef Q_OS_MACOS
-    // A click on the Dock icon re-activates the app even when it already is
-    // active; that is the only sign of it Qt gives.
-    connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
-        if (state == Qt::ApplicationActive) emit reopened();
-    });
+    if (qobject_cast<QApplication*>(QCoreApplication::instance()))
+        onDockReopen([self = QPointer<TrayIcon>(this)] { if (self) emit self->reopened(); });
 #endif
     if (!available_) return;
 

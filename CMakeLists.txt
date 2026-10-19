@@ -261,6 +261,10 @@ qt_add_qml_module(uconnect_desktop
         qml/Banner.qml
 )
 
+if (APPLE)
+    target_sources(uconnect_desktop PRIVATE src/app/DockReopen_mac.mm)
+    target_link_libraries(uconnect_desktop PRIVATE "-framework AppKit")
+endif ()
 target_link_libraries(uconnect_desktop PRIVATE
     uconnect_desktop_core
     uconnect_desktop_screen_ui
@@ -424,6 +428,10 @@ if (UCD_BUILD_TESTS)
         src/app/TransferListModel.cpp src/app/TransferListModel.hpp
         src/app/TrayIcon.cpp src/app/TrayIcon.hpp
         src/app/LoginItem.cpp src/app/LoginItem.hpp)
+    if (APPLE)
+        target_sources(SettingsTest PRIVATE src/app/DockReopen_mac.mm)
+        target_link_libraries(SettingsTest PRIVATE "-framework AppKit")
+    endif ()
     target_link_libraries(SettingsTest PRIVATE Qt6::Gui Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2)
     target_link_libraries(SettingsTest PRIVATE uconnect_desktop_screen_ui)
     target_compile_definitions(SettingsTest PRIVATE UCD_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
