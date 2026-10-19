@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <!-- uConnect: a "u" whose arm tips are two connected devices, before a
-       darker C that echoes it across the diagonal. -->
+       blue C that echoes it across the diagonal. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2F5FCB"/>
-      <stop offset="1" stop-color="#162F78"/>
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
     </linearGradient>
     <linearGradient id="band" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#21479F"/>
-      <stop offset="1" stop-color="#0D1F54"/>
+      <stop offset="0" stop-color="#5B9BFF"/>
+      <stop offset="1" stop-color="#2F5FD8"/>
     </linearGradient>
     <clipPath id="tile"><rect width="1024" height="1024" rx="228"/></clipPath>
   </defs>
@@ -17,7 +17,7 @@
     <polygon points="983.0,508.1 515.2,40.3 40.3,515.2 508.1,983.0 605.7,885.5 233.5,513.3 513.3,233.5 885.5,605.7" fill="url(#band)"/>
   </g>
   <path d="M 352 426.0 V 600 A 160.0 160.0 0 0 0 672 600 V 426.0"
-        fill="none" stroke="#FFFFFF" stroke-width="112"/>
-  <circle cx="352" cy="360" r="66.0" fill="none" stroke="#FFFFFF" stroke-width="52"/>
-  <circle cx="672" cy="360" r="66.0" fill="none" stroke="#FFFFFF" stroke-width="52"/>
+        fill="none" stroke="#111111" stroke-width="112"/>
+  <circle cx="352" cy="360" r="66.0" fill="none" stroke="#111111" stroke-width="52"/>
+  <circle cx="672" cy="360" r="66.0" fill="none" stroke="#111111" stroke-width="52"/>
 </svg>

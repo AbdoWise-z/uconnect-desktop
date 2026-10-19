@@ -2,7 +2,7 @@
 """Draws the uConnect icon and writes every platform's file from one design.
 
 The mark is the name: a bold "u" whose two arm tips are round nodes, two
-devices joined by the u. Behind it a darker "C" band echoes the u: its back
+devices joined by the u. Behind it a blue "C" band echoes the u: its back
 crosses the top-left corner, its arms run toward the bottom-right, and it is
 mirror-symmetric across that diagonal.
 
@@ -23,9 +23,9 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packaging"
 # Geometry on a 1024 grid.
 SIZE = 1024
 CORNER = 228                        # the rounded square's corner radius
-TOP, BOTTOM = "#2F5FCB", "#162F78"  # background gradient, top-left to bottom-right
-C_TOP, C_BOTTOM = "#21479F", "#0D1F54"  # the C band: the same direction, darker
-INK = "#FFFFFF"
+TOP, BOTTOM = "#FFFFFF", "#FFFFFF"  # background gradient, top-left to bottom-right
+C_TOP, C_BOTTOM = "#5B9BFF", "#2F5FD8"  # the C band: the same direction, blue
+INK = "#111111"
 LEFT_X, RIGHT_X = 352, 672          # the u's arm centres
 ARM_TOP = 360                       # where the arms start (the nodes' centres)
 BOWL_Y = 600                        # the bowl's centre: arms run straight down to it
@@ -65,7 +65,7 @@ def svg():
         for x in (LEFT_X, RIGHT_X))
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SIZE} {SIZE}">
   <!-- uConnect: a "u" whose arm tips are two connected devices, before a
-       darker C that echoes it across the diagonal. -->
+       blue C that echoes it across the diagonal. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="{TOP}"/>
