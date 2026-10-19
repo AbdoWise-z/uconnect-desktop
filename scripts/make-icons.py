@@ -51,6 +51,10 @@ C_PADDING = 0.04
 # macOS icons use Apple's grid instead (about 10%).
 PADDING = 0.05
 MAC_INSET = 0.1
+# Inside the tile, the C and the u are scaled about its centre to leave this
+# much more room to its edge.
+INNER_PADDING = 0.05
+INNER = 1 - 2 * INNER_PADDING
 # The tray icon: the u's height, as a share of the icon's.
 TRAY_FILL = 0.9
 
@@ -61,7 +65,7 @@ def c_band():
     uv = [(ARM_END, -outer), (b0, -outer), (b0, outer), (ARM_END, outer),
           (ARM_END, inner), (b1, inner), (b1, -inner), (ARM_END, -inner)]
     r = math.sqrt(0.5)
-    scale, centre = 1 - 2 * C_PADDING, SIZE / 2
+    scale, centre = (1 - 2 * C_PADDING) * INNER, SIZE / 2
     return [(centre + ((u - v) * r - centre) * scale, centre + ((u + v) * r - centre) * scale) for u, v in uv]
 
 
@@ -91,9 +95,11 @@ def svg():
     <rect width="{SIZE}" height="{SIZE}" fill="url(#bg)"/>
     <polygon points="{band}" fill="url(#band)"/>
   </g>
+  <g transform="translate({SIZE / 2:g} {SIZE / 2:g}) scale({INNER:g}) translate({-SIZE / 2:g} {-SIZE / 2:g})">
   <path d="M {LEFT_X} {ARM_TOP + ring} V {BOWL_Y} A {r} {r} 0 0 0 {RIGHT_X} {BOWL_Y} V {ARM_TOP + ring}"
         fill="none" stroke="{INK}" stroke-width="{STROKE}"/>
 {nodes}
+  </g>
 </svg>
 """
 
@@ -111,9 +117,11 @@ def gradient(big, start, end):
 
 
 def mark(k):
-    """The u as a mask on the 1024 grid drawn k times larger, holes cut out."""
+    """The u as a mask on the 1024 grid drawn k times larger, holes cut out,
+    scaled by INNER about the centre."""
     big = SIZE * k
-    s = lambda v: int(round(v * k))
+    s = lambda v: int(round((SIZE / 2 + (v - SIZE / 2) * INNER) * k))  # a position
+    w = lambda v: int(round(v * INNER * k))                              # a length
     ink = Image.new("L", (big, big), 0)
     draw = ImageDraw.Draw(ink)
     half = STROKE / 2
@@ -122,7 +130,7 @@ def mark(k):
     r = (RIGHT_X - LEFT_X) / 2
     cx = (LEFT_X + RIGHT_X) / 2
     draw.arc([s(cx - r - half), s(BOWL_Y - r - half), s(cx + r + half), s(BOWL_Y + r + half)],
-             start=0, end=180, fill=255, width=s(STROKE))
+             start=0, end=180, fill=255, width=w(STROKE))
     for x in (LEFT_X, RIGHT_X):
         draw.ellipse([s(x - NODE_R), s(ARM_TOP - NODE_R), s(x + NODE_R), s(ARM_TOP + NODE_R)], fill=255)
         draw.ellipse([s(x - HOLE_R), s(ARM_TOP - HOLE_R), s(x + HOLE_R), s(ARM_TOP + HOLE_R)], fill=0)
