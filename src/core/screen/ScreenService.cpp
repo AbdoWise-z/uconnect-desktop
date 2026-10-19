@@ -189,6 +189,7 @@ void ScreenService::startHost(const Peer& peer) {
     host.live = true; host.lastReport = now_(); host.startedAt = now_();
     host.monitor = settings_.monitor;
     for (const auto& [other, existing] : hosts_) if (other != peer && existing.live) { host.monitor = existing.monitor; break; }
+    host.congestion.setTolerant(display_);
     host.congestion.reset(host.path, host.fps, host.width, settings_.maxBitrate, display_ ? DisplayStartBitrate : 0);
     if (!open_(peer)) { fail(peer, host.request, "transport"); hosts_.erase(peer); emit hostEnded(hex(peer), "transport"); return; }
     emit consentClosed(hex(peer), host.request);
@@ -424,6 +425,8 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             if (const auto report = Feedback::parse(msg)) {
                 if (now_() - host->second.lastReport < 100) return true;
                 host->second.lastReport = now_(); host->second.congestion.update(*report);
+                host->second.reportLoss = double(report->lost) / std::max(1., double(report->received + report->lost));
+                host->second.reportTrendMs = report->owdTrendMs;
             }
         } else if (type == "scr.keyframe") host->second.forceKey = true;
         else if (type == "scr.nack") {
@@ -498,19 +501,21 @@ void ScreenService::decodeNext(const Peer& peer) {
     auto complete = std::move(viewer.toDecode);
     viewer.toDecode.clear();
     const auto token = viewer.token; const auto generation = decoderGeneration_; const auto started = monotonicMs();
-    QMetaObject::invokeMethod(decoderWorker_, [this, peer, token, generation, complete = std::move(complete), started] {
+    const bool everyFrame = display_;
+    QMetaObject::invokeMethod(decoderWorker_, [this, peer, token, generation, complete = std::move(complete), started, everyFrame] {
         auto& decoder = decoders_[peer]; if (!decoder) decoder = std::make_unique<Decoder>();
-        // Only the last frame of a batch is shown; the others just advance the decoder.
-        QVideoFrame image; bool any = false;
+        // Screen sharing shows only the last frame of a batch; the others just
+        // advance the decoder. An extended display paces every frame out.
+        QVector<QVideoFrame> images; bool any = false;
         for (qsizetype i = 0; i < complete.size(); ++i) {
             bool decoded = false;
-            auto picture = decoder->decodeFrame(complete[i], i == complete.size() - 1, &decoded);
+            auto picture = decoder->decodeFrame(complete[i], everyFrame || i == complete.size() - 1, &decoded);
             any |= decoded;
-            if (picture.isValid()) image = std::move(picture);
+            if (picture.isValid()) { if (!everyFrame) images.clear(); images.push_back(std::move(picture)); }
         }
         // Per frame: a batch taking longer is not a slower decoder.
         const double elapsed = double(monotonicMs() - started) / std::max<qsizetype>(1, complete.size());
-        QMetaObject::invokeMethod(this, [this, peer, token, generation, image, any, elapsed] {
+        QMetaObject::invokeMethod(this, [this, peer, token, generation, images, any, elapsed] {
             const auto it = viewers_.find(peer);
             if (generation != decoderGeneration_ || it == viewers_.end() || it->second.token != token) return;
             it->second.decoding = false; it->second.decodeMs = elapsed; stats_.decodeMs += elapsed;
@@ -518,17 +523,37 @@ void ScreenService::decodeNext(const Peer& peer) {
                 it->second.toDecode.clear();
                 it->second.receiver.reset(token, it->second.fps);
                 send_(peer, message("scr.keyframe", token));
-            } else if (image.isValid()) {
-                ++it->second.decoded;
+            } else if (!images.isEmpty()) {
+                it->second.decoded += int(images.size());
                 if (!it->second.pictured) {
                     it->second.pictured = true;
                     showViewer(peer, "live", {}, {{"pictured", true}});
                 }
-                emit frameReady(hex(peer), image); ++stats_.shown;
+                if (display_) {
+                    // At most 3 waiting: older ones are too late to be worth showing.
+                    for (const auto& image : images) it->second.present.push_back(image);
+                    while (it->second.present.size() > 3) it->second.present.pop_front();
+                    presentNext(peer, it->second, now_());
+                } else {
+                    emit frameReady(hex(peer), images.back()); ++stats_.shown;
+                }
             }
             decodeNext(peer);
         });
     });
+}
+
+// Shows the next waiting picture once its time has come: one per frame
+// interval, a little faster while more are waiting so latency does not build.
+void ScreenService::presentNext(const Peer& peer, Viewer& viewer, qint64 now) {
+    if (viewer.present.empty()) return;
+    const double interval = 1000. / std::max(1, viewer.fps);
+    if (now < viewer.presentAt) return;
+    emit frameReady(hex(peer), viewer.present.front()); ++stats_.shown;
+    viewer.present.pop_front();
+    const double next = viewer.present.size() > 1 ? interval * .75 : interval;
+    // After a pause, the cadence starts again from now.
+    viewer.presentAt = now - viewer.presentAt > qint64(interval) ? now + qint64(next) : viewer.presentAt + qint64(next);
 }
 
 void ScreenService::pathChanged(const Peer& peer, const QString& path) {
@@ -658,12 +683,12 @@ void ScreenService::logStats(qint64 now) {
     QString line = QStringLiteral("[stats%1]").arg(camera_ ? " camera" : display_ ? " display" : "");
     for (const auto& [peer, host] : hosts_) if (host.live) {
         line += QStringLiteral(" host: offered %1/s (busy %2/s), throttled %3/s, encodes %4/s at %5 ms, frames %6/s, queued %7/s, refused %8/s,"
-                               " sender drops %9 | target %10 fps %11 kbit/s %12 px | %13")
+                               " sender drops %9 | target %10 fps %11 kbit/s %12 px | loss %13% trend %14 ms | %15")
             .arg(rate(stats_.offered), rate(stats_.busy), rate(stats_.throttled), rate(stats_.encodes))
             .arg(stats_.encodes ? stats_.encodeMs / stats_.encodes : 0., 0, 'f', 1)
             .arg(rate(stats_.frames), rate(stats_.queued), rate(stats_.refused))
             .arg(host.sender.dropped()).arg(host.congestion.fps()).arg(host.congestion.bitrate() / 1000).arg(host.congestion.width())
-            .arg(lastPipeline_);
+            .arg(host.reportLoss * 100, 0, 'f', 1).arg(host.reportTrendMs, 0, 'f', 1).arg(lastPipeline_);
         break;
     }
     if (!viewers_.empty())
@@ -716,6 +741,7 @@ void ScreenService::tick() {
         }
     }
     for (auto& [peer, viewer] : viewers_) {
+        if (!viewer.present.empty()) presentNext(peer, viewer, now);
         if (!viewer.token) { if (now >= viewer.expires) expiredViewers.push_back(peer); continue; }
         if (!viewer.pictured && !viewer.stalledTold && now - viewer.liveAt > 8000) {
             viewer.stalledTold = true;

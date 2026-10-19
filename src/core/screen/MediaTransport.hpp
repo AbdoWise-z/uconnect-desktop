@@ -125,6 +125,8 @@ public:
     // displays start high: they only run between nearby devices).
     void reset(const QString& path, int maxFps = 30, int maxWidth = 1920, int maxBitrate = 8000000, int startBitrate = 0);
     void update(const Feedback& report);
+    // Ride out short bursts of loss and delay (kept across resets).
+    void setTolerant(bool tolerant) { tolerant_ = tolerant; }
     int bitrate() const { return bitrate_; }
     int fps() const { return fps_; }
     int width() const { return width_; }
@@ -133,6 +135,8 @@ public:
 private:
     int bitrate_ = 4000000, cap_ = 8000000, fps_ = 30, maxFps_ = 30;
     int width_ = 1920, maxWidth_ = 1920, bad_ = 0, good_ = 0, slowDecode_ = 0, cooldown_ = 0;
+    bool tolerant_ = false;
+    int congestedStreak_ = 0;
 };
 
 }  // namespace ucd::screen

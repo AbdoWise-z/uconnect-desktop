@@ -225,20 +225,27 @@ void CongestionController::reset(const QString& path, int maxFps, int maxWidth, 
     const int start = startBitrate > 0 && path == "direct" ? startBitrate
         : path == "direct" ? 4000000 : path == "relayed" ? 1500000 : 1000000;
     bitrate_ = std::min(cap_, start);
-    bad_ = good_ = slowDecode_ = cooldown_ = 0;
+    bad_ = good_ = slowDecode_ = cooldown_ = congestedStreak_ = 0;
 }
 
 void CongestionController::update(const Feedback& report) {
     if (cooldown_ > 0) --cooldown_;
     // Decoding slower than frames arrive: fewer frames, same quality.
     if (report.decodeMs > 1000. / fps_ * 1.2) {
-        if (++slowDecode_ >= 3 && fps_ > 5) { fps_ = std::max(5, fps_ * 3 / 4); slowDecode_ = 0; }
+        // A burst of frames decoded together can look slow for a report or two.
+        if (++slowDecode_ >= (tolerant_ ? 6 : 3) && fps_ > 5) { fps_ = std::max(5, fps_ * 3 / 4); slowDecode_ = 0; }
     } else {
         slowDecode_ = 0;
     }
     const double loss = double(report.lost) / std::max(1., double(report.received + report.lost));
-    if (loss > .05 || report.owdTrendMs > 15) {
+    // Tolerant (extended displays, nearby on Wi-Fi): short bursts of loss and
+    // delay are the radio, not a full link, and every cut costs a hardware
+    // encoder a keyframe; only sustained trouble lowers the bitrate.
+    const bool congested = tolerant_ ? loss > .10 || report.owdTrendMs > 30 : loss > .05 || report.owdTrendMs > 15;
+    if (congested) {
         good_ = 0;
+        if (tolerant_ && ++congestedStreak_ < 2) return;
+        congestedStreak_ = 0;
         if (cooldown_ > 0) return;  // already eased off for this patch
         bitrate_ = std::max(MinBitrate, int(bitrate_ * .8)); cooldown_ = 3;
         if (++bad_ >= 3 && bitrate_ <= MinBitrate * 2) {
@@ -248,7 +255,7 @@ void CongestionController::update(const Feedback& report) {
         }
         return;
     }
-    bad_ = 0; ++good_;
+    bad_ = 0; ++good_; congestedStreak_ = 0;
     if (report.received > 0) bitrate_ = std::min(cap_, bitrate_ + std::max(50000, bitrate_ / 20));
     if (good_ >= 10) {
         width_ = std::min(maxWidth_, width_ + 160);

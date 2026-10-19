@@ -125,6 +125,7 @@ private:
         qint64 startedAt = 0;
         QString controlRefused;  // control was asked for but cannot be granted: why
         quint64 framesSent = 0;
+        double reportLoss = 0, reportTrendMs = 0;  // the last report, for the stats log
         bool stalledTold = false;
         std::optional<quint32> nackedFrame;
         QString path = "opening";
@@ -150,6 +151,11 @@ private:
         quint32 controlRequest = 0;
         quint32 cursorSequence = 0;
         bool haveCursor = false;
+        // Extended displays: decoded pictures wait here to be shown one per
+        // frame interval, so frames the network delivers in bursts are not
+        // shown in bursts (or skipped).
+        std::deque<QVideoFrame> present;
+        qint64 presentAt = 0;
     };
     void startHost(const Peer& peer);
     void endRoles(const Peer& peer, const QString& reason, bool asHost, bool asViewer);
@@ -166,6 +172,7 @@ private:
     void showHosting();
     void encodeCapture(const QVideoFrame& frame, const QImage& image, quint32 captureMs);
     void decodeNext(const Peer& peer);
+    void presentNext(const Peer& peer, Viewer& viewer, qint64 now);
     Send send_;
     Authorize authorize_;
     Open open_;

@@ -223,6 +223,34 @@ private slots:
         bad["lost"] = "100"; QVERIFY(!Feedback::parse(bad));
         controller.reset("tcp"); QCOMPARE(controller.bitrate(), 1000000);
     }
+
+    // Extended displays on Wi-Fi: a lone bad report, or loss under 10%, does
+    // not cut the bitrate (each cut costs a hardware encoder a keyframe), but
+    // sustained loss still does.
+    void tolerantCongestionRidesOutBursts() {
+        CongestionController controller; controller.setTolerant(true);
+        controller.reset("direct", 60, 2940, 40000000, 20000000);
+        for (int i = 0; i < 40; ++i) controller.update({100, 0, 0, 0, 0, 5});
+        const int clean = controller.bitrate();
+        QCOMPARE(clean, 40000000);
+        controller.update({100, 8, 0, 5, 10, 5});   // 7% loss
+        controller.update({100, 0, 0, 5, 20, 5});   // a delay bump
+        controller.update({100, 15, 0, 5, 10, 5});  // one bad report alone
+        controller.update({100, 0, 0, 5, 0, 5});
+        QCOMPARE(controller.bitrate(), clean);
+        controller.update({100, 20, 0, 5, 10, 5});
+        controller.update({100, 20, 0, 5, 10, 5});  // two running: congestion
+        QVERIFY(controller.bitrate() < clean);
+        // Decoding that looks slow for a report or two leaves the frame rate.
+        for (int i = 0; i < 40; ++i) controller.update({100, 0, 0, 0, 0, 5});
+        for (int i = 0; i < 3; ++i) controller.update({100, 0, 0, 0, 0, 30});
+        QCOMPARE(controller.fps(), 60);
+        // The strict default cuts on the first bad report.
+        CongestionController strict; strict.reset("direct", 60, 1920, 8000000);
+        const int before = strict.bitrate();
+        strict.update({100, 8, 0, 5, 10, 5});
+        QVERIFY(strict.bitrate() < before);
+    }
 };
 
 QTEST_GUILESS_MAIN(ScreenTransportTest)
