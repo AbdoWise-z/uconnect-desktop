@@ -4,47 +4,27 @@
 The mark is the name: a bold "u" whose two arm tips are round nodes, two
 devices joined by the u. Behind it a darker "C" band echoes the u: its back
 crosses the top-left corner, its arms run toward the bottom-right, and it is
-mirror-symmetric across that diagonal. The background is colours stirred
-like dye in water, into streaks, eddies and glowing veins; the C is the
-same colours, darker.
+mirror-symmetric across that diagonal.
 
     python scripts/make-icons.py            # writes packaging/icons/
 
 Outputs: uconnect.svg (the master), uconnect-<n>.png (16-1024),
 uconnect.ico (Windows, 16-256) and uconnect.icns (macOS, with the inset
-macOS icons use). Needs Pillow and numpy.
+macOS icons use). Needs Pillow.
 """
-import base64
-import io
 import math
 import os
 import sys
 
-import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packaging", "icons")
 
 # Geometry on a 1024 grid.
 SIZE = 1024
 CORNER = 228                        # the rounded square's corner radius
-# The background: colours anchored at points (as fractions of the tile),
-# blended softly, then stirred like dye in water into streaks and eddies.
-FLOW = [
-    (0.08, 0.06, "#6C4DF6"),  # violet, top-left
-    (0.92, 0.12, "#11B5E8"),  # cyan, top-right
-    (0.50, 0.48, "#2D63E8"),  # blue, the middle
-    (0.10, 0.94, "#E2468F"),  # pink, bottom-left
-    (0.94, 0.92, "#2A1C8F"),  # indigo, bottom-right
-]
-FLOW_SPREAD = 0.34   # how far each colour reaches
-FLOW_SEED = 7        # which stirring: change it for another pattern
-FLOW_STIR = 0.5      # how far the dye is carried (fractions of the tile)
-FLOW_STEPS = 64      # steps along the way (more: smoother curls)
-FLOW_VEIN = 0.06     # the bright veins' width
-FLOW_BODY = 0.45     # the colours' brightness between the veins
-FLOW_WHITE = 0.35    # how near white the veins' cores glow
-C_SHADE = 0.66       # the C band: the background beneath it, this bright
+TOP, BOTTOM = "#2F5FCB", "#162F78"  # background gradient, top-left to bottom-right
+C_TOP, C_BOTTOM = "#21479F", "#0D1F54"  # the C band: the same direction, darker
 INK = "#FFFFFF"
 LEFT_X, RIGHT_X = 352, 672          # the u's arm centres
 ARM_TOP = 360                       # where the arms start (the nodes' centres)
@@ -77,14 +57,9 @@ def c_band():
 
 
 def svg():
-    """The master as SVG. The stirred background has no vector form, so it
-    is embedded as an image; the C and the mark over it are vectors."""
     r = (RIGHT_X - LEFT_X) / 2
     ring = (NODE_R + HOLE_R) / 2
     band = " ".join(f"{x:.1f},{y:.1f}" for x, y in c_band())
-    jpeg = io.BytesIO()
-    flow(SIZE).save(jpeg, "JPEG", quality=90)
-    background = base64.b64encode(jpeg.getvalue()).decode("ascii")
     nodes = "\n".join(
         f'  <circle cx="{x}" cy="{ARM_TOP}" r="{ring}" fill="none" stroke="{INK}" stroke-width="{NODE_R - HOLE_R}"/>'
         for x in (LEFT_X, RIGHT_X))
@@ -92,11 +67,19 @@ def svg():
   <!-- uConnect: a "u" whose arm tips are two connected devices, before a
        darker C that echoes it across the diagonal. -->
   <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="{TOP}"/>
+      <stop offset="1" stop-color="{BOTTOM}"/>
+    </linearGradient>
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="{C_TOP}"/>
+      <stop offset="1" stop-color="{C_BOTTOM}"/>
+    </linearGradient>
     <clipPath id="tile"><rect width="{SIZE}" height="{SIZE}" rx="{CORNER}"/></clipPath>
   </defs>
   <g clip-path="url(#tile)">
-    <image width="{SIZE}" height="{SIZE}" href="data:image/jpeg;base64,{background}"/>
-    <polygon points="{band}" fill="#000" fill-opacity="{1 - C_SHADE:.2f}"/>
+    <rect width="{SIZE}" height="{SIZE}" fill="url(#bg)"/>
+    <polygon points="{band}" fill="url(#band)"/>
   </g>
   <path d="M {LEFT_X} {ARM_TOP + ring} V {BOWL_Y} A {r} {r} 0 0 0 {RIGHT_X} {BOWL_Y} V {ARM_TOP + ring}"
         fill="none" stroke="{INK}" stroke-width="{STROKE}"/>
@@ -109,88 +92,12 @@ def rgb(color):
     return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
 
 
-def perlin(rng, cells):
-    """Gradient noise over the unit square, tiling, with `cells` lattice
-    cells per side: a function of x and y arrays, about -0.7 to 0.7."""
-    angles = rng.random((cells, cells)) * 2 * np.pi
-    gx, gy = np.cos(angles), np.sin(angles)
-
-    def sample(x, y):
-        x, y = (x % 1) * cells, (y % 1) * cells
-        x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
-        fx, fy = x - x0, y - y0
-
-        def corner(dx, dy):
-            i, j = (y0 + dy) % cells, (x0 + dx) % cells
-            return gx[i, j] * (fx - dx) + gy[i, j] * (fy - dy)
-
-        sx = fx ** 3 * (fx * (fx * 6 - 15) + 10)
-        sy = fy ** 3 * (fy * (fy * 6 - 15) + 10)
-        top = corner(0, 0) + sx * (corner(1, 0) - corner(0, 0))
-        bottom = corner(0, 1) + sx * (corner(1, 1) - corner(0, 1))
-        return top + sy * (bottom - top)
-    return sample
-
-
-def fbm(rng, cells, octaves):
-    """Fractal noise: octaves of gradient noise, each twice as fine and half as strong."""
-    layers = [perlin(rng, cells * 2 ** i) for i in range(octaves)]
-    return lambda x, y: sum(0.5 ** i * layer(x, y) for i, layer in enumerate(layers))
-
-
-def lookup(field, x, y):
-    """Bilinear lookup of an n x n field over the unit square, wrapping."""
-    n = field.shape[0]
-    x, y = (x % 1) * n, (y % 1) * n
-    x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
-    fx, fy = x - x0, y - y0
-    x1, y1 = (x0 + 1) % n, (y0 + 1) % n
-    x0, y0 = x0 % n, y0 % n
-    top = field[y0, x0] * (1 - fx) + field[y0, x1] * fx
-    bottom = field[y1, x0] * (1 - fx) + field[y1, x1] * fx
-    return top * (1 - fy) + bottom * fy
-
-
-_flow = {}
-
-
-def flow(n):
-    """The marbled background, n x n, like dye stirred into water: the colour
-    field is carried back along a swirling flow (the curl of fractal noise,
-    so it neither gathers nor thins), which draws it into streaks and eddies;
-    bright veins of the same colours run through it."""
-    if n in _flow:
-        return _flow[n]
-    rng = np.random.default_rng(FLOW_SEED)
-    y, x = np.mgrid[0:n, 0:n] / n
-    # The stirring: broad currents plus fine eddies.
-    psi = fbm(rng, 2, 2)(x, y) + 0.3 * fbm(rng, 6, 3)(x, y)
-    dpsi_dy, dpsi_dx = np.gradient(psi)
-    vx, vy = dpsi_dy, -dpsi_dx
-    speed = np.sqrt(vx ** 2 + vy ** 2).max()
-    vx, vy = vx / speed, vy / speed
-    # Trace each pixel back along the flow to the dye it carries.
-    px, py = x.copy(), y.copy()
-    step = FLOW_STIR / FLOW_STEPS
-    for _ in range(FLOW_STEPS):
-        ux, uy = lookup(vx, px, py), lookup(vy, px, py)
-        px, py = px - step * ux, py - step * uy
-    # The dye: the anchored colours, blended softly.
-    cx, cy = np.clip(px, 0, 1), np.clip(py, 0, 1)
-    total = np.zeros((n, n, 3)); weights = np.zeros((n, n))
-    for ax, ay, color in FLOW:
-        w = np.exp(-((cx - ax) ** 2 + (cy - ay) ** 2) / FLOW_SPREAD ** 2)
-        total += w[..., None] * np.array(rgb(color), dtype=float)
-        weights += w
-    dye = total / weights[..., None]
-    # The veins: thin bright filaments where a carried noise crosses zero,
-    # over a dim body, so the colours glow out of the dark.
-    vein = fbm(rng, 2, 4)(px, py)
-    glow = np.exp(-(vein / FLOW_VEIN) ** 2)
-    light = FLOW_BODY + (1 - FLOW_BODY) * glow
-    pixels = dye * light[..., None] + 255 * FLOW_WHITE * glow[..., None] ** 4
-    _flow[n] = Image.fromarray(np.clip(pixels, 0, 255).astype(np.uint8), "RGB")
-    return _flow[n]
+def gradient(big, start, end):
+    """A top-left to bottom-right gradient: (x + y) / 2 of two ramps."""
+    vertical = Image.linear_gradient("L").resize((big, big))
+    horizontal = vertical.transpose(Image.Transpose.ROTATE_90).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    diagonal = ImageChops.add(vertical, horizontal, scale=2.0)
+    return Image.composite(Image.new("RGB", (big, big), rgb(end)), Image.new("RGB", (big, big), rgb(start)), diagonal)
 
 
 def render(size, inset=0.0):
@@ -199,12 +106,11 @@ def render(size, inset=0.0):
     k = 4
     big = SIZE * k
     s = lambda v: int(round(v * k))
-    # The background (smooth, so drawn at 1024 and scaled), then the C band:
-    # the same colours, darker.
-    background = flow(SIZE).resize((big, big), Image.BICUBIC)
+    # The background, then the C band over it.
+    background = gradient(big, TOP, BOTTOM)
     band = Image.new("L", (big, big), 0)
     ImageDraw.Draw(band).polygon([(x * k, y * k) for x, y in c_band()], fill=255)
-    background.paste(background.point(lambda v: int(v * C_SHADE)), (0, 0), band)
+    background.paste(gradient(big, C_TOP, C_BOTTOM), (0, 0), band)
     # The mark as a mask, so the nodes' holes show the background and band.
     ink = Image.new("L", (big, big), 0)
     draw = ImageDraw.Draw(ink)
