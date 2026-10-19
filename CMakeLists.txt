@@ -295,10 +295,18 @@ set_target_properties(uconnect_desktop PROPERTIES
 qt_add_resources(uconnect_desktop "app_icons" PREFIX "/icons" BASE "packaging/icons" FILES
     packaging/icons/uconnect-16.png packaging/icons/uconnect-24.png packaging/icons/uconnect-32.png
     packaging/icons/uconnect-48.png packaging/icons/uconnect-64.png packaging/icons/uconnect-128.png
-    packaging/icons/uconnect-256.png)
+    packaging/icons/uconnect-256.png
+    packaging/icons/tray-black-16.png packaging/icons/tray-black-20.png packaging/icons/tray-black-24.png
+    packaging/icons/tray-black-32.png packaging/icons/tray-black-48.png packaging/icons/tray-black-64.png
+    packaging/icons/tray-white-16.png packaging/icons/tray-white-20.png packaging/icons/tray-white-24.png
+    packaging/icons/tray-white-32.png packaging/icons/tray-white-48.png packaging/icons/tray-white-64.png)
 if (WIN32)
     enable_language(RC)
-    target_sources(uconnect_desktop PRIVATE packaging/icons/uconnect.rc)
+    set(UCD_ICON_FILE "${CMAKE_SOURCE_DIR}/packaging/icons/uconnect.ico")
+    configure_file(packaging/icons/uconnect.rc.in "${CMAKE_BINARY_DIR}/uconnect.rc" @ONLY)
+    target_sources(uconnect_desktop PRIVATE "${CMAKE_BINARY_DIR}/uconnect.rc")
+    # Rebuilt when the icon is redrawn.
+    set_source_files_properties("${CMAKE_BINARY_DIR}/uconnect.rc" PROPERTIES OBJECT_DEPENDS "${UCD_ICON_FILE}")
 elseif (APPLE)
     set_source_files_properties(packaging/icons/uconnect.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     target_sources(uconnect_desktop PRIVATE packaging/icons/uconnect.icns)
@@ -308,6 +316,8 @@ if (APPLE)
     set_target_properties(uconnect_desktop PROPERTIES
         MACOSX_BUNDLE_GUI_IDENTIFIER "dev.uconnect.desktop"
         MACOSX_BUNDLE_BUNDLE_NAME "uConnect"
+        # uConnect.app: the Dock and Finder name an app by its bundle's name.
+        OUTPUT_NAME "uConnect"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")

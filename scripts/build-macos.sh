@@ -38,7 +38,7 @@ if [[ -e "$package_dir" || -e "$package_dir.zip" ]]; then
     exit 1
 fi
 mkdir "$package_dir"
-ditto "$build_dir/uconnect_desktop.app" "$package_dir/uConnect.app"
+ditto "$build_dir/uConnect.app" "$package_dir/uConnect.app"
 cp "$project_dir/packaging/TESTING.txt" "$package_dir/README.txt"
 printf 'Source revision: %s\nPlatform: macOS %s\nConfiguration: Release\n' "$revision" "$arch" > "$package_dir/BUILD.txt"
 codesign --verify --deep --strict "$package_dir/uConnect.app"

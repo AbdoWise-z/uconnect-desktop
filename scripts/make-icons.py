@@ -9,8 +9,10 @@ mirror-symmetric across that diagonal.
     python scripts/make-icons.py            # writes packaging/icons/
 
 Outputs: uconnect.svg (the master), uconnect-<n>.png (16-1024),
-uconnect.ico (Windows, 16-256) and uconnect.icns (macOS, with the inset
-macOS icons use). Needs Pillow.
+uconnect.ico (Windows, 16-256), uconnect.icns (macOS, with the inset
+macOS icons use) and tray-<black|white>-<n>.png (the tray icon: the u
+alone, for light and dark taskbars; macOS tints the black one itself).
+Needs Pillow.
 """
 import math
 import os
@@ -45,6 +47,13 @@ C_ARMS = (215, 365)
 ARM_END = SIZE * math.sqrt(2) - C_ARMS[1]
 C_PADDING = 0.04
 
+# A margin around the whole icon, so it sits with others at their size;
+# macOS icons use Apple's grid instead (about 10%).
+PADDING = 0.05
+MAC_INSET = 0.1
+# The tray icon: the u's height, as a share of the icon's.
+TRAY_FILL = 0.9
+
 
 def c_band():
     """The C's outline as (x, y) points on the 1024 grid."""
@@ -63,7 +72,8 @@ def svg():
     nodes = "\n".join(
         f'  <circle cx="{x}" cy="{ARM_TOP}" r="{ring}" fill="none" stroke="{INK}" stroke-width="{NODE_R - HOLE_R}"/>'
         for x in (LEFT_X, RIGHT_X))
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SIZE} {SIZE}">
+    pad = SIZE * PADDING
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="{-pad:g} {-pad:g} {SIZE + 2 * pad:g} {SIZE + 2 * pad:g}">
   <!-- uConnect: a "u" whose arm tips are two connected devices, before a
        blue C that echoes it across the diagonal. -->
   <defs>
@@ -100,18 +110,10 @@ def gradient(big, start, end):
     return Image.composite(Image.new("RGB", (big, big), rgb(end)), Image.new("RGB", (big, big), rgb(start)), diagonal)
 
 
-def render(size, inset=0.0):
-    """The icon at `size` pixels, drawn 4x larger and scaled down for clean edges.
-    `inset` shrinks it inside a transparent margin (macOS icons)."""
-    k = 4
+def mark(k):
+    """The u as a mask on the 1024 grid drawn k times larger, holes cut out."""
     big = SIZE * k
     s = lambda v: int(round(v * k))
-    # The background, then the C band over it.
-    background = gradient(big, TOP, BOTTOM)
-    band = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(band).polygon([(x * k, y * k) for x, y in c_band()], fill=255)
-    background.paste(gradient(big, C_TOP, C_BOTTOM), (0, 0), band)
-    # The mark as a mask, so the nodes' holes show the background and band.
     ink = Image.new("L", (big, big), 0)
     draw = ImageDraw.Draw(ink)
     half = STROKE / 2
@@ -124,6 +126,37 @@ def render(size, inset=0.0):
     for x in (LEFT_X, RIGHT_X):
         draw.ellipse([s(x - NODE_R), s(ARM_TOP - NODE_R), s(x + NODE_R), s(ARM_TOP + NODE_R)], fill=255)
         draw.ellipse([s(x - HOLE_R), s(ARM_TOP - HOLE_R), s(x + HOLE_R), s(ARM_TOP + HOLE_R)], fill=0)
+    return ink
+
+
+def tray(size, color):
+    """The tray icon: the u alone in `color`, TRAY_FILL of the height, centred."""
+    ink = mark(4)
+    ink = ink.crop(ink.getbbox())
+    height = size * TRAY_FILL
+    width = height * ink.width / ink.height
+    ink = ink.resize((max(1, round(width * 4)), max(1, round(height * 4))), Image.LANCZOS)
+    big = Image.new("L", (size * 4, size * 4), 0)
+    big.paste(ink, ((big.width - ink.width) // 2, (big.height - ink.height) // 2))
+    alpha = big.resize((size, size), Image.LANCZOS)
+    icon = Image.new("RGBA", (size, size), rgb(color) + (0,))
+    icon.putalpha(alpha)
+    return icon
+
+
+def render(size, inset=PADDING):
+    """The icon at `size` pixels, drawn 4x larger and scaled down for clean edges.
+    `inset` shrinks it inside a transparent margin on every side."""
+    k = 4
+    big = SIZE * k
+    s = lambda v: int(round(v * k))
+    # The background, then the C band over it.
+    background = gradient(big, TOP, BOTTOM)
+    band = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(band).polygon([(x * k, y * k) for x, y in c_band()], fill=255)
+    background.paste(gradient(big, C_TOP, C_BOTTOM), (0, 0), band)
+    # The mark as a mask, so the nodes' holes show the background and band.
+    ink = mark(k)
     background.paste(Image.new("RGB", (big, big), rgb(INK)), (0, 0), ink)
     # Cut to the rounded square.
     tile = Image.new("L", (big, big), 0)
@@ -151,7 +184,12 @@ def main():
     # Windows: every size up to 256 in one file.
     pngs[256].save(os.path.join(out, "uconnect.ico"), sizes=[(n, n) for n in (16, 24, 32, 48, 64, 128, 256)])
     # macOS: icons sit inside a margin of about 10% (Apple's icon grid).
-    render(1024, inset=0.1).save(os.path.join(out, "uconnect.icns"))
+    render(1024, inset=MAC_INSET).save(os.path.join(out, "uconnect.icns"))
+    # The tray. No 40: macOS takes the largest that fits its menu bar (40 px
+    # on a Retina one), and 32 gives the u the height of other menu bar icons.
+    for size in (16, 20, 24, 32, 48, 64):
+        for name, color in (("black", "#000000"), ("white", "#FFFFFF")):
+            tray(size, color).save(os.path.join(out, f"tray-{name}-{size}.png"))
     print("wrote", out)
 
 

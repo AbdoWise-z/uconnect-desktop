@@ -1,2 +1,0 @@
-// The Windows application icon (Explorer, taskbar); see scripts/make-icons.py.
-IDI_ICON1 ICON "uconnect.ico"

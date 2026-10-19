@@ -39,7 +39,7 @@ meta="$build/deploy-meta"; mkdir -p "$meta"
 cat > "$meta/uconnect-desktop.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=uConnect Desktop
+Name=uConnect
 Comment=Share files, folders and screens between your devices
 Exec=uconnect_desktop
 Icon=uconnect-desktop

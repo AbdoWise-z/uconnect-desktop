@@ -2,9 +2,11 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QIcon>
 #include <QMenu>
 #include <QPointer>
 #include <QSettings>
+#include <QStyleHints>
 #include <QSystemTrayIcon>
 
 #include "AppController.hpp"
@@ -25,6 +27,28 @@ QString statusText(const QString& status, const QString& topicId) {
     if (status == QLatin1String("reconnecting")) return TrayIcon::tr("Reconnecting...");
     if (status == QLatin1String("error")) return TrayIcon::tr("Could not connect");
     return TrayIcon::tr("Not connected");
+}
+
+// The u alone (packaging/icons/tray-*.png), drawn to suit the tray: on macOS
+// a template the menu bar tints itself, elsewhere white or black to stand
+// out on the taskbar.
+QIcon glyph() {
+#ifdef Q_OS_MACOS
+    const bool light = true;
+#elif defined(Q_OS_WIN)
+    // The taskbar follows the Windows mode, which can differ from the apps' mode.
+    const bool light = QSettings(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+                                 QSettings::NativeFormat).value(QStringLiteral("SystemUsesLightTheme"), 0).toInt() == 1;
+#else
+    const bool light = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light;
+#endif
+    QIcon icon;
+    for (int size : {16, 20, 24, 32, 48, 64})
+        icon.addFile(QStringLiteral(":/icons/tray-%1-%2.png").arg(light ? "black" : "white").arg(size), QSize(size, size));
+#ifdef Q_OS_MACOS
+    icon.setIsMask(true);
+#endif
+    return icon;
 }
 
 }  // namespace
@@ -64,7 +88,9 @@ TrayIcon::TrayIcon(AppController* app, ScreenController* screen, ScreenControlle
     menu_->addSeparator();
     menu_->addAction(tr("Exit uConnect"), this, &TrayIcon::exitRequested);
 
-    icon_ = new QSystemTrayIcon(QGuiApplication::windowIcon(), this);
+    icon_ = new QSystemTrayIcon(glyph(), this);
+    // Also reported when the Windows mode (and so the taskbar) changes.
+    connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] { icon_->setIcon(glyph()); });
     icon_->setContextMenu(menu_);
     connect(icon_, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
 #ifdef Q_OS_MACOS
