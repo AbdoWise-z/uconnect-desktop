@@ -18,6 +18,12 @@
 > **Beta.** uConnect is in public beta: expect rough edges, and keep backups of
 > anything you sync.
 
+<p align="center">
+  <img src="docs/images/extended-display.gif" width="760"
+       alt="A uConnect window on a Windows PC moving onto a MacBook's screen, which the PC is using as a second monitor">
+  <br><sub>A MacBook as a second monitor for a Windows PC: a window moves across onto it.</sub>
+</p>
+
 ## Features
 
 - **Devices you trust.** Devices meet in a *topic*, shared by an invite link.
@@ -39,6 +45,27 @@
   system tray (the menu bar on macOS); it can start when you sign in.
 
 Camera sharing is in progress and not finished in this version.
+
+### Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/devices.png" alt="A trusted device, its connection and the permissions it has"></td>
+    <td width="50%"><img src="docs/images/storage.png" alt="Browsing another device's shared folder"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A trusted device: its connection, fingerprint and what it may do</sub></td>
+    <td align="center"><sub>Browsing a MacBook's shared folder from a Windows PC</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/extended-display-setup.png" alt="Starting an extended display, and the other device's consent prompt"></td>
+    <td width="50%"><img src="docs/images/settings.png" alt="Settings for the extended display service"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>An extended display, running, and the prompt the other device sees first</sub></td>
+    <td align="center"><sub>Every service is opt-in, under Settings</sub></td>
+  </tr>
+</table>
 
 ## How it works
 
