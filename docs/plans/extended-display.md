@@ -1,9 +1,10 @@
 # Plan: extended display
 
-Status: **driver fork, virtual monitors and sessions implemented; nothing
-verified on a real monitor yet** (2026-10-10). Each phase is implemented,
-tested and committed before the next one. Wire details are in
-`docs/protocol.md` section 7.6.
+Status: **phases 1-4 done and run in real Windows <-> Mac sessions; phase 5
+in part (Wi-Fi tolerance); shipped in v0.1.0-beta.1** (2026-10-19). Open:
+consent through the real UI, the pointer and text sharpness on screen,
+glass-to-glass latency, and a wired run (see "Waiting on you"). Wire details
+are in `docs/protocol.md` section 7.6.
 
 Execution notes:
 
@@ -46,8 +47,9 @@ Execution notes:
   - `DisplayController` (GUI thread): driver state and install/remove
     through the elevated relaunch, local screens, consent, host and display
     states, video sinks, the host's pointer fed at 60 Hz while live, and the
-    display device kept awake (Windows `SetThreadExecutionState`, macOS
-    `IOPMAssertion`; nothing on Linux yet).
+    display device kept awake (`KeepAwake`: Windows `SetThreadExecutionState`,
+    macOS `IOPMAssertion`, Linux `org.freedesktop.ScreenSaver.Inhibit` or
+    GNOME's session manager over D-Bus, added 2026-10-19).
   - QML: `DisplaySetup` (Services > Extended Display > device: mode, start,
     stop, driver banner), `DisplaySafety` (consent with a screen choice, the
     host's "Extending to" bar, opening the views), `DisplayView` (full screen
@@ -59,10 +61,25 @@ Execution notes:
     in `drivers/uconnect-vdd`, where the install button looks for it.
   - `SettingsTest` loads the three QML files and checks the settings
     survive a restart. Nothing has been looked at on a real screen yet.
-  - Known limit: removing a monitor makes `ScreenController` stop screen
-    sharing (its existing `screenRemoved` rule), so ending an extended
-    display also ends a screen share running at the same time.
-- **Not started:** LAN tuning (phase 5).
+  - Removing a monitor used to stop every screen share, so ending an
+    extended display ended a share beside it. Since 2026-10-19 a share
+    follows its monitor (by native id) to its new place in the list and ends
+    only with it (`ScreenService::followMonitors`); Wayland's portal does not
+    say which monitor it shares, so there removal still stops sharing.
+- **Phase 5, Wi-Fi tolerance (2026-10-19),** after stutter and resolution
+  drops in the Mac -> Windows session on Wi-Fi. Display sessions only:
+  - Congestion control rides out short loss bursts (a 10%/30 ms rule over two
+    reports, six slow-decode reports) instead of cutting at the first.
+  - The reassembler waits longer for held-up packets: 3 NACK rounds 50 ms
+    apart, 16 frames in flight.
+  - The viewer paces presentation, so frames that complete together are
+    shown at their interval rather than dropped.
+  - Big frames (keyframes) are paced by size, at 3x the bitrate, up to 60 ms.
+  - Start at 20 Mbit/s, cap 40 Mbit/s by default.
+  - Result: recovery from a loss burst takes about 2 s instead of about 10 s,
+    and no completed frame goes unshown. The dips left are real Wi-Fi loss
+    bursts (17-54% for a moment); a wired link, 5 GHz, or FEC would help.
+  - Not done: glass-to-glass latency and the text legibility check.
 - **Verified on this Windows 11 laptop (2026-10-11)**, driver installed with
   `scripts/dev-install.ps1` (the build's test certificate trusted in
   LocalMachine Root and TrustedPublisher):
