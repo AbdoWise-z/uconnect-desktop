@@ -30,9 +30,10 @@ Storage: offer folders under Settings > Services > Storage; trusted devices
   browse, download and upload as their permissions allow. Downloads go to
   the folder set there.
 Folder sync: keep a folder the same on several devices (Sync window).
-Screen, remote control and camera: requests show a consent prompt on the
+Screen sharing and remote control: requests show a consent prompt on the
   sharing device; stop with the sharing bar or Ctrl+Alt+Shift+S. macOS
-  needs Screen Recording and Accessibility; Wayland is view-only.
+  needs Screen Recording and Accessibility; Wayland is view-only. (Camera
+  sharing is not finished in this version.)
 Extended display: a Windows or macOS device can use another device's screen
   as an extra monitor (any desktop can be the display). On Windows this
   installs the bundled display driver once, with administrator approval;
