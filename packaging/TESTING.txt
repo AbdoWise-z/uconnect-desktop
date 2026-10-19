@@ -1,50 +1,44 @@
-uConnect Desktop 0.1.0 -- file-sharing test build
+uConnect Desktop 0.1.0 beta
 
 Start
 -----
 Windows: extract the entire ZIP, then run uConnect.exe.
-macOS: extract the ZIP, then open uConnect.app.
-The application includes its Qt runtime; testers do not need to install Qt.
-These are development builds without publisher signing or Apple notarization.
+macOS (Apple silicon): extract the ZIP, then open uConnect.app. The app is
+  not notarized, so macOS blocks the first launch: choose Open Anyway under
+  System Settings > Privacy & Security, or run
+  xattr -dr com.apple.quarantine uConnect.app
+Linux: run the AppImage (chmod +x first), or extract the .tar.gz and run
+  AppRun in its folder. Needs Ubuntu 24.04 or a distribution as new.
+Each package includes its Qt runtime; nothing else needs installing.
+These are beta builds without publisher signing or Apple notarization.
 
-Connect both devices
+uConnect keeps running in the system tray (the menu bar on macOS) when its
+window is closed; open it again or exit from the tray icon. Settings >
+Connection can start it when you sign in, and turn the tray off.
+
+Connect your devices
 --------------------
-1. Use the same reachable rendezvous server (host:port) on both devices.
+1. Use the same reachable rendezvous server (host:port) on every device.
 2. Create a New Topic on one device and privately share its Copy Link.
-3. Paste that link on the other device and Connect.
-4. Verify the device fingerprints and trust the other device.
+3. Paste that link on the other devices and Connect.
+4. Verify the device fingerprints and trust the other devices.
+Each device then chooses what the others may do in their permissions.
 
-Test file sharing
------------------
-1. On the receiving device, open Settings > Services > Storage.
-   Enable Offer Storage and add a folder.
-2. In the other device's permissions, grant Storage > Observe, Download
-   and Upload as needed. Upload is a separate permission.
-3. On the sending device, open the receiver's Storage service, then
-   open a shared folder. The root list of shares is not an upload target.
-4. Drop local files into the browser, or click Upload to choose files.
-5. Check progress and cancellation in Transfers. Successful uploads
-   refresh the folder listing. Duplicate names receive a numbered suffix;
-   existing files are never overwritten. Folder uploads are not supported.
-6. Download a file back and compare its contents on the two devices.
+Services
+--------
+Storage: offer folders under Settings > Services > Storage; trusted devices
+  browse, download and upload as their permissions allow. Downloads go to
+  the folder set there.
+Folder sync: keep a folder the same on several devices (Sync window).
+Screen, remote control and camera: requests show a consent prompt on the
+  sharing device; stop with the sharing bar or Ctrl+Alt+Shift+S. macOS
+  needs Screen Recording and Accessibility; Wayland is view-only.
+Extended display: a Windows or macOS device can use another device's screen
+  as an extra monitor (any desktop can be the display). On Windows this
+  installs the bundled display driver once, with administrator approval;
+  until the driver has a release signature, Windows also asks whether to
+  trust its publisher. Best on the same local network.
 
-Both devices must use a version with upload support for upload tests.
-Downloads are saved to the folder configured in Settings > Services > Storage.
-The ZIP does not include a rendezvous server; use your existing server.
-View > Debug Window (Ctrl+Shift+D) provides the connection state and log.
-
-Screen, remote control and camera
--------------------------------
-Both devices must trust each other. Offer the relevant service on the host and
-provide the view/control grants in the device's permissions. Requests show a
-host consent prompt; direct screen/control grants may bypass it. Camera always
-asks. Use the sharing bar or Ctrl+Alt+Shift+S to stop; Right Ctrl releases viewer
-keyboard capture (configurable). Viewers share one source and encoder, with
-one control owner. Screen and camera may run simultaneously; no audio is sent.
-
-The software fallback is optional and downloaded separately from Cisco:
-  python scripts/install-openh264.py <codec-folder>
-Enable it and enter its library path in Settings > Services > Screen Sharing.
-See docs/screen-testing.md in the source repository for native platform tests
-and the common-clock latency procedure. macOS needs Screen Recording and
-Accessibility permissions; Wayland is view-only through the desktop portal.
+The ZIP does not include a rendezvous server; use your own.
+View > Debug Window (Ctrl+Shift+D) shows the connection state and log.
+Report problems with that log and the steps that led to them.
