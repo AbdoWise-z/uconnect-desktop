@@ -59,6 +59,9 @@ export PATH="$tools/bin:$PATH"
 "$tools/bin/linuxdeploy" --appdir "$appdir" -e "$build/uconnect_desktop" \
     -d "$meta/uconnect-desktop.desktop" -i "$meta/uconnect-desktop.png" --plugin qt > "$build.deploy.log" 2>&1 \
     || { tail -40 "$build.deploy.log"; exit 1; }
+# linuxdeploy-plugin-qt leaves out the Wayland client's buffer integrations;
+# without wayland-egl, Qt Quick has no OpenGL on Wayland and the app aborts.
+cp -r "$qt/plugins/wayland-graphics-integration-client" "$appdir/usr/plugins/"
 cp "$ffmpeg/LICENSE.txt" "$appdir/usr/FFmpeg-LICENSE.txt" 2>/dev/null || true
 cp "$project_dir/docs/OpenH264-BINARY-LICENSE.txt" "$project_dir/docs/third-party-screen.md" "$appdir/usr/" 2>/dev/null || true
 
