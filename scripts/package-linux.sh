@@ -46,25 +46,7 @@ Icon=uconnect-desktop
 Categories=Network;FileTransfer;
 Terminal=false
 EOF
-python3 - "$meta/uconnect-desktop.png" <<'EOF'
-# A plain 256x256 icon (accent-coloured rounded square, white ring) in pure Python.
-import struct, sys, zlib
-n = 256; rows = []
-for y in range(n):
-    row = bytearray([0])
-    for x in range(n):
-        cx, cy = x - 127.5, y - 127.5
-        corner = max(abs(cx) - 88, 0) ** 2 + max(abs(cy) - 88, 0) ** 2 <= 40 ** 2
-        r = (cx * cx + cy * cy) ** 0.5
-        if not corner: row += bytes([0, 0, 0, 0])
-        elif 52 <= r <= 74: row += bytes([255, 255, 255, 255])
-        else: row += bytes([0x35, 0x74, 0xF0, 255])
-    rows.append(bytes(row))
-def chunk(kind, data): return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, 6, 0, 0, 0)) \
-    + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b"")
-open(sys.argv[1], "wb").write(png)
-EOF
+cp "$project_dir/packaging/icons/uconnect-256.png" "$meta/uconnect-desktop.png"  # see scripts/make-icons.py
 
 echo "== bundle"
 appdir="$build/AppDir"; rm -rf "$appdir"

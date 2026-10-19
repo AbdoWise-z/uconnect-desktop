@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- uConnect: a "u" whose arm tips are two connected devices. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4C8BF7"/>
+      <stop offset="1" stop-color="#2556C4"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <path d="M 352 360 V 600 A 160.0 160.0 0 0 0 672 600 V 360"
+        fill="none" stroke="#FFFFFF" stroke-width="112" stroke-linecap="round"/>
+  <circle cx="352" cy="360" r="92" fill="#FFFFFF"/>
+  <circle cx="672" cy="360" r="92" fill="#FFFFFF"/>
+  <circle cx="352" cy="360" r="40" fill="#3A73E8"/>
+  <circle cx="672" cy="360" r="40" fill="#3A73E8"/>
+</svg>

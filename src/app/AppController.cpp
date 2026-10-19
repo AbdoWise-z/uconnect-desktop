@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
@@ -109,6 +110,10 @@ QStringList knownOnly(const QStringList& permissions, bool trusted = true) {
 }  // namespace
 
 AppController::AppController(const LaunchOptions& options, QObject* parent) : QObject(parent) {
+    // Every window's icon (title bars, the taskbar, Alt-Tab), in each size drawn.
+    QIcon icon;
+    for (int size : {16, 24, 32, 48, 64, 128, 256}) icon.addFile(QStringLiteral(":/icons/uconnect-%1.png").arg(size), QSize(size, size));
+    QGuiApplication::setWindowIcon(icon);
     QSettings settings;
     firstRun_       = !settings.contains(Key::Server) && options.server.isEmpty();
     serverAddress_  = settings.value(Key::Server).toString();

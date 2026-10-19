@@ -280,6 +280,20 @@ endif ()
 set_target_properties(uconnect_desktop PROPERTIES
     WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
     MACOSX_BUNDLE TRUE)
+# The app icon (packaging/icons, drawn by scripts/make-icons.py): the window
+# icon at runtime, the exe's icon on Windows, the bundle's on macOS.
+qt_add_resources(uconnect_desktop "app_icons" PREFIX "/icons" BASE "packaging/icons" FILES
+    packaging/icons/uconnect-16.png packaging/icons/uconnect-24.png packaging/icons/uconnect-32.png
+    packaging/icons/uconnect-48.png packaging/icons/uconnect-64.png packaging/icons/uconnect-128.png
+    packaging/icons/uconnect-256.png)
+if (WIN32)
+    enable_language(RC)
+    target_sources(uconnect_desktop PRIVATE packaging/icons/uconnect.rc)
+elseif (APPLE)
+    set_source_files_properties(packaging/icons/uconnect.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    target_sources(uconnect_desktop PRIVATE packaging/icons/uconnect.icns)
+    set_target_properties(uconnect_desktop PROPERTIES MACOSX_BUNDLE_ICON_FILE uconnect.icns)
+endif ()
 if (APPLE)
     set_target_properties(uconnect_desktop PROPERTIES
         MACOSX_BUNDLE_GUI_IDENTIFIER "dev.uconnect.desktop"
