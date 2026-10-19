@@ -97,6 +97,7 @@ private:
         qint64 expires = 0;
         QString state = "offering";
         std::shared_ptr<VirtualDisplay> monitor;
+        screen::ScreenSettings media;  // what the media session was given
         quint64 generation = 0;  // which creation a finished worker belongs to
         bool live = false;
     };

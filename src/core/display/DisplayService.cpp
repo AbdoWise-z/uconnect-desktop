@@ -1,5 +1,7 @@
 #include "DisplayService.hpp"
 
+#include <QDebug>
+
 #include <QJsonArray>
 #include <algorithm>
 #include <cmath>
@@ -206,6 +208,11 @@ void DisplayService::created(const Peer& peer, quint64 generation, std::shared_p
     settings.maxViewers = 1;
     settings.monitors = {monitorInfo(*monitor, authorize_(peer).name)};
     settings.monitor = 0;
+    it->second.media = settings;
+    const auto area = settings.monitors.first().toMap();
+    qInfo().noquote() << QStringLiteral("[display] the virtual monitor starts at %1,%2 %3x%4")
+        .arg(area.value("inputX").toInt()).arg(area.value("inputY").toInt())
+        .arg(area.value("inputWidth").toInt()).arg(area.value("inputHeight").toInt());
     media_->configure(settings);
     const bool started = media_->startDisplayHost(peer, request, pixels.width(), settings.maxFps);
     // A failed start ends the media session, and with it (hostEnded) this one.
@@ -388,6 +395,18 @@ void DisplayService::tick() {
     QVector<Peer> silent, unanswered;
     for (auto& [peer, hosted] : hosted_) {
         if (hosted.monitor) hosted.monitor->keepAlive();
+        // The pointer is placed on the monitor by its desktop area, which the
+        // OS may settle after the monitor appears, and people move it.
+        if (hosted.live && hosted.monitor && !hosted.media.monitors.isEmpty()) {
+            const auto info = monitorInfo(*hosted.monitor, authorize_(peer).name);
+            if (info != hosted.media.monitors.first().toMap()) {
+                qInfo().noquote() << QStringLiteral("[display] the virtual monitor is now at %1,%2 %3x%4")
+                    .arg(info.value("inputX").toInt()).arg(info.value("inputY").toInt())
+                    .arg(info.value("inputWidth").toInt()).arg(info.value("inputHeight").toInt());
+                hosted.media.monitors = {info};
+                media_->configure(hosted.media);
+            }
+        }
         if (!hosted.live && now >= hosted.expires) silent.push_back(peer);
     }
     for (const auto& [peer, shown] : shown_) if (!shown.accepted && now >= shown.expires) unanswered.push_back(peer);

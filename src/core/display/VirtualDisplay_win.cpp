@@ -192,8 +192,15 @@ public:
     }
 
     QString captureId() const override { return gdiName_; }
-    QRect geometry() const override { return geometry_; }
-    QSize pixels() const override { return geometry_.size(); }
+    // Read live: Windows can place the monitor after it appears, and people
+    // move it around in Settings > Display.
+    QRect geometry() const override {
+        DEVMODEW now{}; now.dmSize = sizeof(now);
+        if (!gdiName_.isEmpty() && EnumDisplaySettingsExW(reinterpret_cast<const wchar_t*>(gdiName_.utf16()), ENUM_CURRENT_SETTINGS, &now, 0))
+            return QRect(now.dmPosition.x, now.dmPosition.y, int(now.dmPelsWidth), int(now.dmPelsHeight));
+        return geometry_;
+    }
+    QSize pixels() const override { return geometry().size(); }
 
 private:
     bool fail(QString* error, const QString& text) {
