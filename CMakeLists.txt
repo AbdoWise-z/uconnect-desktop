@@ -419,6 +419,8 @@ if (UCD_BUILD_TESTS)
             target_link_libraries(KeepAwakeTest PRIVATE Qt6::DBus)
         endif ()
         target_link_libraries(ScreenInputTest PRIVATE uconnect_desktop_screen_ui)
+        ucd_add_test(NativeCursorTest)
+        target_link_libraries(NativeCursorTest PRIVATE uconnect_desktop_screen_ui Qt6::Gui)
         target_link_libraries(ScreenSessionTest PRIVATE uconnect_rendezvous)
         set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest ScreenSpreadTest PROPERTIES
             ENVIRONMENT "UCD_TEST_OPENH264=${UCD_TEST_OPENH264}")
