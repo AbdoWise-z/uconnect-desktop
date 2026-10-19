@@ -180,6 +180,12 @@ target_link_libraries(uconnect_desktop_screen_ui PUBLIC uconnect_desktop_core Qt
 if (APPLE)
     target_link_libraries(uconnect_desktop_screen_ui PRIVATE "-framework Carbon" "-framework IOKit")
 elseif (UNIX)
+    # Keeps a screen showing an extended display awake (DisplayController).
+    find_package(Qt6 QUIET COMPONENTS DBus HINTS ${_ucd_qt_hints})
+    if (TARGET Qt6::DBus)
+        target_compile_definitions(uconnect_desktop_screen_ui PRIVATE UCD_HAS_DBUS)
+        target_link_libraries(uconnect_desktop_screen_ui PRIVATE Qt6::DBus)
+    endif ()
     find_package(X11 QUIET)
     if (X11_FOUND)
         target_compile_definitions(uconnect_desktop_screen_ui PRIVATE UCD_HAS_X11)

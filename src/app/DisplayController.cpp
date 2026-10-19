@@ -15,6 +15,10 @@
 #include <windows.h>
 #elif defined(Q_OS_MACOS)
 #include <IOKit/pwr_mgt/IOPMLib.h>
+#elif defined(UCD_HAS_DBUS)
+#include <QDBusConnection>
+#include <QDBusInterface>
+#include <QDBusReply>
 #endif
 
 namespace ucd {
@@ -263,6 +267,28 @@ void DisplayController::setKeepAwake(bool on) {
                 CFSTR("uConnect is showing an extended display"), &id) == kIOReturnSuccess) awakeAssertion_ = id;
     } else if (awakeAssertion_) {
         IOPMAssertionRelease(awakeAssertion_); awakeAssertion_ = 0;
+    }
+#elif defined(UCD_HAS_DBUS)
+    // Desktops offer one of these (KDE and most: the freedesktop one; GNOME:
+    // its session manager's). Either ends with the process too.
+    const auto bus = QDBusConnection::sessionBus();
+    QDBusInterface saver(QStringLiteral("org.freedesktop.ScreenSaver"), QStringLiteral("/org/freedesktop/ScreenSaver"),
+                         QStringLiteral("org.freedesktop.ScreenSaver"), bus);
+    QDBusInterface gnome(QStringLiteral("org.gnome.SessionManager"), QStringLiteral("/org/gnome/SessionManager"),
+                         QStringLiteral("org.gnome.SessionManager"), bus);
+    const QString why = QStringLiteral("Showing an extended display");
+    if (on) {
+        if (const QDBusReply<uint> cookie = saver.call(QStringLiteral("Inhibit"), QStringLiteral("uConnect"), why); cookie.isValid()) {
+            awakeAssertion_ = cookie.value(); awakeByGnome_ = false;
+        } else if (const QDBusReply<uint> gnomeCookie = gnome.call(QStringLiteral("Inhibit"), QStringLiteral("uConnect"), uint(0), why,
+                                                                   uint(8));  // 8: idle
+                   gnomeCookie.isValid()) {
+            awakeAssertion_ = gnomeCookie.value(); awakeByGnome_ = true;
+        }
+    } else if (awakeAssertion_) {
+        if (awakeByGnome_) gnome.call(QStringLiteral("Uninhibit"), awakeAssertion_);
+        else saver.call(QStringLiteral("UnInhibit"), awakeAssertion_);
+        awakeAssertion_ = 0;
     }
 #endif
 }

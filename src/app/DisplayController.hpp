@@ -77,8 +77,9 @@ private:
     QTimer cursorTimer_;
     quintptr cursorShape_ = 0;
 #endif
-#ifdef Q_OS_MACOS
-    unsigned int awakeAssertion_ = 0;
-#endif
+    // Not conditional on the D-Bus build flag, which only the screen library
+    // sees: the class must look the same to every file that includes this.
+    unsigned int awakeAssertion_ = 0;  // macOS: the assertion; Linux: the inhibit cookie
+    bool awakeByGnome_ = false;        // Linux: the cookie is GNOME's session manager's
 };
 }  // namespace ucd
