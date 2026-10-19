@@ -14,9 +14,9 @@
   </defs>
   <g clip-path="url(#tile)">
     <rect width="1024" height="1024" fill="url(#bg)"/>
-    <polygon points="935.9,508.5 514.9,87.5 87.5,514.9 508.5,935.9 596.4,848.1 261.4,513.1 513.1,261.4 848.1,596.4" fill="url(#band)"/>
+    <polygon points="907.7,508.8 514.7,115.8 115.8,514.7 508.8,907.7 590.7,825.7 278.1,513.1 513.1,278.1 825.7,590.7" fill="url(#band)"/>
   </g>
-  <g transform="translate(512 512) scale(0.9) translate(-512 -512)">
+  <g transform="translate(512 512) scale(0.84) translate(-512 -512)">
   <path d="M 352 426.0 V 600 A 160.0 160.0 0 0 0 672 600 V 426.0"
         fill="none" stroke="#111111" stroke-width="112"/>
   <circle cx="352" cy="360" r="66.0" fill="none" stroke="#111111" stroke-width="52"/>

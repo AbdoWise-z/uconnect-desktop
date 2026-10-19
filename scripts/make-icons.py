@@ -53,7 +53,7 @@ PADDING = 0.05
 MAC_INSET = 0.1
 # Inside the tile, the C and the u are scaled about its centre to leave this
 # much more room to its edge.
-INNER_PADDING = 0.05
+INNER_PADDING = 0.08
 INNER = 1 - 2 * INNER_PADDING
 # The tray icon: the u's height, as a share of the icon's.
 TRAY_FILL = 0.9
