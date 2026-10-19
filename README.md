@@ -27,8 +27,8 @@
   folders a device shares, with read-only shares and a log of what others did.
 - **Folder sync.** Keep a folder the same on several devices, with conflicts
   kept rather than overwritten.
-- **Screen sharing, remote control and camera.** Each behind a consent prompt
-  on the sharing device, with a sharing bar and a hotkey to stop. Hardware
+- **Screen sharing and remote control.** Each behind a consent prompt on the
+  sharing device, with a sharing bar and a hotkey to stop. Hardware
   encoding (NVENC, VideoToolbox) where available.
 - **Extended display.** A Windows or macOS computer gains a real extra monitor,
   shown full screen on another device: pick the resolution and refresh rate,
@@ -37,6 +37,8 @@
   the app; macOS needs nothing extra.
 - **Lives in the tray.** Closing the window keeps uConnect running in the
   system tray (the menu bar on macOS); it can start when you sign in.
+
+Camera sharing is in progress and not finished in this version.
 
 ## How it works
 
@@ -75,7 +77,7 @@ confirmation; on macOS, choose **Open Anyway** under System Settings → Privacy
 |                          | Windows 10/11 x64 | macOS (Apple silicon) | Linux x86_64 |
 |--------------------------|:-----------------:|:---------------------:|:------------:|
 | Storage, folder sync     | ✓ | ✓ | ✓ |
-| Share a screen or camera | ✓ | ✓ | ✓ (X11; on Wayland view-only, through the desktop portal) |
+| Share a screen           | ✓ | ✓ | ✓ (X11; on Wayland view-only, through the desktop portal) |
 | Watch a shared screen    | ✓ | ✓ | ✓ |
 | Gain an extended display | ✓ | ✓ | — |
 | Be an extended display   | ✓ | ✓ | ✓ |
@@ -103,7 +105,7 @@ ctest --test-dir build --output-on-failure
 
 | Option | Default | |
 |---|---|---|
-| `UCD_WITH_SCREEN` | `ON` | Screen sharing, camera and extended display (needs FFmpeg) |
+| `UCD_WITH_SCREEN` | `ON` | Screen sharing and extended display (needs FFmpeg) |
 | `UCD_BUILD_SERVER` | `ON` | Build `uconnect-rendezvous` alongside the app |
 | `UCD_BUILD_TESTS` | `ON` | The test suites |
 | `UCD_DEBUG_UI` | `ON` | The Dear ImGui debug window (View → Debug Window) |
