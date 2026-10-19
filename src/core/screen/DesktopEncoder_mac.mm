@@ -3,6 +3,7 @@
 #include <mutex>
 #include <map>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
+#include <QElapsedTimer>
 #include <QStringList>
 #import <CoreMedia/CoreMedia.h>
 // AVFoundation (through ScreenCaptureKit) and FFmpeg both name a type
@@ -45,20 +46,41 @@ namespace ucd::screen {
 namespace {
 class VideoToolboxDesktop : public DesktopEncoder {
     SCStream* stream_ = nil;
+    SCStreamConfiguration* configuration_ = nil;
     UCDScreenOutput* delegate_ = nil;
     std::shared_ptr<UCDLatestSurface> surface_;
     AVCodecContext* codec_ = nullptr;
     AVBufferRef *device_ = nullptr, *frames_ = nullptr;
     QString monitor_;
     CodecOptions options_;
-    qint64 pts_ = 0;
+    int width_ = 0, height_ = 0;
+    qint64 pts_ = 0;  // milliseconds, so the frame rate may change freely
     std::map<qint64, quint32> times_;
     bool forceKey_ = true;
+    QElapsedTimer bitrateChanged_;
+    void closeCodec() {
+        avcodec_free_context(&codec_); times_.clear(); forceKey_ = true;
+    }
     void close() {
         if (stream_) [stream_ stopCaptureWithCompletionHandler:^(NSError*) {}];
-        stream_ = nil; delegate_ = nil; surface_.reset();
-        avcodec_free_context(&codec_); av_buffer_unref(&frames_); av_buffer_unref(&device_);
-        pts_ = 0; times_.clear(); forceKey_ = true;
+        stream_ = nil; configuration_ = nil; delegate_ = nil; surface_.reset();
+        closeCodec(); av_buffer_unref(&frames_); av_buffer_unref(&device_);
+        pts_ = 0; width_ = height_ = 0;
+    }
+    // The encoder alone, on the open capture. VideoToolbox (through FFmpeg)
+    // takes a bitrate only when opened, so a new bitrate is a new encoder.
+    QString openCodec(const CodecOptions& options) {
+        const auto* encoder = avcodec_find_encoder_by_name("h264_videotoolbox"); if (!encoder) return QStringLiteral("no VideoToolbox encoder");
+        codec_ = avcodec_alloc_context3(encoder); codec_->width = width_; codec_->height = height_;
+        codec_->pix_fmt = AV_PIX_FMT_VIDEOTOOLBOX; codec_->hw_frames_ctx = av_buffer_ref(frames_);
+        codec_->time_base = {1, 1000}; codec_->framerate = {options.fps, 1};
+        codec_->bit_rate = codec_->rc_max_rate = options.bitrate; codec_->rc_buffer_size = options.bitrate / 8;
+        codec_->gop_size = options.fps * 4; codec_->max_b_frames = 0; codec_->flags |= AV_CODEC_FLAG_LOW_DELAY;
+        AVDictionary* tuning = nullptr; av_dict_set(&tuning, "realtime", "1", 0); av_dict_set(&tuning, "allow_sw", "0", 0);
+        const int status = avcodec_open2(codec_, encoder, &tuning); av_dict_free(&tuning);
+        if (status < 0) return QStringLiteral("the encoder did not open (%1)").arg(status);
+        options_.bitrate = options.bitrate; bitrateChanged_.start();
+        return {};
     }
     // Why it could not open, for people; empty once it is open.
     QString open(const QString& monitor, const CodecOptions& options) {
@@ -98,14 +120,14 @@ class VideoToolboxDesktop : public DesktopEncoder {
             const int width = std::max(2, std::min(pixelsWide, options.width) & ~1);
             const int height = std::max(2, int(qint64(display.height) * width / display.width) & ~1);
             if (width > 3840 || height > 4320) return QStringLiteral("%1x%2 is larger than the encoder takes").arg(width).arg(height);
-            SCStreamConfiguration* configuration = [SCStreamConfiguration new];
-            configuration.width = width; configuration.height = height;
-            configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
-            configuration.minimumFrameInterval = CMTimeMake(1, options.fps);
-            configuration.queueDepth = 3; configuration.showsCursor = NO;
+            configuration_ = [SCStreamConfiguration new];
+            configuration_.width = width; configuration_.height = height;
+            configuration_.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+            configuration_.minimumFrameInterval = CMTimeMake(1, options.fps);
+            configuration_.queueDepth = 3; configuration_.showsCursor = NO;
             SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
             surface_ = std::make_shared<UCDLatestSurface>(); delegate_ = [UCDScreenOutput new]; delegate_->surface = surface_;
-            stream_ = [[SCStream alloc] initWithFilter:filter configuration:configuration delegate:delegate_];
+            stream_ = [[SCStream alloc] initWithFilter:filter configuration:configuration_ delegate:delegate_];
             NSError* error = nil;
             if (![stream_ addStreamOutput:delegate_ type:SCStreamOutputTypeScreen sampleHandlerQueue:dispatch_queue_create("uconnect.screen.surface", DISPATCH_QUEUE_SERIAL) error:&error])
                 return QStringLiteral("the capture stream took no output (%1)").arg(QString::fromNSString(error.localizedDescription));
@@ -113,21 +135,13 @@ class VideoToolboxDesktop : public DesktopEncoder {
             [stream_ startCaptureWithCompletionHandler:^(NSError* error) { started = error == nil; startError = error; dispatch_semaphore_signal(start); }];
             if (dispatch_semaphore_wait(start, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) return QStringLiteral("the capture did not start in time");
             if (!started) return QStringLiteral("the capture did not start (%1)").arg(QString::fromNSString(startError.localizedDescription));
-            const auto* encoder = avcodec_find_encoder_by_name("h264_videotoolbox"); if (!encoder) return QStringLiteral("no VideoToolbox encoder");
             if (av_hwdevice_ctx_create(&device_, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, nullptr, nullptr, 0) < 0) return QStringLiteral("no VideoToolbox device");
             frames_ = av_hwframe_ctx_alloc(device_); if (!frames_) return QStringLiteral("no frame pool");
             auto* pool = reinterpret_cast<AVHWFramesContext*>(frames_->data);
             pool->format = AV_PIX_FMT_VIDEOTOOLBOX; pool->sw_format = AV_PIX_FMT_NV12; pool->width = width; pool->height = height;
             if (av_hwframe_ctx_init(frames_) < 0) return QStringLiteral("the frame pool did not start");
-            codec_ = avcodec_alloc_context3(encoder); codec_->width = width; codec_->height = height;
-            codec_->pix_fmt = AV_PIX_FMT_VIDEOTOOLBOX; codec_->hw_frames_ctx = av_buffer_ref(frames_);
-            codec_->time_base = {1, options.fps}; codec_->framerate = {options.fps, 1};
-            codec_->bit_rate = codec_->rc_max_rate = options.bitrate; codec_->rc_buffer_size = options.bitrate / 8;
-            codec_->gop_size = options.fps * 4; codec_->max_b_frames = 0; codec_->flags |= AV_CODEC_FLAG_LOW_DELAY;
-            AVDictionary* tuning = nullptr; av_dict_set(&tuning, "realtime", "1", 0); av_dict_set(&tuning, "allow_sw", "0", 0);
-            const int status = avcodec_open2(codec_, encoder, &tuning); av_dict_free(&tuning);
-            if (status < 0) return QStringLiteral("the encoder did not open (%1)").arg(status);
-            monitor_ = monitor; options_ = options; return {};
+            width_ = width; height_ = height; monitor_ = monitor; options_ = options;
+            return openCodec(options);
         }
         return QStringLiteral("macOS 12.3 or newer is needed");
     }
@@ -136,10 +150,22 @@ public:
     DesktopResult encode(const QString& monitor, const CodecOptions& options, quint32 number, quint32 captureMs, bool keyframe) override {
         @autoreleasepool {
             forceKey_ |= keyframe;
-            if (monitor_ != monitor || options.width != options_.width || options.fps != options_.fps ||
-                std::abs(options.bitrate - options_.bitrate) > options_.bitrate / 5) close();
-            if (!codec_) {
-                if (const QString why = open(monitor, options); !why.isEmpty()) {
+            // Congestion control moves the frame rate and bitrate all the time.
+            // Neither restarts the capture (which would flash macOS's recording
+            // indicator and drop frames): the frame rate is changed on the
+            // running stream, and the bitrate needs only a new encoder, batched
+            // (bitrateWorthChanging) as each costs a keyframe. Another monitor
+            // or size starts afresh.
+            if (monitor_ != monitor || options.width != options_.width) close();
+            else if (codec_ && bitrateWorthChanging(options_.bitrate, options.bitrate, bitrateChanged_.elapsed())) closeCodec();
+            if (stream_ && options.fps != options_.fps) {
+                configuration_.minimumFrameInterval = CMTimeMake(1, options.fps);
+                [stream_ updateConfiguration:configuration_ completionHandler:^(NSError*) {}];
+                options_.fps = options.fps;
+            }
+            if (!stream_ || !codec_) {
+                const QString why = stream_ ? openCodec(options) : open(monitor, options);
+                if (!why.isEmpty()) {
                     close();
                     return {false, {}, {}, QStringLiteral("Native capture unavailable: %1.").arg(why)};
                 }
@@ -159,7 +185,7 @@ public:
             frame->width = codec_->width; frame->height = codec_->height; frame->hw_frames_ctx = av_buffer_ref(frames_);
             frame->data[3] = reinterpret_cast<uint8_t*>(buffer);
             frame->buf[0] = av_buffer_create(reinterpret_cast<uint8_t*>(buffer), 1, [](void*, uint8_t* data) { CVPixelBufferRelease(reinterpret_cast<CVPixelBufferRef>(data)); }, nullptr, 0);
-            frame->pts = pts_++; times_[frame->pts] = captureMs;
+            frame->pts = pts_ = std::max<qint64>(pts_ + 1, captureMs); times_[frame->pts] = captureMs;
             frame->pict_type = forceKey_ ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
             const int sent = avcodec_send_frame(codec_, frame); av_frame_free(&frame);
             if (sent < 0 || times_.size() > 16) { close(); return {}; }
