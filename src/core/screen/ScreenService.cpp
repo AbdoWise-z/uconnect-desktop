@@ -63,6 +63,7 @@ void ScreenService::configure(const ScreenSettings& settings) {
     const bool offered = settings_.offered;
     const bool controlOffered = settings_.controlOffered;
     const bool gpuChanged = settings_.gpuCapture != settings.gpuCapture;
+    const QVariantList monitorsBefore = settings_.monitors;
     settings_ = settings;
     settings_.offered = offered;
     settings_.controlOffered = controlOffered;
@@ -76,9 +77,42 @@ void ScreenService::configure(const ScreenSettings& settings) {
         for (auto& [peer, host] : hosts_) host.forceKey = true;
     }
     settings_.monitor = std::clamp(settings.monitor, 0, std::max(0, int(settings.monitors.size()) - 1));
+    followMonitors(monitorsBefore);
     while (int(hosts_.size()) > settings_.maxViewers) stopHost(hosts_.rbegin()->first, "viewer limit reduced");
     // An extended display is not an offered service: DisplayService starts it.
     if (!settings_.offered && !display_) stopHosting("screen service disabled");
+}
+void ScreenService::followMonitors(const QVariantList& before) {
+    // A camera's list is its devices, and an extended display has one monitor.
+    if (camera_ || display_ || before == settings_.monitors) return;
+    const auto id = [](const QVariant& monitor) {
+        const auto map = monitor.toMap();
+        return map.value("nativeId", map.value("name")).toString();
+    };
+    std::vector<Peer> gone;
+    int moved = -1;
+    for (auto& [peer, host] : hosts_) {
+        const QString was = id(before.value(host.monitor));
+        int index = -1;
+        for (int i = 0; i < settings_.monitors.size() && !was.isEmpty(); ++i)
+            if (id(settings_.monitors[i]) == was) { index = i; break; }
+        // Never another monitor in its place: that is not what was shared.
+        if (index < 0) { gone.push_back(peer); continue; }
+        if (index == host.monitor) continue;
+        host.monitor = index;
+        if (!host.live) continue;
+        auto changed = message("scr.monitorChanged", host.token); changed["index"] = index; send_(peer, changed);
+        moved = index;
+    }
+    for (const auto& peer : gone) stopHost(peer, "shared screen disconnected");
+    // The desktop's layout may have moved the monitor too: input follows it.
+    for (const auto& [peer, host] : hosts_) if (host.live) {
+        const auto bounds = settings_.monitors.value(host.monitor).toMap();
+        input_.setBounds(QRect(bounds.value("inputX", bounds.value("x")).toInt(), bounds.value("inputY", bounds.value("y")).toInt(),
+            bounds.value("inputWidth", bounds.value("width")).toInt(), bounds.value("inputHeight", bounds.value("height")).toInt()));
+        break;
+    }
+    if (moved >= 0) emit captureChanged(true, moved);
 }
 void ScreenService::setOffered(bool offered) {
     settings_.offered = offered;

@@ -171,6 +171,9 @@ private:
     void fail(const Peer& peer, quint32 request, const QString& code);
     void showViewer(const Peer& peer, const QString& state, const QString& detail = {}, const QVariantMap& extra = {});
     void showHosting();
+    // Monitors came or went (configure()): each share follows its monitor to
+    // its new place in the list, and ends if that monitor is gone.
+    void followMonitors(const QVariantList& before);
     void encodeCapture(const QVideoFrame& frame, const QImage& image, quint32 captureMs);
     void decodeNext(const Peer& peer);
     void presentNext(const Peer& peer, Viewer& viewer, qint64 now);

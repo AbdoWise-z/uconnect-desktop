@@ -99,7 +99,13 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
     connect(service, &screen::ScreenService::rememberPermission, this, &ScreenController::rememberPermission);
     connect(&devices_, &QMediaDevices::videoInputsChanged, this, [this] { if (camera_) { stopHosting(); pushSettings(); } });
     connect(qGuiApp, &QGuiApplication::screenAdded, this, [this] { pushSettings(); });
-    connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this] { stopHosting(); pushSettings(); });
+    // A share follows its monitor and ends only with it (ScreenService::
+    // followMonitors), so ending an extended display leaves other shares be.
+    // The desktop portal does not say which monitor it shares.
+    connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this](QScreen* removed) {
+        if (!camera_ && QGuiApplication::platformName().startsWith("wayland")) stopHosting();
+        pushSettings(removed);
+    });
 #endif
     pushSettings();
 }
@@ -131,7 +137,7 @@ void ScreenController::configure(const QVariantMap& values) {
     for (auto it = settings_.begin(); it != settings_.end(); ++it) store.setValue("screen/" + it.key(), it.value());
     pushSettings(); emit settingsChanged();
 }
-void ScreenController::pushSettings() {
+void ScreenController::pushSettings(const QScreen* removed) {
 #ifdef UCD_HAS_SCREEN
     screen::ScreenSettings settings;
     settings.monitor = settings_.value("monitor").toInt(); settings.maxFps = settings_.value("maxFps").toInt();
@@ -147,6 +153,7 @@ void ScreenController::pushSettings() {
         for (const auto& device : QMediaDevices::videoInputs())
             settings.monitors.push_back(QVariantMap{{"name", device.description()}, {"width", 0}, {"height", 0}});
     } else for (const auto* monitor : QGuiApplication::screens()) {
+        if (monitor == removed) continue;  // still listed while it is being removed
         QRect input = monitor->geometry();
         QSize pixels = monitor->size() * monitor->devicePixelRatio();
 #ifdef Q_OS_WIN

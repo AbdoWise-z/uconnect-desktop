@@ -72,6 +72,40 @@ private slots:
         time = 6000; service.handle(peer(1), report); service.tick(); QCOMPARE(statuses(), 1);
     }
 
+    // Unplugging another monitor (ending an extended display, say) moves the
+    // shared one in the list; the share follows it. It ends with its own
+    // monitor, and never carries on with another in its place.
+    void shareFollowsItsMonitor() {
+        PeerAccess access{"key", "Viewer", "fp", {perm::ScreenView, perm::ScreenDirect}, true};
+        QVector<QJsonObject> sent;
+        ScreenService service([&](const auto&, const auto& msg) { sent.push_back(msg); return true; },
+            [&](const auto&) { return access; }, [](const auto&) { return true; }, [](const auto&) {},
+            [](const auto&, const auto&) { return true; });
+        const auto monitor = [](const char* id, int x) {
+            return QVariantMap{{"nativeId", id}, {"name", id}, {"width", 256}, {"height", 128}, {"inputX", x}, {"inputY", 0}};
+        };
+        ScreenSettings settings; settings.gpuCapture = false;
+        settings.monitors = {monitor("A", 0), monitor("B", 256)};
+        settings.monitor = 1;  // B
+        service.configure(settings); service.setOffered(true);
+        QSignalSpy hosting(&service, &ScreenService::hostingChanged), capture(&service, &ScreenService::captureChanged);
+        service.handle(peer(1), request());
+        QVERIFY(!hosting.back()[0].toList().isEmpty());
+
+        settings.monitors = {monitor("B", 0)};  // A unplugged: B is now first
+        settings.monitor = 0;
+        service.configure(settings);
+        QVERIFY(!hosting.back()[0].toList().isEmpty());
+        QCOMPARE(sent.back().value("t").toString(), "scr.monitorChanged");
+        QCOMPARE(sent.back().value("index").toInt(), 0);
+        QCOMPARE(capture.back()[0].toBool(), true);
+        QCOMPARE(capture.back()[1].toInt(), 0);
+
+        settings.monitors = {monitor("C", 0)};  // B gone, another in its place
+        service.configure(settings);
+        QVERIFY(hosting.back()[0].toList().isEmpty());
+    }
+
     // Native capture is tried first; Qt's capture is wanted only once it fails,
     // and only then does Qt's failure end hosting.
     void captureFailureWaitsForNativePath() {
