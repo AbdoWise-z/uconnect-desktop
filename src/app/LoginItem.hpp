@@ -21,4 +21,8 @@ bool setEnabled(const QString& name, bool enabled, const QStringList& arguments 
 // The command registered for `name`, as the system will run it; empty if none.
 QString command(const QString& name);
 
+// Where the registration of `name` lives: a file (macOS, Linux) or a
+// registry value (Windows, as "key\value").
+QString location(const QString& name);
+
 }  // namespace ucd::login

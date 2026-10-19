@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QJSValue>
+#include <QProcess>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickStyle>
@@ -274,6 +275,13 @@ private slots:
         QVERIFY(ucd::login::isEnabled(name));
         QVERIFY2(ucd::login::command(name).contains(exe), qPrintable(ucd::login::command(name)));
         QVERIFY(ucd::login::command(name).endsWith("--minimized"));  // hidden by default
+#ifdef Q_OS_MACOS
+        // launchd skips a LaunchAgent it cannot parse, silently.
+        QCOMPARE(QProcess::execute("plutil", {"-lint", ucd::login::location(name)}), 0);
+#elif defined(Q_OS_LINUX)
+        if (!QStandardPaths::findExecutable("desktop-file-validate").isEmpty())
+            QCOMPARE(QProcess::execute("desktop-file-validate", {ucd::login::location(name)}), 0);
+#endif
         controller_->applySettings({{"startHidden", false}});
         QVERIFY(!ucd::login::command(name).contains("--minimized"));
         {

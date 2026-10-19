@@ -124,6 +124,16 @@ QString command(const QString& name) {
 #endif
 }
 
+QString location(const QString& name) {
+#if defined(Q_OS_WIN)
+    return QStringLiteral("HKEY_CURRENT_USER\\") + QString::fromWCharArray(RunKey) + QLatin1Char('\\') + valueName(name);
+#elif defined(Q_OS_MACOS)
+    return plistPath(name);
+#else
+    return desktopPath(name);
+#endif
+}
+
 bool isEnabled(const QString& name) {
 #if defined(Q_OS_WIN)
     return !readRun(name).isEmpty() && !turnedOff(name);
