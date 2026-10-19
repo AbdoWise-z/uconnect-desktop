@@ -7,8 +7,6 @@
 #include "core/screen/ScreenService.hpp"
 #ifdef Q_OS_WIN
 #include <windows.h>
-#else
-#include <CoreGraphics/CoreGraphics.h>
 #endif
 
 using namespace ucd;

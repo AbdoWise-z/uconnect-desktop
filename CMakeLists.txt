@@ -414,7 +414,7 @@ if (UCD_BUILD_TESTS)
         ucd_add_test(VirtualDisplayTest)  # opt in: UCD_TEST_VIRTUAL_DISPLAY=1
         ucd_add_test(KeepAwakeTest)
         target_link_libraries(KeepAwakeTest PRIVATE uconnect_desktop_screen_ui)
-        if (TARGET Qt6::DBus)
+        if (TARGET Qt6::DBus AND UNIX AND NOT APPLE)  # as for the screen library
             target_compile_definitions(KeepAwakeTest PRIVATE UCD_HAS_DBUS)
             target_link_libraries(KeepAwakeTest PRIVATE Qt6::DBus)
         endif ()
