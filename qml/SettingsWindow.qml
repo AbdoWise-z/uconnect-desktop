@@ -14,7 +14,7 @@ Window {
     property string query: ""
 
     readonly property var pages: [
-        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address startup automatically tray close minimize background" },
+        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address startup automatically tray close minimize background login sign in boot hidden" },
         { id: "device", title: qsTr("Device"), depth: 0, keywords: "name computer" },
         { id: "services", title: qsTr("Services"), depth: 0, keywords: "offer share" },
         { id: "storage", title: Theme.serviceLabel("storage"), depth: 1, parent: "services", keywords: "files shared folders download upload drag drop" },
@@ -45,6 +45,8 @@ Window {
         property bool verboseLogging
         property bool debugOnStartup
         property bool closeToTray
+        property bool launchAtLogin
+        property bool startHidden
         property var sharedFolders: []
         property var readOnlyFolders: []
         property string downloadFolder
@@ -68,6 +70,8 @@ Window {
                                      || draft.verboseLogging !== App.verboseLogging
                                      || draft.debugOnStartup !== App.debugOnStartup
                                      || draft.closeToTray !== App.closeToTray
+                                     || draft.launchAtLogin !== App.launchAtLogin
+                                     || draft.startHidden !== App.startHidden
                                      || draft.sharedFolders.join("
 ") !== App.sharedFolders.join("
 ")
@@ -88,6 +92,8 @@ Window {
         draft.verboseLogging = App.verboseLogging
         draft.debugOnStartup = App.debugOnStartup
         draft.closeToTray = App.closeToTray
+        draft.launchAtLogin = App.launchAtLogin
+        draft.startHidden = App.startHidden
         draft.sharedFolders = App.sharedFolders.slice()
         draft.readOnlyFolders = App.readOnlyFolders.slice()
         draft.downloadFolder = App.downloadFolder
@@ -108,6 +114,8 @@ Window {
             verboseLogging: draft.verboseLogging,
             debugOnStartup: draft.debugOnStartup,
             closeToTray: draft.closeToTray,
+            launchAtLogin: draft.launchAtLogin,
+            startHidden: draft.startHidden,
             sharedFolders: draft.sharedFolders,
             readOnlyFolders: draft.readOnlyFolders.filter(f => draft.sharedFolders.indexOf(f) >= 0),
             downloadFolder: draft.downloadFolder,
@@ -257,6 +265,26 @@ Window {
                     text: draft.rememberTopic
                           ? qsTr("Reconnects to the last topic, using its remembered invite link.")
                           : qsTr("Needs “Remember the invite link” under Security.")
+                }
+            }
+            UCheckBox {
+                text: qsTr("Start uConnect when you sign in")
+                checked: draft.launchAtLogin
+                onToggled: draft.launchAtLogin = checked
+            }
+            UCheckBox {
+                Layout.leftMargin: 24
+                text: qsTr("Start hidden in the system tray")
+                enabled: draft.launchAtLogin && App.tray.available
+                checked: draft.startHidden && App.tray.available
+                onToggled: draft.startHidden = checked
+            }
+            Indented {
+                Layout.leftMargin: 48
+                Help {
+                    text: App.tray.available
+                          ? qsTr("When it starts at sign-in, it waits in the tray without opening its window. Opening uConnect yourself always shows it.")
+                          : qsTr("This desktop has no system tray, so the window always opens.")
                 }
             }
 

@@ -34,10 +34,11 @@ int main(int argc, char* argv[]) {
         "profile", "Use a separate settings profile, e.g. to run two instances on one machine.", "name");
     const QCommandLineOption connectOpt("connect", "Connect immediately on start.");
     const QCommandLineOption debugOpt("debug", "Open the debug window on start.");
+    const QCommandLineOption minimizedOpt("minimized", "Start in the system tray, without opening the window.");
     const QCommandLineOption verboseOpt("verbose", "Verbose uconnect library logging.");
     const QCommandLineOption relayOpt("force-relay",
         "Skip hole punching: connect through the server's relay and send media over TCP.");
-    cli.addOptions({serverOpt, topicOpt, nameOpt, profileOpt, connectOpt, debugOpt, verboseOpt, relayOpt});
+    cli.addOptions({serverOpt, topicOpt, nameOpt, profileOpt, connectOpt, debugOpt, minimizedOpt, verboseOpt, relayOpt});
     cli.process(app);
 
     if (cli.isSet(profileOpt)) {
@@ -63,6 +64,8 @@ int main(int argc, char* argv[]) {
     options.showDebug   = cli.isSet(debugOpt);
     options.verbose     = cli.isSet(verboseOpt);
     options.forceRelay  = cli.isSet(relayOpt);
+    options.profile     = cli.value(profileOpt);
+    options.minimized   = cli.isSet(minimizedOpt);
 
     // Basic is the style meant to be restyled; the look comes from qml/Theme.qml.
     QQuickStyle::setStyle(QStringLiteral("Basic"));

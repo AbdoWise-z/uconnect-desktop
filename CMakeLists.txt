@@ -203,6 +203,8 @@ qt_add_executable(uconnect_desktop
     src/app/PeerListModel.hpp
     src/app/TransferListModel.cpp
     src/app/TransferListModel.hpp
+    src/app/LoginItem.cpp
+    src/app/LoginItem.hpp
     src/app/SingleInstance.cpp
     src/app/SingleInstance.hpp
     src/app/TrayIcon.cpp
@@ -420,7 +422,8 @@ if (UCD_BUILD_TESTS)
         src/app/AppController.cpp src/app/AppController.hpp
         src/app/PeerListModel.cpp src/app/PeerListModel.hpp
         src/app/TransferListModel.cpp src/app/TransferListModel.hpp
-        src/app/TrayIcon.cpp src/app/TrayIcon.hpp)
+        src/app/TrayIcon.cpp src/app/TrayIcon.hpp
+        src/app/LoginItem.cpp src/app/LoginItem.hpp)
     target_link_libraries(SettingsTest PRIVATE Qt6::Gui Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2)
     target_link_libraries(SettingsTest PRIVATE uconnect_desktop_screen_ui)
     target_compile_definitions(SettingsTest PRIVATE UCD_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")

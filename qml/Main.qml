@@ -10,7 +10,7 @@ ApplicationWindow {
     height: 680
     minimumWidth: 900
     minimumHeight: 560
-    visible: true
+    visible: !App.startsHidden  // --minimized: opened later, from the tray
     color: Theme.canvas
     font.pixelSize: Theme.fontSize
     title: inWorkspace && App.topicId.length > 0

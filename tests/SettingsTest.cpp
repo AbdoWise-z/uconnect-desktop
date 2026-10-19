@@ -16,6 +16,11 @@
 #include <memory>
 
 #include "app/AppController.hpp"
+#include "app/LoginItem.hpp"
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 class SettingsTest : public QObject {
     Q_OBJECT
@@ -80,6 +85,7 @@ private slots:
     }
 
     void cleanup() {
+        ucd::login::setEnabled(QCoreApplication::applicationName(), false);
         dialog_.reset();
         engine_.reset();
         controller_.reset();
@@ -253,6 +259,53 @@ private slots:
         QVERIFY(!restarted.closeToTray());
         // No QApplication here, so no tray: the window would simply exit.
         QVERIFY(!restarted.tray()->property("available").toBool());
+    }
+
+    void launchAtLoginRegistersWithTheSystem() {
+        const QString name = QCoreApplication::applicationName();
+        const QString exe = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
+        QVERIFY(!controller_->launchAtLogin());
+        QObject* settingsDraft = draft();
+        QVERIFY(settingsDraft);
+        QVERIFY(settingsDraft->setProperty("launchAtLogin", true));
+        QTRY_VERIFY(dialog_->property("modified").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QVERIFY(controller_->launchAtLogin());
+        QVERIFY(ucd::login::isEnabled(name));
+        QVERIFY2(ucd::login::command(name).contains(exe), qPrintable(ucd::login::command(name)));
+        QVERIFY(ucd::login::command(name).endsWith("--minimized"));  // hidden by default
+        controller_->applySettings({{"startHidden", false}});
+        QVERIFY(!ucd::login::command(name).contains("--minimized"));
+        {
+            ucd::AppController restarted(ucd::LaunchOptions{});
+            QVERIFY(restarted.launchAtLogin());
+            QVERIFY(!restarted.startHidden());
+        }
+#ifdef Q_OS_WIN
+        // Turned off in Task Manager's Startup apps: off here too, until turned on again.
+        const BYTE off[12] = {3};
+        const std::wstring value = name.toStdWString();
+        const wchar_t* approved = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
+        QCOMPARE(RegSetKeyValueW(HKEY_CURRENT_USER, approved, value.c_str(), REG_BINARY, off, sizeof(off)), ERROR_SUCCESS);
+        QVERIFY(!ucd::login::isEnabled(name));
+        {
+            ucd::AppController restarted(ucd::LaunchOptions{});
+            QVERIFY(!restarted.launchAtLogin());
+            restarted.applySettings({{"launchAtLogin", true}});
+            QVERIFY(ucd::login::isEnabled(name));
+        }
+#endif
+        controller_->applySettings({{"launchAtLogin", false}});
+        QVERIFY(!controller_->launchAtLogin());
+        QVERIFY(!ucd::login::isEnabled(name));
+        QVERIFY(ucd::login::command(name).isEmpty());
+    }
+
+    void minimizedOpensTheWindowWithoutATray() {
+        ucd::LaunchOptions options;
+        options.minimized = true;
+        ucd::AppController hidden(options);
+        QVERIFY(!hidden.startsHidden());  // no QApplication here, so no tray to open it from
     }
 
     void emptyFolderListRemovesSavedFolders() {

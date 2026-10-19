@@ -37,6 +37,8 @@ struct LaunchOptions {
     bool    showDebug   = false;
     bool    verbose     = false;
     bool    forceRelay  = false;
+    QString profile;            // --profile, if any
+    bool    minimized   = false;  // start in the tray, without the window
 };
 
 class AppController : public QObject {
@@ -56,6 +58,12 @@ class AppController : public QObject {
     Q_PROPERTY(bool debugOnStartup READ debugOnStartup NOTIFY settingsChanged)
     // Closing the window leaves the app running in the tray, where there is one.
     Q_PROPERTY(bool closeToTray READ closeToTray NOTIFY settingsChanged)
+    // Starts when the user signs in (read from the system, see LoginItem)...
+    Q_PROPERTY(bool launchAtLogin READ launchAtLogin NOTIFY settingsChanged)
+    // ...and then in the tray, without opening the window.
+    Q_PROPERTY(bool startHidden READ startHidden NOTIFY settingsChanged)
+    // This run started in the tray, so the window waits to be opened.
+    Q_PROPERTY(bool startsHidden READ startsHidden CONSTANT)
     Q_PROPERTY(QStringList sharedFolders READ sharedFolders NOTIFY settingsChanged)
     // Those of sharedFolders that other devices may not change.
     Q_PROPERTY(QStringList readOnlyFolders READ readOnlyFolders NOTIFY settingsChanged)
@@ -113,6 +121,9 @@ public:
     bool        verboseLogging() const { return verbose_; }
     bool        debugOnStartup() const { return debugOnStartup_; }
     bool        closeToTray() const { return closeToTray_; }
+    bool        launchAtLogin() const { return launchAtLogin_; }
+    bool        startHidden() const { return startHidden_; }
+    bool        startsHidden() const { return startsHidden_; }
     QStringList sharedFolders() const { return sharedFolders_; }
     QStringList readOnlyFolders() const { return readOnlyFolders_; }
     QString     downloadFolder() const { return downloadFolder_; }
@@ -168,7 +179,8 @@ public:
     Q_INVOKABLE bool isValidServer(const QString& address) const;
     Q_INVOKABLE void completeFirstRun(const QString& server, const QString& name);
     // Keys: server, deviceName, services, autoConnect, rememberTopic,
-    // verboseLogging, debugOnStartup, closeToTray, sharedFolders, readOnlyFolders,
+    // verboseLogging, debugOnStartup, closeToTray, launchAtLogin, startHidden,
+    // sharedFolders, readOnlyFolders,
     // downloadFolder, maxUploadMB,
     // defaultPermissions, and untrust (public keys to stop trusting).
     // Absent keys are left unchanged.
@@ -287,6 +299,8 @@ private:
     void    onBatchUpload(quint32 uploadId, const QString& error, bool canceled);
     void    finishUploadBatchIfDone(quint32 batchId);
     void pushSharedFolders();
+    // (Re)registers the sign-in start with the current arguments.
+    bool registerLogin(bool enabled);
     void pushUploadLimit();
     void pushAccessPolicy();
     void loadTrust();
@@ -313,6 +327,10 @@ private:
     bool     forceRelay_     = false;  // --force-relay, for this run only
     bool     debugOnStartup_ = false;
     bool     closeToTray_    = true;
+    bool     launchAtLogin_  = false;
+    bool     startHidden_    = true;
+    bool     startsHidden_   = false;
+    QString  profile_;
     QString  topicLink_;
     QStringList sharedFolders_;
     QStringList readOnlyFolders_;

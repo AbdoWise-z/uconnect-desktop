@@ -1,6 +1,7 @@
 #include "AppController.hpp"
 #include "ScreenController.hpp"
 #include "DisplayController.hpp"
+#include "LoginItem.hpp"
 #include "TrayIcon.hpp"
 
 #include <algorithm>
@@ -48,6 +49,7 @@ constexpr auto RememberTopic  = "rememberTopic";
 constexpr auto Verbose        = "verboseLogging";
 constexpr auto DebugOnStartup = "debugOnStartup";
 constexpr auto CloseToTray    = "closeToTray";
+constexpr auto StartHidden    = "startHidden";
 constexpr auto SharedFolders  = "storage/sharedFolders";
 constexpr auto ReadOnly       = "storage/readOnlyFolders";
 constexpr auto DownloadFolder = "storage/downloadFolder";
@@ -127,6 +129,12 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     forceRelay_     = options.forceRelay;
     debugOnStartup_ = settings.value(Key::DebugOnStartup, false).toBool();
     closeToTray_    = settings.value(Key::CloseToTray, true).toBool();
+    startHidden_    = settings.value(Key::StartHidden, true).toBool();
+    profile_        = options.profile;
+    // Registered with the system, not in settings; registering again keeps
+    // the command current when the app has moved or been updated.
+    launchAtLogin_  = login::isEnabled(QCoreApplication::applicationName());
+    if (launchAtLogin_) registerLogin(true);
     sharedFolders_  = settings.value(Key::SharedFolders).toStringList();
     readOnlyFolders_ = settings.value(Key::ReadOnly).toStringList();
     downloadFolder_ = settings.value(Key::DownloadFolder,
@@ -158,6 +166,8 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     camera_ = new ScreenController(session_, this, true);
     display_ = new DisplayController(session_, this);
     tray_ = new TrayIcon(this, screen_, camera_, display_);
+    // Only where the window can be opened again, and never before setup.
+    startsHidden_ = options.minimized && tray_->available() && !firstRun_;
     connect(camera_, &ScreenController::notify, this, &AppController::notify);
     connect(display_, &DisplayController::notify, this, &AppController::notify);
     connect(display_, &DisplayController::rememberPermission, this, [this](const QString& key, const QString& permission) {
@@ -455,6 +465,19 @@ void AppController::applySettings(const QVariantMap& values) {
     applyBool(Key::DebugOnStartup, debugOnStartup_);
     applyBool(Key::CloseToTray, closeToTray_);
 
+    const bool hiddenBefore = startHidden_;
+    applyBool(Key::StartHidden, startHidden_);
+    const bool login = values.value(QStringLiteral("launchAtLogin"), launchAtLogin_).toBool();
+    if (login != launchAtLogin_ || (login && startHidden_ != hiddenBefore)) {
+        if (!registerLogin(login)) {
+            emit notify(login ? tr("Could not set uConnect to start when you sign in.")
+                              : tr("Could not stop uConnect from starting when you sign in."));
+        } else if (login != launchAtLogin_) {
+            launchAtLogin_ = login;
+            emit settingsChanged();
+        }
+    }
+
     const bool rememberBefore = rememberTopic_;
     applyBool(Key::RememberTopic, rememberTopic_);
     if (rememberTopic_ != rememberBefore) {
@@ -467,6 +490,13 @@ QObject* AppController::screen() const { return screen_; }
 QObject* AppController::camera() const { return camera_; }
 QObject* AppController::display() const { return display_; }
 QObject* AppController::tray() const { return tray_; }
+
+bool AppController::registerLogin(bool enabled) {
+    QStringList arguments;
+    if (startHidden_) arguments << QStringLiteral("--minimized");
+    if (!profile_.isEmpty()) arguments << QStringLiteral("--profile") << profile_;
+    return login::setEnabled(QCoreApplication::applicationName(), enabled, arguments);
+}
 
 // --- topic ---------------------------------------------------------------------
 
