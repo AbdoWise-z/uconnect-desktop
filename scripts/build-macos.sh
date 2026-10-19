@@ -40,6 +40,9 @@ fi
 mkdir "$package_dir"
 ditto "$build_dir/uConnect.app" "$package_dir/uConnect.app"
 cp "$project_dir/packaging/TESTING.txt" "$package_dir/README.txt"
+# The rendezvous server, with its configuration example and notes.
+cp "$build_dir/uconnect-rendezvous" "$build_dir/rendezvous.example.yaml" "$project_dir/packaging/SERVER.txt" "$package_dir/"
+codesign --force -s - "$package_dir/uconnect-rendezvous"
 printf 'Source revision: %s\nPlatform: macOS %s\nConfiguration: Release\n' "$revision" "$arch" > "$package_dir/BUILD.txt"
 codesign --verify --deep --strict "$package_dir/uConnect.app"
 ditto -c -k --sequesterRsrc --keepParent "$package_dir" "$package_dir.zip"

@@ -39,6 +39,7 @@ Extended display: a Windows or macOS device can use another device's screen
   until the driver has a release signature, Windows also asks whether to
   trust its publisher. Best on the same local network.
 
-The ZIP does not include a rendezvous server; use your own.
+The package includes the rendezvous server (uconnect-rendezvous): run your
+own with it, as SERVER.txt describes.
 View > Debug Window (Ctrl+Shift+D) shows the connection state and log.
 Report problems with that log and the steps that led to them.

@@ -36,6 +36,13 @@ foreach ($directory in @('generic', 'iconengines', 'imageformats', 'networkinfor
         Copy-Item -LiteralPath $sourcePath -Destination $packagePath -Recurse
     }
 }
+# The rendezvous server, beside the app (it uses the same compiler runtime).
+foreach ($file in @('uconnect-rendezvous.exe', 'rendezvous.example.yaml')) {
+    $sourcePath = Join-Path $buildPath $file
+    if (-not (Test-Path -LiteralPath $sourcePath)) { throw "The build has no $file (configure with UCD_BUILD_SERVER=ON)." }
+    Copy-Item -LiteralPath $sourcePath -Destination $packagePath
+}
+Copy-Item -LiteralPath (Join-Path $projectDirectory 'packaging/SERVER.txt') -Destination $packagePath
 foreach ($notice in @('third-party-screen.md', 'FFmpeg-LICENSE.txt', 'GPL-3.0.txt', 'OpenH264-BINARY-LICENSE.txt')) {
     $sourcePath = Join-Path $buildPath $notice
     if (Test-Path -LiteralPath $sourcePath) {

@@ -19,7 +19,7 @@ dist="$project_dir/dist"
 echo "== build"
 cmake -S "$project_dir" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$qt" -DUCD_FFMPEG_ROOT="$ffmpeg" -DUCD_BUILD_TESTS=OFF > "$build.configure.log"
-cmake --build "$build" --target uconnect_desktop
+cmake --build "$build" --target uconnect_desktop uconnect-rendezvous
 
 echo "== deployment tools"
 mkdir -p "$tools"
@@ -62,6 +62,10 @@ export PATH="$tools/bin:$PATH"
 # linuxdeploy-plugin-qt leaves out the Wayland client's buffer integrations;
 # without wayland-egl, Qt Quick has no OpenGL on Wayland and the app aborts.
 cp -r "$qt/plugins/wayland-graphics-integration-client" "$appdir/usr/plugins/"
+# The rendezvous server (static: runs on any distribution), at the top of the
+# folder, with its configuration example, systemd unit and notes.
+cp "$build/uconnect-rendezvous" "$build/rendezvous.example.yaml" "$build/uconnect-rendezvous.service" \
+    "$project_dir/packaging/SERVER.txt" "$appdir/"
 cp "$ffmpeg/LICENSE.txt" "$appdir/usr/FFmpeg-LICENSE.txt" 2>/dev/null || true
 cp "$project_dir/docs/OpenH264-BINARY-LICENSE.txt" "$project_dir/docs/third-party-screen.md" "$appdir/usr/" 2>/dev/null || true
 

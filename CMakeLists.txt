@@ -31,7 +31,13 @@ set(_ucd_deploy_qmldir "${CMAKE_SOURCE_DIR}/qml")
 include(FetchContent)
 include(cmake/ScreenDependencies.cmake)
 set(UCONNECT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(UCONNECT_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+# The rendezvous server, uconnect-rendezvous, ships in the packages so anyone
+# can run their own. On Linux it is linked statically: one binary for any distro.
+option(UCD_BUILD_SERVER "Build the uConnect rendezvous server (uconnect-rendezvous) too" ON)
+set(UCONNECT_BUILD_SERVER ${UCD_BUILD_SERVER} CACHE BOOL "" FORCE)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(UCONNECT_STATIC_SERVER ${UCD_BUILD_SERVER} CACHE BOOL "" FORCE)
+endif ()
 FetchContent_Declare(
     uconnect
     GIT_REPOSITORY https://github.com/AbdoWise-z/uconnect.git
@@ -42,6 +48,13 @@ FetchContent_MakeAvailable(uconnect)
 # own headers when it is the top-level project. Here it resolves to this
 # project's root, so mirror the public headers there.
 file(COPY ${uconnect_SOURCE_DIR}/include/ DESTINATION ${CMAKE_SOURCE_DIR}/include)
+if (TARGET uconnect-rendezvous)
+    # Next to the app, with its example configuration and systemd unit, where
+    # the packaging scripts pick them up.
+    set_target_properties(uconnect-rendezvous PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    configure_file("${uconnect_SOURCE_DIR}/server/rendezvous.example.yaml" "${CMAKE_BINARY_DIR}/rendezvous.example.yaml" COPYONLY)
+    configure_file("${uconnect_SOURCE_DIR}/deploy/uconnect-rendezvous.service" "${CMAKE_BINARY_DIR}/uconnect-rendezvous.service" COPYONLY)
+endif ()
 
 # --- Monocypher (Ed25519 device identities) ------------------------------------
 # Small, audited, dependency-free. The optional ed25519 module is RFC 8032
@@ -401,7 +414,9 @@ if (UCD_BUILD_TESTS)
     ucd_add_test(IdentityTest)
     ucd_add_test(ScreenFoundationTest)
     ucd_add_test(ScreenTransportTest)
-    add_subdirectory(${uconnect_SOURCE_DIR}/server ${uconnect_BINARY_DIR}/server)
+    if (NOT TARGET uconnect_rendezvous)  # uconnect adds it itself when building the server
+        add_subdirectory(${uconnect_SOURCE_DIR}/server ${uconnect_BINARY_DIR}/server)
+    endif ()
     target_link_libraries(ScreenFoundationTest PRIVATE uconnect_rendezvous)
     if (UCD_SCREEN_AVAILABLE)
         set(UCD_TEST_OPENH264 "" CACHE FILEPATH "Separately installed Cisco library for codec and integration tests")
