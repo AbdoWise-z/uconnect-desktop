@@ -1,6 +1,7 @@
 #include "AppController.hpp"
 #include "ScreenController.hpp"
 #include "DisplayController.hpp"
+#include "TrayIcon.hpp"
 
 #include <algorithm>
 
@@ -46,6 +47,7 @@ constexpr auto AutoConnect    = "autoConnect";
 constexpr auto RememberTopic  = "rememberTopic";
 constexpr auto Verbose        = "verboseLogging";
 constexpr auto DebugOnStartup = "debugOnStartup";
+constexpr auto CloseToTray    = "closeToTray";
 constexpr auto SharedFolders  = "storage/sharedFolders";
 constexpr auto ReadOnly       = "storage/readOnlyFolders";
 constexpr auto DownloadFolder = "storage/downloadFolder";
@@ -124,6 +126,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     verbose_        = settings.value(Key::Verbose, false).toBool() || options.verbose;
     forceRelay_     = options.forceRelay;
     debugOnStartup_ = settings.value(Key::DebugOnStartup, false).toBool();
+    closeToTray_    = settings.value(Key::CloseToTray, true).toBool();
     sharedFolders_  = settings.value(Key::SharedFolders).toStringList();
     readOnlyFolders_ = settings.value(Key::ReadOnly).toStringList();
     downloadFolder_ = settings.value(Key::DownloadFolder,
@@ -154,6 +157,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     screen_ = new ScreenController(session_, this);
     camera_ = new ScreenController(session_, this, true);
     display_ = new DisplayController(session_, this);
+    tray_ = new TrayIcon(this, screen_, camera_, display_);
     connect(camera_, &ScreenController::notify, this, &AppController::notify);
     connect(display_, &DisplayController::notify, this, &AppController::notify);
     connect(display_, &DisplayController::rememberPermission, this, [this](const QString& key, const QString& permission) {
@@ -299,6 +303,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
 
 AppController::~AppController() {
     mediaStop_.reset();
+    delete tray_; tray_ = nullptr;
     delete screen_; screen_ = nullptr; delete camera_; camera_ = nullptr; delete display_; display_ = nullptr;
     QMetaObject::invokeMethod(session_, [s = session_] { s->stop(); }, Qt::BlockingQueuedConnection);
     worker_.quit();
@@ -448,6 +453,7 @@ void AppController::applySettings(const QVariantMap& values) {
     applyBool(Key::AutoConnect, autoConnect_);
     applyBool(Key::Verbose, verbose_);
     applyBool(Key::DebugOnStartup, debugOnStartup_);
+    applyBool(Key::CloseToTray, closeToTray_);
 
     const bool rememberBefore = rememberTopic_;
     applyBool(Key::RememberTopic, rememberTopic_);
@@ -460,6 +466,7 @@ void AppController::applySettings(const QVariantMap& values) {
 QObject* AppController::screen() const { return screen_; }
 QObject* AppController::camera() const { return camera_; }
 QObject* AppController::display() const { return display_; }
+QObject* AppController::tray() const { return tray_; }
 
 // --- topic ---------------------------------------------------------------------
 

@@ -39,8 +39,26 @@ ApplicationWindow {
                                  : "connect"
     readonly property bool inWorkspace: page === "workspace"
 
-    // Closing this window also closes the debug and service windows.
-    onClosing: root.quitApp()
+    // Closing this window leaves the app in the tray, still connected and
+    // sharing; Exit (here or in the tray) ends it. Without a tray, or with
+    // that setting off, closing exits, which also closes the other windows.
+    onClosing: {
+        if (App.tray.available && App.closeToTray) App.tray.windowHidden()
+        else root.quitApp()
+    }
+    function restore() {
+        if (root.visibility === Window.Minimized) root.showNormal()
+        else root.show()
+        root.raise()
+        root.requestActivate()
+    }
+    Connections {
+        target: App.tray
+        function onShowRequested() { root.restore() }
+        function onSettingsRequested() { root.restore(); root.openSettings("") }
+        function onExitRequested() { root.quitApp() }
+        function onReopened() { if (!root.visible) root.restore() }
+    }
     // Qt.quit() first asks every visible window to close and gives up if one
     // refuses; the sharing bar refuses (it stops sharing instead), which left
     // the app running with no window. Stop sharing, then leave regardless.

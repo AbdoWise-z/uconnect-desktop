@@ -1,10 +1,12 @@
+#include <QApplication>
 #include <QCommandLineParser>
-#include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QtQml>
 
 #include "app/AppController.hpp"
+#include "app/SingleInstance.hpp"
+#include "app/TrayIcon.hpp"
 #ifdef UCD_HAS_SCREEN
 #include "core/display/DriverSetup.hpp"
 #endif
@@ -14,7 +16,8 @@ int main(int argc, char* argv[]) {
     // Run elevated by the app itself to install or remove the display driver.
     if (const int code = ucd::display::handleDriverCommand(argc, argv); code >= 0) return code;
 #endif
-    QGuiApplication app(argc, argv);
+    // QApplication, not QGuiApplication: the tray's menu is a widget.
+    QApplication app(argc, argv);
     QGuiApplication::setOrganizationName(QStringLiteral("uConnect"));
     QGuiApplication::setApplicationName(QStringLiteral("uConnect Desktop"));
     QGuiApplication::setApplicationVersion(QStringLiteral("0.1.0"));
@@ -42,6 +45,12 @@ int main(int argc, char* argv[]) {
             QStringLiteral("uConnect Desktop (%1)").arg(cli.value(profileOpt)));
     }
 
+    // Already running (perhaps in the tray): bring that one back instead.
+    ucd::SingleInstance instance;
+    if (instance.forwarded()) return 0;
+    // Closing the window leaves the app in the tray; it ends through Exit.
+    QGuiApplication::setQuitOnLastWindowClosed(false);
+
     qRegisterMetaType<ucd::PeerRecord>();
     qRegisterMetaType<QVector<ucd::PeerRecord>>();
     qRegisterMetaType<ucd::NodeSnapshot>();
@@ -60,6 +69,8 @@ int main(int argc, char* argv[]) {
 
     ucd::AppController controller(options);
     qmlRegisterSingletonInstance("UConnect", 1, 0, "App", &controller);
+    QObject::connect(&instance, &ucd::SingleInstance::activated,
+                     static_cast<ucd::TrayIcon*>(controller.tray()), &ucd::TrayIcon::showRequested);
 
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,

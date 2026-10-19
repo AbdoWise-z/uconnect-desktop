@@ -14,7 +14,7 @@ Window {
     property string query: ""
 
     readonly property var pages: [
-        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address startup automatically" },
+        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address startup automatically tray close minimize background" },
         { id: "device", title: qsTr("Device"), depth: 0, keywords: "name computer" },
         { id: "services", title: qsTr("Services"), depth: 0, keywords: "offer share" },
         { id: "storage", title: Theme.serviceLabel("storage"), depth: 1, parent: "services", keywords: "files shared folders download upload drag drop" },
@@ -44,6 +44,7 @@ Window {
         property bool rememberTopic
         property bool verboseLogging
         property bool debugOnStartup
+        property bool closeToTray
         property var sharedFolders: []
         property var readOnlyFolders: []
         property string downloadFolder
@@ -66,6 +67,7 @@ Window {
                                      || draft.rememberTopic !== App.rememberTopic
                                      || draft.verboseLogging !== App.verboseLogging
                                      || draft.debugOnStartup !== App.debugOnStartup
+                                     || draft.closeToTray !== App.closeToTray
                                      || draft.sharedFolders.join("
 ") !== App.sharedFolders.join("
 ")
@@ -85,6 +87,7 @@ Window {
         draft.rememberTopic = App.rememberTopic
         draft.verboseLogging = App.verboseLogging
         draft.debugOnStartup = App.debugOnStartup
+        draft.closeToTray = App.closeToTray
         draft.sharedFolders = App.sharedFolders.slice()
         draft.readOnlyFolders = App.readOnlyFolders.slice()
         draft.downloadFolder = App.downloadFolder
@@ -104,6 +107,7 @@ Window {
             rememberTopic: draft.rememberTopic,
             verboseLogging: draft.verboseLogging,
             debugOnStartup: draft.debugOnStartup,
+            closeToTray: draft.closeToTray,
             sharedFolders: draft.sharedFolders,
             readOnlyFolders: draft.readOnlyFolders.filter(f => draft.sharedFolders.indexOf(f) >= 0),
             downloadFolder: draft.downloadFolder,
@@ -253,6 +257,21 @@ Window {
                     text: draft.rememberTopic
                           ? qsTr("Reconnects to the last topic, using its remembered invite link.")
                           : qsTr("Needs “Remember the invite link” under Security.")
+                }
+            }
+
+            TitledSeparator { text: qsTr("Closing the window") }
+            UCheckBox {
+                text: qsTr("Keep running in the system tray")
+                enabled: App.tray.available
+                checked: draft.closeToTray
+                onToggled: draft.closeToTray = checked
+            }
+            Indented {
+                Help {
+                    text: App.tray.available
+                          ? qsTr("Stays connected, and keeps sharing, with the window closed. Open it again or exit from the tray icon.")
+                          : qsTr("This desktop has no system tray, so closing the window exits.")
                 }
             }
         }

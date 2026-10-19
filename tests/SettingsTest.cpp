@@ -240,6 +240,21 @@ private slots:
         QCOMPARE(trusted.first().toMap().value("permissions").toStringList(), QStringList{"storage.read"});
     }
 
+    void closeToTraySurvivesApplyAndRestart() {
+        QVERIFY(controller_->closeToTray());
+        QObject* settingsDraft = draft();
+        QVERIFY(settingsDraft);
+        QVERIFY(settingsDraft->setProperty("closeToTray", false));
+        QTRY_VERIFY(dialog_->property("modified").toBool());
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
+        QVERIFY(!controller_->closeToTray());
+        QSettings().sync();
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QVERIFY(!restarted.closeToTray());
+        // No QApplication here, so no tray: the window would simply exit.
+        QVERIFY(!restarted.tray()->property("available").toBool());
+    }
+
     void emptyFolderListRemovesSavedFolders() {
         const QString folder = QDir(temp_.path()).filePath("Shader folder");
         QVERIFY(addFolder(folder));

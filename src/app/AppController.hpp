@@ -27,6 +27,7 @@ namespace ucd {
 class DebugWindow;
 class ScreenController;
 class DisplayController;
+class TrayIcon;
 
 struct LaunchOptions {
     QString server;
@@ -45,6 +46,7 @@ class AppController : public QObject {
     Q_PROPERTY(QObject* screen READ screen CONSTANT)
     Q_PROPERTY(QObject* camera READ camera CONSTANT)
     Q_PROPERTY(QObject* display READ display CONSTANT)
+    Q_PROPERTY(QObject* tray READ tray CONSTANT)
     Q_PROPERTY(QString serverAddress READ serverAddress WRITE setServerAddress NOTIFY settingsChanged)
     Q_PROPERTY(QString deviceName READ deviceName WRITE setDeviceName NOTIFY settingsChanged)
     Q_PROPERTY(QStringList offeredServices READ offeredServices NOTIFY settingsChanged)
@@ -52,6 +54,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool rememberTopic READ rememberTopic NOTIFY settingsChanged)
     Q_PROPERTY(bool verboseLogging READ verboseLogging NOTIFY settingsChanged)
     Q_PROPERTY(bool debugOnStartup READ debugOnStartup NOTIFY settingsChanged)
+    // Closing the window leaves the app running in the tray, where there is one.
+    Q_PROPERTY(bool closeToTray READ closeToTray NOTIFY settingsChanged)
     Q_PROPERTY(QStringList sharedFolders READ sharedFolders NOTIFY settingsChanged)
     // Those of sharedFolders that other devices may not change.
     Q_PROPERTY(QStringList readOnlyFolders READ readOnlyFolders NOTIFY settingsChanged)
@@ -94,6 +98,7 @@ public:
     QObject* screen() const;
     QObject* camera() const;
     QObject* display() const;
+    QObject* tray() const;
     explicit AppController(const LaunchOptions& options, QObject* parent = nullptr);
     ~AppController() override;
 
@@ -107,6 +112,7 @@ public:
     bool        rememberTopic() const { return rememberTopic_; }
     bool        verboseLogging() const { return verbose_; }
     bool        debugOnStartup() const { return debugOnStartup_; }
+    bool        closeToTray() const { return closeToTray_; }
     QStringList sharedFolders() const { return sharedFolders_; }
     QStringList readOnlyFolders() const { return readOnlyFolders_; }
     QString     downloadFolder() const { return downloadFolder_; }
@@ -162,7 +168,7 @@ public:
     Q_INVOKABLE bool isValidServer(const QString& address) const;
     Q_INVOKABLE void completeFirstRun(const QString& server, const QString& name);
     // Keys: server, deviceName, services, autoConnect, rememberTopic,
-    // verboseLogging, debugOnStartup, sharedFolders, readOnlyFolders,
+    // verboseLogging, debugOnStartup, closeToTray, sharedFolders, readOnlyFolders,
     // downloadFolder, maxUploadMB,
     // defaultPermissions, and untrust (public keys to stop trusting).
     // Absent keys are left unchanged.
@@ -306,6 +312,7 @@ private:
     bool     verbose_        = false;
     bool     forceRelay_     = false;  // --force-relay, for this run only
     bool     debugOnStartup_ = false;
+    bool     closeToTray_    = true;
     QString  topicLink_;
     QStringList sharedFolders_;
     QStringList readOnlyFolders_;
@@ -394,6 +401,7 @@ private:
     ScreenController* screen_ = nullptr;
     ScreenController* camera_ = nullptr;
     DisplayController* display_ = nullptr;
+    TrayIcon* tray_ = nullptr;
     std::unique_ptr<screen::StopShortcut> mediaStop_;
     QString mediaShortcutSequence_, mediaShortcutError_;
     bool mediaShortcutActive_ = false;
