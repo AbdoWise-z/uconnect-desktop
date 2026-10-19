@@ -35,11 +35,15 @@ HOLE_R = 40                         # the nodes' holes, showing what is behind
 
 # The C band, measured along the top-left to bottom-right diagonal (u, from
 # the top-left corner) and across it (v, from the diagonal): its back spans
-# u 364-511 within |v| <= 365, its arms run on with 215 <= |v| <= 365 and
-# end square at u 1075, short of the far corner.
+# u 364-511 within |v| <= 365, and its arms run on with 215 <= |v| <= 365.
+# The arms end square where their outer edges meet the tile's sides
+# (u = SIZE * sqrt(2) - 365), so the C just touches the edge at its four
+# outer corners; it is then scaled about the centre to leave C_PADDING of
+# the icon free on every side.
 C_BACK = (364, 511)
 C_ARMS = (215, 365)
-ARM_END = 1075
+ARM_END = SIZE * math.sqrt(2) - C_ARMS[1]
+C_PADDING = 0.10
 
 
 def c_band():
@@ -48,7 +52,8 @@ def c_band():
     uv = [(ARM_END, -outer), (b0, -outer), (b0, outer), (ARM_END, outer),
           (ARM_END, inner), (b1, inner), (b1, -inner), (ARM_END, -inner)]
     r = math.sqrt(0.5)
-    return [((u - v) * r, (u + v) * r) for u, v in uv]
+    scale, centre = 1 - 2 * C_PADDING, SIZE / 2
+    return [(centre + ((u - v) * r - centre) * scale, centre + ((u + v) * r - centre) * scale) for u, v in uv]
 
 
 def svg():
