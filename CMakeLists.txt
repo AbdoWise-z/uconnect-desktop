@@ -165,6 +165,7 @@ endif ()
 add_library(uconnect_desktop_screen_ui STATIC
     src/app/ScreenController.cpp src/app/ScreenController.hpp
     src/app/DisplayController.cpp src/app/DisplayController.hpp
+    src/app/KeepAwake.cpp src/app/KeepAwake.hpp
     src/core/screen/StopShortcut.cpp src/core/screen/StopShortcut.hpp)
 if (UCD_SCREEN_AVAILABLE)
     target_sources(uconnect_desktop_screen_ui PRIVATE src/app/InputCapture.cpp src/app/InputCapture.hpp)
@@ -411,6 +412,12 @@ if (UCD_BUILD_TESTS)
         ucd_add_test(ScreenSpreadTest)
         ucd_add_test(DisplayServiceTest)
         ucd_add_test(VirtualDisplayTest)  # opt in: UCD_TEST_VIRTUAL_DISPLAY=1
+        ucd_add_test(KeepAwakeTest)
+        target_link_libraries(KeepAwakeTest PRIVATE uconnect_desktop_screen_ui)
+        if (TARGET Qt6::DBus)
+            target_compile_definitions(KeepAwakeTest PRIVATE UCD_HAS_DBUS)
+            target_link_libraries(KeepAwakeTest PRIVATE Qt6::DBus)
+        endif ()
         target_link_libraries(ScreenInputTest PRIVATE uconnect_desktop_screen_ui)
         target_link_libraries(ScreenSessionTest PRIVATE uconnect_rendezvous)
         set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest ScreenSpreadTest PROPERTIES
