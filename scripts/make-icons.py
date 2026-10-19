@@ -43,7 +43,7 @@ HOLE_R = 40                         # the nodes' holes, showing what is behind
 C_BACK = (364, 511)
 C_ARMS = (215, 365)
 ARM_END = SIZE * math.sqrt(2) - C_ARMS[1]
-C_PADDING = 0.10
+C_PADDING = 0.04
 
 
 def c_band():
