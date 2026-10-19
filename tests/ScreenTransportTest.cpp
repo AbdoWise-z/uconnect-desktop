@@ -224,6 +224,29 @@ private slots:
         controller.reset("tcp"); QCOMPARE(controller.bitrate(), 1000000);
     }
 
+    // A frame whose last packet the radio holds up for ~120 ms: the patient
+    // receiver (extended displays) still completes it after asking for the
+    // repair; the default one gives up and wants a keyframe.
+    void patientReassemblerWaitsForHeldUpPackets() {
+        for (bool patient : {false, true}) {
+            Reassembler receiver; receiver.setPatient(patient); receiver.reset(1, 60);
+            auto key = frame(0, true); key.session = 1;
+            const auto parts = fragment(key);
+            QVector<EncodedFrame> done;
+            for (int i = 0; i < parts.size(); ++i) done += receiver.receive(parts[i], 0);
+            QCOMPARE(done.size(), 1);
+            auto delta = frame(1, false, 30000); delta.session = 1;
+            const auto pieces = fragment(delta);
+            for (int i = 0; i + 1 < pieces.size(); ++i) QVERIFY(receiver.receive(pieces[i], 10).isEmpty());
+            const auto first = receiver.expire(60);   // past the deadline: ask for the missing piece
+            QCOMPARE(first.nacks.size(), 1); QVERIFY(!first.keyframe);
+            const auto later = receiver.expire(130);  // still missing at +70 ms
+            QCOMPARE(later.keyframe, !patient);
+            const auto completed = receiver.receive(pieces.back(), 135);
+            QCOMPARE(completed.size(), patient ? 1 : 0);
+        }
+    }
+
     // Extended displays on Wi-Fi: a lone bad report, or loss under 10%, does
     // not cut the bitrate (each cut costs a hardware encoder a keyframe), but
     // sustained loss still does.

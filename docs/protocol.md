@@ -808,6 +808,15 @@ pixels wide and 2400 high, shape kept), what the display device decodes,
 `dsp.started` carries the resulting `width` and `fps`. A different mode is a
 new session.
 
+**Wi-Fi tolerance.** Nearby links are usually Wi-Fi, where packets arrive in
+bursts and are held up for a moment rather than lost. A display device
+waits up to 150 ms after a `dsp.nack` before dropping a frame (7.1 says
+30 ms), keeps up to 16 frames in flight (7.1 says 8), and shows decoded
+frames one per frame interval. A host cuts the bitrate only for more than
+10% loss or a 30 ms delay trend in two reports running, and lowers the
+frame rate for slow decoding only after six reports (7.2 says 5%, 15 ms,
+one report, three reports).
+
 **Nearby only.** The media channel opens without a fallback: the session
 needs direct UDP. If the path is relay, TCP or failed, or not direct 5 s
 after the session starts, the host sends `dsp.error` and stops.

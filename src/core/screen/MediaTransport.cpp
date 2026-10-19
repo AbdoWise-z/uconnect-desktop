@@ -126,7 +126,7 @@ QVector<EncodedFrame> Reassembler::receive(const QByteArray& packet, qint64 nowM
         (index + 1 < count && packet.size() != 1100)) return {};
     if (haveLast_ && !newer(number, last_)) { ++stats_.late; return {}; }
     if (!frames_.contains(number)) {
-        if (frames_.size() >= 8 || buffered_ + packet.size() > MaxFrameBytes * 2) {
+        if (frames_.size() >= (patient_ ? 16u : 8u) || buffered_ + packet.size() > MaxFrameBytes * 2) {
             requestKey_ = true; return {};
         }
         Assembly assembly;
@@ -198,7 +198,7 @@ Recovery Reassembler::expire(qint64 nowMs) {
             Recovery::Nack nack{it->first, {}};
             for (int i = 0; i < assembly.parts.size(); ++i) if (assembly.parts[i].isEmpty()) nack.indexes.push_back(i);
             recovery.nacks.push_back(std::move(nack));
-            assembly.nacked = true; assembly.deadline = nowMs + std::max(30, interval_);
+            assembly.nacked = true; assembly.deadline = nowMs + std::max(patient_ ? 150 : 30, interval_);
             ++it; continue;
         }
         stats_.lost += std::max(1, int(assembly.parts.size()) - assembly.received);

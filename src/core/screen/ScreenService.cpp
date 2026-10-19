@@ -362,6 +362,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             viewer->second.token = quint16(token); viewer->second.expires = now_() + 10000;
             viewer->second.liveAt = now_();
             viewer->second.fps = std::clamp(msg.value("fps").toInt(30), 1, MaxFps);
+            viewer->second.receiver.setPatient(display_);
             viewer->second.receiver.reset(quint16(token), viewer->second.fps);
             viewer->second.control = viewer->second.wantControl && !camera_ && msg.value("control").toBool();
             if (!open_(peer)) { stopViewer(peer, "transport unavailable"); return true; }
