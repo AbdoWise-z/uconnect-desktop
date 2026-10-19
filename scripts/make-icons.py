@@ -2,7 +2,9 @@
 """Draws the uConnect icon and writes every platform's file from one design.
 
 The mark is the name: a bold "u" whose two arm tips are round nodes, two
-devices joined by the u, on the app's accent blue (Theme.accent #3574F0).
+devices joined by the u. Behind it a darker "C" band echoes the u: its back
+crosses the top-left corner, its arms run toward the bottom-right, and it is
+mirror-symmetric across that diagonal.
 
     python scripts/make-icons.py            # writes packaging/icons/
 
@@ -10,6 +12,7 @@ Outputs: uconnect.svg (the master), uconnect-<n>.png (16-1024),
 uconnect.ico (Windows, 16-256) and uconnect.icns (macOS, with the inset
 macOS icons use). Needs Pillow.
 """
+import math
 import os
 import sys
 
@@ -19,36 +22,63 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packaging"
 
 # Geometry on a 1024 grid.
 SIZE = 1024
-CORNER = 228                    # the rounded square's corner radius
-TOP, BOTTOM = "#4C8BF7", "#2556C4"  # background gradient, top-left to bottom-right
+CORNER = 228                        # the rounded square's corner radius
+TOP, BOTTOM = "#2F5FCB", "#162F78"  # background gradient, top-left to bottom-right
+C_TOP, C_BOTTOM = "#21479F", "#0D1F54"  # the C band: the same direction, darker
 INK = "#FFFFFF"
-LEFT_X, RIGHT_X = 352, 672      # the u's arm centres
-ARM_TOP = 360                   # where the arms start (the nodes' centres)
-BOWL_Y = 600                    # the bowl's centre: arms run straight down to it
-STROKE = 112                    # the u's stroke
-NODE_R = 92                     # the nodes' radius
-HOLE_R = 40                     # the nodes' inner dot, in the background colour
-HOLE = "#3A73E8"
+LEFT_X, RIGHT_X = 352, 672          # the u's arm centres
+ARM_TOP = 360                       # where the arms start (the nodes' centres)
+BOWL_Y = 600                        # the bowl's centre: arms run straight down to it
+STROKE = 112                        # the u's stroke
+NODE_R = 92                         # the nodes' radius
+HOLE_R = 40                         # the nodes' holes, showing what is behind
+
+# The C band, measured along the top-left to bottom-right diagonal (u, from
+# the top-left corner) and across it (v, from the diagonal): its back spans
+# u 364-511 within |v| <= 365, its arms run on to the far corner with
+# 215 <= |v| <= 365.
+C_BACK = (364, 511)
+C_ARMS = (215, 365)
+FAR = 1600  # past the far corner
+
+
+def c_band():
+    """The C's outline as (x, y) points on the 1024 grid."""
+    (b0, b1), (inner, outer) = C_BACK, C_ARMS
+    uv = [(FAR, -outer), (b0, -outer), (b0, outer), (FAR, outer),
+          (FAR, inner), (b1, inner), (b1, -inner), (FAR, -inner)]
+    r = math.sqrt(0.5)
+    return [((u - v) * r, (u + v) * r) for u, v in uv]
 
 
 def svg():
     r = (RIGHT_X - LEFT_X) / 2
-    cx = (LEFT_X + RIGHT_X) / 2
+    ring = (NODE_R + HOLE_R) / 2
+    band = " ".join(f"{x:.1f},{y:.1f}" for x, y in c_band())
+    nodes = "\n".join(
+        f'  <circle cx="{x}" cy="{ARM_TOP}" r="{ring}" fill="none" stroke="{INK}" stroke-width="{NODE_R - HOLE_R}"/>'
+        for x in (LEFT_X, RIGHT_X))
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {SIZE} {SIZE}">
-  <!-- uConnect: a "u" whose arm tips are two connected devices. -->
+  <!-- uConnect: a "u" whose arm tips are two connected devices, before a
+       darker C that echoes it across the diagonal. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="{TOP}"/>
       <stop offset="1" stop-color="{BOTTOM}"/>
     </linearGradient>
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="{C_TOP}"/>
+      <stop offset="1" stop-color="{C_BOTTOM}"/>
+    </linearGradient>
+    <clipPath id="tile"><rect width="{SIZE}" height="{SIZE}" rx="{CORNER}"/></clipPath>
   </defs>
-  <rect width="{SIZE}" height="{SIZE}" rx="{CORNER}" fill="url(#bg)"/>
-  <path d="M {LEFT_X} {ARM_TOP} V {BOWL_Y} A {r} {r} 0 0 0 {RIGHT_X} {BOWL_Y} V {ARM_TOP}"
-        fill="none" stroke="{INK}" stroke-width="{STROKE}" stroke-linecap="round"/>
-  <circle cx="{LEFT_X}" cy="{ARM_TOP}" r="{NODE_R}" fill="{INK}"/>
-  <circle cx="{RIGHT_X}" cy="{ARM_TOP}" r="{NODE_R}" fill="{INK}"/>
-  <circle cx="{LEFT_X}" cy="{ARM_TOP}" r="{HOLE_R}" fill="{HOLE}"/>
-  <circle cx="{RIGHT_X}" cy="{ARM_TOP}" r="{HOLE_R}" fill="{HOLE}"/>
+  <g clip-path="url(#tile)">
+    <rect width="{SIZE}" height="{SIZE}" fill="url(#bg)"/>
+    <polygon points="{band}" fill="url(#band)"/>
+  </g>
+  <path d="M {LEFT_X} {ARM_TOP + ring} V {BOWL_Y} A {r} {r} 0 0 0 {RIGHT_X} {BOWL_Y} V {ARM_TOP + ring}"
+        fill="none" stroke="{INK}" stroke-width="{STROKE}"/>
+{nodes}
 </svg>
 """
 
@@ -57,36 +87,44 @@ def rgb(color):
     return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
 
 
+def gradient(big, start, end):
+    """A top-left to bottom-right gradient: (x + y) / 2 of two ramps."""
+    vertical = Image.linear_gradient("L").resize((big, big))
+    horizontal = vertical.transpose(Image.Transpose.ROTATE_90).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    diagonal = ImageChops.add(vertical, horizontal, scale=2.0)
+    return Image.composite(Image.new("RGB", (big, big), rgb(end)), Image.new("RGB", (big, big), rgb(start)), diagonal)
+
+
 def render(size, inset=0.0):
     """The icon at `size` pixels, drawn 4x larger and scaled down for clean edges.
     `inset` shrinks it inside a transparent margin (macOS icons)."""
     k = 4
     big = SIZE * k
     s = lambda v: int(round(v * k))
-    # Background: a diagonal gradient, masked by the rounded square.
-    top, bottom = rgb(TOP), rgb(BOTTOM)
-    # (x + y) / 2: the mean of a vertical and a horizontal ramp.
-    vertical = Image.linear_gradient("L").resize((big, big))
-    diagonal = ImageChops.add(vertical, vertical.transpose(Image.Transpose.ROTATE_90).transpose(Image.Transpose.FLIP_TOP_BOTTOM), scale=2.0)
-    background = Image.composite(Image.new("RGB", (big, big), bottom), Image.new("RGB", (big, big), top), diagonal)
-    mask = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, big - 1, big - 1], radius=s(CORNER), fill=255)
-    image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    image.paste(background, (0, 0), mask)
-    draw = ImageDraw.Draw(image)
-    ink = rgb(INK)
+    # The background, then the C band over it.
+    background = gradient(big, TOP, BOTTOM)
+    band = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(band).polygon([(x * k, y * k) for x, y in c_band()], fill=255)
+    background.paste(gradient(big, C_TOP, C_BOTTOM), (0, 0), band)
+    # The mark as a mask, so the nodes' holes show the background and band.
+    ink = Image.new("L", (big, big), 0)
+    draw = ImageDraw.Draw(ink)
     half = STROKE / 2
-    # The u: two arms, the bowl (a half ring), round end caps.
     for x in (LEFT_X, RIGHT_X):
-        draw.rectangle([s(x - half), s(ARM_TOP), s(x + half), s(BOWL_Y)], fill=ink)
+        draw.rectangle([s(x - half), s(ARM_TOP), s(x + half), s(BOWL_Y)], fill=255)
     r = (RIGHT_X - LEFT_X) / 2
     cx = (LEFT_X + RIGHT_X) / 2
     draw.arc([s(cx - r - half), s(BOWL_Y - r - half), s(cx + r + half), s(BOWL_Y + r + half)],
-             start=0, end=180, fill=ink, width=s(STROKE))
-    # The nodes, each with a dot of the background colour.
+             start=0, end=180, fill=255, width=s(STROKE))
     for x in (LEFT_X, RIGHT_X):
-        draw.ellipse([s(x - NODE_R), s(ARM_TOP - NODE_R), s(x + NODE_R), s(ARM_TOP + NODE_R)], fill=ink)
-        draw.ellipse([s(x - HOLE_R), s(ARM_TOP - HOLE_R), s(x + HOLE_R), s(ARM_TOP + HOLE_R)], fill=rgb(HOLE))
+        draw.ellipse([s(x - NODE_R), s(ARM_TOP - NODE_R), s(x + NODE_R), s(ARM_TOP + NODE_R)], fill=255)
+        draw.ellipse([s(x - HOLE_R), s(ARM_TOP - HOLE_R), s(x + HOLE_R), s(ARM_TOP + HOLE_R)], fill=0)
+    background.paste(Image.new("RGB", (big, big), rgb(INK)), (0, 0), ink)
+    # Cut to the rounded square.
+    tile = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(tile).rounded_rectangle([0, 0, big - 1, big - 1], radius=s(CORNER), fill=255)
+    image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    image.paste(background, (0, 0), tile)
     inner = int(round(size * (1 - 2 * inset)))
     icon = image.resize((inner, inner), Image.LANCZOS)
     if not inset:

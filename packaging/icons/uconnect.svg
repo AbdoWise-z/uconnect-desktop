@@ -1,16 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- uConnect: a "u" whose arm tips are two connected devices. -->
+  <!-- uConnect: a "u" whose arm tips are two connected devices, before a
+       darker C that echoes it across the diagonal. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4C8BF7"/>
-      <stop offset="1" stop-color="#2556C4"/>
+      <stop offset="0" stop-color="#2F5FCB"/>
+      <stop offset="1" stop-color="#162F78"/>
     </linearGradient>
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#21479F"/>
+      <stop offset="1" stop-color="#0D1F54"/>
+    </linearGradient>
+    <clipPath id="tile"><rect width="1024" height="1024" rx="228"/></clipPath>
   </defs>
-  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
-  <path d="M 352 360 V 600 A 160.0 160.0 0 0 0 672 600 V 360"
-        fill="none" stroke="#FFFFFF" stroke-width="112" stroke-linecap="round"/>
-  <circle cx="352" cy="360" r="92" fill="#FFFFFF"/>
-  <circle cx="672" cy="360" r="92" fill="#FFFFFF"/>
-  <circle cx="352" cy="360" r="40" fill="#3A73E8"/>
-  <circle cx="672" cy="360" r="40" fill="#3A73E8"/>
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <polygon points="1389.5,873.3 515.5,-0.7 -0.7,515.5 873.3,1389.5 979.3,1283.4 209.3,513.4 513.4,209.3 1283.4,979.3" fill="url(#band)"/>
+  </g>
+  <path d="M 352 426.0 V 600 A 160.0 160.0 0 0 0 672 600 V 426.0"
+        fill="none" stroke="#FFFFFF" stroke-width="112"/>
+  <circle cx="352" cy="360" r="66.0" fill="none" stroke="#FFFFFF" stroke-width="52"/>
+  <circle cx="672" cy="360" r="66.0" fill="none" stroke="#FFFFFF" stroke-width="52"/>
 </svg>
