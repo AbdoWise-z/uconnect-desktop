@@ -34,6 +34,9 @@ public:
     void setShortcutError(const QString& error);
     Q_INVOKABLE QVariantMap state(const QString& peer) const { return states_.value(peer); }
     Q_INVOKABLE void configure(const QVariantMap& settings);
+    // Re-read the OpenH264 codec library the user configured under Screen
+    // Sharing, which the camera shares, so a change applies without a restart.
+    void reloadSharedCodec();
     Q_INVOKABLE void request(const QString& peer, bool control = false);
     Q_INVOKABLE void stop(const QString& peer);
     Q_INVOKABLE void stopHosting();

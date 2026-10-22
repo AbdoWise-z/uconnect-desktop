@@ -19,10 +19,15 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
     const QVariantMap defaults{{"monitor", 0}, {"maxFps", 30}, {"maxWidth", 1920}, {"maxBitrate", 8000000},
         {"maxViewers", 1}, {"gpuCapture", true}, {"releaseUsage", 228}, {"stopShortcut", "Ctrl+Alt+Shift+S"}, {"softwareCodec", false}, {"codecLibrary", ""}};
     QSettings store;
-    // The camera keeps its own settings (device, resolution, fps) separate from
-    // screen sharing, so each is configured on its own.
+    // The camera keeps its own device-specific settings (device, resolution,
+    // fps) separate from screen sharing. The software H.264 codec, however, is
+    // the same OpenH264 build for both, so the camera shares the one the user
+    // enables and locates once under Screen Sharing.
     const QString ns = camera_ ? "camera/" : "screen/";
-    for (auto it = defaults.begin(); it != defaults.end(); ++it) settings_[it.key()] = store.value(ns + it.key(), it.value());
+    for (auto it = defaults.begin(); it != defaults.end(); ++it) {
+        const bool shared = camera_ && (it.key() == "softwareCodec" || it.key() == "codecLibrary");
+        settings_[it.key()] = store.value((shared ? "screen/" : ns) + it.key(), it.value());
+    }
 #ifdef UCD_HAS_SCREEN
     auto* service = this->service();
     moveTimer_.setInterval(9); moveTimer_.setTimerType(Qt::PreciseTimer);
@@ -138,8 +143,19 @@ void ScreenController::configure(const QVariantMap& values) {
     if (!QList<int>{228, 41, 69}.contains(settings_["releaseUsage"].toInt())) settings_["releaseUsage"] = 228;
     QSettings store;
     const QString ns = camera_ ? "camera/" : "screen/";
-    for (auto it = settings_.begin(); it != settings_.end(); ++it) store.setValue(ns + it.key(), it.value());
+    for (auto it = settings_.begin(); it != settings_.end(); ++it) {
+        // The shared codec keys belong to Screen Sharing; the camera never owns them.
+        if (camera_ && (it.key() == "softwareCodec" || it.key() == "codecLibrary")) continue;
+        store.setValue(ns + it.key(), it.value());
+    }
     pushSettings(); emit settingsChanged();
+}
+void ScreenController::reloadSharedCodec() {
+    if (!camera_) return;
+    QSettings store;
+    settings_["softwareCodec"] = store.value("screen/softwareCodec", false);
+    settings_["codecLibrary"] = store.value("screen/codecLibrary", QString());
+    pushSettings();
 }
 void ScreenController::pushSettings(const QScreen* removed) {
 #ifdef UCD_HAS_SCREEN
