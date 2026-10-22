@@ -55,6 +55,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool autoConnect READ autoConnect NOTIFY settingsChanged)
     Q_PROPERTY(bool rememberTopic READ rememberTopic NOTIFY settingsChanged)
     Q_PROPERTY(bool verboseLogging READ verboseLogging NOTIFY settingsChanged)
+    // Relay policy: 0 auto, 1 always, 2 direct (media never relays).
+    Q_PROPERTY(int relayMode READ relayMode NOTIFY settingsChanged)
     Q_PROPERTY(bool debugOnStartup READ debugOnStartup NOTIFY settingsChanged)
     // Closing the window leaves the app running in the tray, where there is one.
     Q_PROPERTY(bool closeToTray READ closeToTray NOTIFY settingsChanged)
@@ -119,6 +121,7 @@ public:
     bool        autoConnect() const { return autoConnect_; }
     bool        rememberTopic() const { return rememberTopic_; }
     bool        verboseLogging() const { return verbose_; }
+    int         relayMode() const { return relayMode_; }
     bool        debugOnStartup() const { return debugOnStartup_; }
     bool        closeToTray() const { return closeToTray_; }
     bool        launchAtLogin() const { return launchAtLogin_; }
@@ -325,6 +328,7 @@ private:
     bool     rememberTopic_  = true;
     bool     verbose_        = false;
     bool     forceRelay_     = false;  // --force-relay, for this run only
+    int      relayMode_      = 0;      // persisted: 0 auto, 1 always, 2 direct
     bool     debugOnStartup_ = false;
     bool     closeToTray_    = true;
     bool     launchAtLogin_  = false;

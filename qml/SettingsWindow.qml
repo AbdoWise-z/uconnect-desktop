@@ -43,6 +43,7 @@ Window {
         property bool autoConnect
         property bool rememberTopic
         property bool verboseLogging
+        property int relayMode: 0
         property bool debugOnStartup
         property bool closeToTray
         property bool launchAtLogin
@@ -68,6 +69,7 @@ Window {
                                      || draft.autoConnect !== App.autoConnect
                                      || draft.rememberTopic !== App.rememberTopic
                                      || draft.verboseLogging !== App.verboseLogging
+                                     || draft.relayMode !== App.relayMode
                                      || draft.debugOnStartup !== App.debugOnStartup
                                      || draft.closeToTray !== App.closeToTray
                                      || draft.launchAtLogin !== App.launchAtLogin
@@ -90,6 +92,7 @@ Window {
         draft.autoConnect = App.autoConnect
         draft.rememberTopic = App.rememberTopic
         draft.verboseLogging = App.verboseLogging
+        draft.relayMode = App.relayMode
         draft.debugOnStartup = App.debugOnStartup
         draft.closeToTray = App.closeToTray
         draft.launchAtLogin = App.launchAtLogin
@@ -112,6 +115,7 @@ Window {
             autoConnect: draft.autoConnect,
             rememberTopic: draft.rememberTopic,
             verboseLogging: draft.verboseLogging,
+            relayMode: draft.relayMode,
             debugOnStartup: draft.debugOnStartup,
             closeToTray: draft.closeToTray,
             launchAtLogin: draft.launchAtLogin,
@@ -251,6 +255,32 @@ Window {
                     visible: App.active && draft.server.trim() !== App.serverAddress
                     color: Theme.warning
                     text: qsTr("Takes effect the next time you connect.")
+                }
+            }
+
+            TitledSeparator { text: qsTr("Relay") }
+            RowLayout {
+                FieldLabel { text: qsTr("Connection:") }
+                UComboBox {
+                    Layout.preferredWidth: 220
+                    model: [qsTr("Auto"), qsTr("Always relay"), qsTr("Direct only")]
+                    currentIndex: draft.relayMode
+                    onActivated: draft.relayMode = currentIndex
+                }
+            }
+            Indented {
+                Layout.leftMargin: 148
+                Help {
+                    text: draft.relayMode === 1
+                          ? qsTr("Skip NAT punching and always connect through the server's relay.")
+                          : draft.relayMode === 2
+                            ? qsTr("Never send screen or file data through the relay; a direct connection is required.")
+                            : qsTr("Connect directly when possible, and through the relay when it is not.")
+                }
+                Help {
+                    visible: App.active && draft.relayMode !== App.relayMode
+                    color: Theme.warning
+                    text: qsTr("Reconnects to apply.")
                 }
             }
 

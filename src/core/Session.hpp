@@ -101,8 +101,11 @@ public:
         bool    verbose = false;
         // Skip punching and use the fallbacks at once (the server's relay for
         // connections, TCP for datagrams): for tests, and for networks where
-        // punching is known to fail.
+        // punching is known to fail. Set by --force-relay for this run.
         bool    forceRelay = false;
+        // Persisted relay policy: 0 auto, 1 always (same as forceRelay),
+        // 2 direct (media never relays). See RelayMode in AppController.
+        int     relayMode = 0;
     };
 
     explicit Session(QObject* parent = nullptr);
@@ -206,6 +209,15 @@ private:
     uconnect::Topic*                topic_ = nullptr;
     std::optional<uconnect::DevId>  self_;
     bool                            published_ = false;
+
+    // The relay policy this session started with (0 auto, 1 always, 2 direct);
+    // decides the datagram fallback screen and camera media open with.
+    int relayMode_ = 0;
+    uconnect::DatagramFallback mediaFallback() const {
+        return relayMode_ == 2 ? uconnect::DatagramFallback::None
+             : relayMode_ == 1 ? uconnect::DatagramFallback::Relay
+                               : uconnect::DatagramFallback::Tcp;
+    }
 
     // Bumped by every start() and stop(), so callbacks queued by a Node that
     // has since been torn down are recognised and dropped.

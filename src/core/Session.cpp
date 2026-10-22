@@ -70,9 +70,11 @@ Session::Session(QObject* parent)
         return sendMedia(peer, {reinterpret_cast<const uint8_t*>(bytes.constData()), size_t(bytes.size())});
     };
     const auto close = [this](const auto& peer) { closeMedia(peer); };
-    screen_ = new screen::ScreenService(sendControl, access, [this](const auto& peer) { return openMedia(peer); },
+    screen_ = new screen::ScreenService(sendControl, access,
+        [this](const auto& peer) { return openMedia(peer, mediaFallback()); },
         close, sendDatagram, this);
-    camera_ = new screen::ScreenService(sendControl, access, [this](const auto& peer) { return openMedia(peer); },
+    camera_ = new screen::ScreenService(sendControl, access,
+        [this](const auto& peer) { return openMedia(peer, mediaFallback()); },
         close, sendDatagram, this, {}, {}, screen::Kind::Camera);
     display_ = new screen::ScreenService(sendControl, access,
         [this](const auto& peer) { return openMedia(peer, uconnect::DatagramFallback::None); },
@@ -159,7 +161,8 @@ void Session::start(const Options& options) {
         uconnect::Node::Config cfg;
         cfg.server  = server.toStdString();
         cfg.verbose = options.verbose;
-        cfg.force_relay = options.forceRelay;
+        cfg.force_relay = options.forceRelay || options.relayMode == 1;
+        relayMode_ = options.relayMode;
         node_       = std::make_unique<uconnect::Node>(cfg);
         node_->run_in_background();
         topic_ = &node_->join(*creds);

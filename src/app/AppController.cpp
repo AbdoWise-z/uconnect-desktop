@@ -47,6 +47,7 @@ constexpr auto Services       = "services";
 constexpr auto AutoConnect    = "autoConnect";
 constexpr auto RememberTopic  = "rememberTopic";
 constexpr auto Verbose        = "verboseLogging";
+constexpr auto RelayMode      = "relayMode";
 constexpr auto DebugOnStartup = "debugOnStartup";
 constexpr auto CloseToTray    = "closeToTray";
 constexpr auto StartHidden    = "startHidden";
@@ -131,6 +132,9 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     rememberTopic_  = settings.value(Key::RememberTopic, true).toBool();
     verbose_        = settings.value(Key::Verbose, false).toBool() || options.verbose;
     forceRelay_     = options.forceRelay;
+    relayMode_      = std::clamp(settings.value(Key::RelayMode, 0).toInt(), 0, 2);
+    // --force-relay overrides the stored mode to "always" for this run.
+    if (forceRelay_) relayMode_ = 1;
     debugOnStartup_ = settings.value(Key::DebugOnStartup, false).toBool();
     closeToTray_    = settings.value(Key::CloseToTray, true).toBool();
     startHidden_    = settings.value(Key::StartHidden, true).toBool();
@@ -466,6 +470,16 @@ void AppController::applySettings(const QVariantMap& values) {
     };
     applyBool(Key::AutoConnect, autoConnect_);
     applyBool(Key::Verbose, verbose_);
+    if (values.contains(Key::RelayMode)) {
+        const int v = std::clamp(values.value(Key::RelayMode).toInt(), 0, 2);
+        if (v != relayMode_) {
+            relayMode_ = v;
+            settings.setValue(Key::RelayMode, v);
+            emit settingsChanged();
+            // The node is built with this policy; reconnect so it applies now.
+            if (active()) connectToTopic();
+        }
+    }
     applyBool(Key::DebugOnStartup, debugOnStartup_);
     applyBool(Key::CloseToTray, closeToTray_);
 
@@ -567,7 +581,7 @@ bool AppController::debugAvailable() const {
 }
 
 void AppController::connectToTopic() {
-    Session::Options o{serverAddress_, topicLink_, verbose_, forceRelay_};
+    Session::Options o{serverAddress_, topicLink_, verbose_, forceRelay_, relayMode_};
     // Show progress immediately; the worker may be busy for a moment.
     status_       = Session::Status::Connecting;
     statusDetail_ = tr("Starting...");
