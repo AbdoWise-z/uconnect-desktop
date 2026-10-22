@@ -44,6 +44,7 @@ private:
     ScreenController*  camera_;
     DisplayController* display_;
     bool               available_ = false;
+    bool               sharingActive_ = false;  // badge the tray icon while sharing
     QSystemTrayIcon*   icon_ = nullptr;
     QMenu*             menu_ = nullptr;
     QAction*           status_ = nullptr;

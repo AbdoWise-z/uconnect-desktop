@@ -4,6 +4,8 @@
 #include <QApplication>
 #include <QIcon>
 #include <QMenu>
+#include <QPainter>
+#include <QPixmap>
 #include <QPointer>
 #include <QSettings>
 #include <QStyleHints>
@@ -32,7 +34,7 @@ QString statusText(const QString& status, const QString& topicId) {
 // The u alone (packaging/icons/tray-*.png), drawn to suit the tray: on macOS
 // a template the menu bar tints itself, elsewhere white or black to stand
 // out on the taskbar.
-QIcon glyph() {
+QIcon glyph(bool sharing = false) {
 #ifdef Q_OS_MACOS
     const bool light = true;
 #elif defined(Q_OS_WIN)
@@ -43,10 +45,22 @@ QIcon glyph() {
     const bool light = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light;
 #endif
     QIcon icon;
-    for (int size : {16, 20, 24, 32, 48, 64})
-        icon.addFile(QStringLiteral(":/icons/tray-%1-%2.png").arg(light ? "black" : "white").arg(size), QSize(size, size));
+    for (int size : {16, 20, 24, 32, 48, 64}) {
+        QPixmap pm(QStringLiteral(":/icons/tray-%1-%2.png").arg(light ? "black" : "white").arg(size));
+        // An amber dot marks that this device is sharing, so the taskbar/tray
+        // itself shows it at a glance in place of a floating banner.
+        if (sharing && !pm.isNull()) {
+            QPainter p(&pm);
+            p.setRenderHint(QPainter::Antialiasing);
+            const qreal d = pm.width() * 0.5;
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0xE0, 0xA4, 0x58));
+            p.drawEllipse(QRectF(pm.width() - d, pm.height() - d, d, d));
+        }
+        icon.addPixmap(pm);
+    }
 #ifdef Q_OS_MACOS
-    icon.setIsMask(true);
+    if (!sharing) icon.setIsMask(true);
 #endif
     return icon;
 }
@@ -90,7 +104,7 @@ TrayIcon::TrayIcon(AppController* app, ScreenController* screen, ScreenControlle
 
     icon_ = new QSystemTrayIcon(glyph(), this);
     // Also reported when the Windows mode (and so the taskbar) changes.
-    connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] { icon_->setIcon(glyph()); });
+    connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] { icon_->setIcon(glyph(sharingActive_)); });
     icon_->setContextMenu(menu_);
     connect(icon_, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
 #ifdef Q_OS_MACOS
@@ -140,6 +154,11 @@ void TrayIcon::update() {
     sharing_->setText(shared);
     sharing_->setVisible(!shared.isEmpty());
     stopSharing_->setVisible(!shared.isEmpty());
+
+    if (sharingActive_ != !shared.isEmpty()) {
+        sharingActive_ = !shared.isEmpty();
+        icon_->setIcon(glyph(sharingActive_));
+    }
 
     const bool active = app_->active();
     connect_->setText(active ? tr("Disconnect") : tr("Connect"));

@@ -10,7 +10,7 @@ Item {
     Window {
         id: consent
         property var request: safety.controller.consents.length ? safety.controller.consents[0] : ({})
-        title: qsTr("Allow screen sharing?")
+        title: safety.camera ? qsTr("Allow camera access?") : qsTr("Allow screen sharing?")
         transientParent: null
         width: 460
         height: 270
@@ -42,7 +42,7 @@ Item {
                 wrapMode: Text.WrapAnywhere
             }
             Text { text: qsTr("This request expires after 30 seconds."); color: Theme.textSecondary }
-            UCheckBox { id: remember; visible: !safety.camera; text: qsTr("Don't ask again for this trusted device") }
+            UCheckBox { id: remember; text: qsTr("Don't ask again for this trusted device") }
             Item { Layout.fillHeight: true }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
@@ -51,44 +51,6 @@ Item {
             }
         }
     }
-    Window {
-        title: qsTr("Screen sharing active")
-        transientParent: null
-        width: 580
-        height: safety.controller.shortcutError.length ? 110 : 68
-        // Never takes focus: it stays on top while you keep working, and its
-        // buttons still work without activating it.
-        flags: Qt.Tool | Qt.WindowStaysOnTopHint | Qt.WindowTitleHint | Qt.WindowDoesNotAcceptFocus
-        visible: safety.controller.hosting.length > 0
-        color: Theme.panel
-        onClosing: event => { event.accepted = false; safety.controller.stopHosting() }
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 12
-            RowLayout {
-                Layout.fillWidth: true
-                StatusDot { color: Theme.warning }
-                Text {
-                    Layout.fillWidth: true
-                    text: (safety.camera ? qsTr("Sharing your camera with %1") : qsTr("Sharing your screen with %1")).arg(safety.controller.hosting.map(p => p.name).join(", "))
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: Theme.text
-                }
-                UButton { text: qsTr("Stop sharing"); onClicked: safety.controller.stopHosting() }
-                UButton {
-                    visible: safety.controller.hosting.some(p => p.control)
-                    text: qsTr("Stop control")
-                    onClicked: safety.controller.stopControl()
-                }
-            }
-            Text {
-                Layout.fillWidth: true
-                visible: safety.controller.shortcutError.length > 0
-                text: safety.controller.shortcutError
-                color: Theme.warning
-                wrapMode: Text.WordWrap
-            }
-        }
-    }
+    // While sharing, the system-tray icon carries an amber badge, a tooltip and
+    // a "Stop sharing" menu item (see TrayIcon), so no floating banner is needed.
 }
