@@ -17,6 +17,7 @@ inline const QString StorageRead     = QStringLiteral("storage.read");
 inline const QString StorageWrite    = QStringLiteral("storage.write");
 inline const QString StorageUpload   = QStringLiteral("storage.upload");
 inline const QString CameraView      = QStringLiteral("camera.view");
+inline const QString CameraDirect    = QStringLiteral("camera.direct");
 inline const QString ScreenView      = QStringLiteral("screen.view");
 inline const QString ScreenDirect    = QStringLiteral("screen.direct");
 inline const QString ControlInput    = QStringLiteral("control.input");

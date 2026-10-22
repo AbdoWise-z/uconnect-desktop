@@ -209,7 +209,9 @@ void ScreenService::consent(const QString& peerId, quint32 requestId, bool allow
     if (!allow || now_() >= it->second.expires || !allowed(*peer)) {
         fail(*peer, requestId, "denied"); emit consentClosed(peerId, requestId); hosts_.erase(it); return;
     }
-    if (remember && !camera_) {
+    if (remember && camera_) {
+        emit rememberPermission(authorize_(*peer).key, perm::CameraDirect);
+    } else if (remember) {
         emit rememberPermission(authorize_(*peer).key, perm::ScreenDirect);
         if (it->second.wantControl) emit rememberPermission(authorize_(*peer).key, perm::ControlDirect);
     }
@@ -368,8 +370,11 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         host.width = std::min(settings_.maxWidth, std::clamp(msg.value("maxWidth").toInt(1920), 320, 3840));
         host.fps = std::min(settings_.maxFps, std::clamp(msg.value("maxFps").toInt(30), 1, MaxFps));
         hosts_.emplace(peer, std::move(host)); timer_.start();
-        if (!camera_ && authorize_(peer).permissions.contains(perm::ScreenDirect) &&
-            (!wantControl || authorize_(peer).permissions.contains(perm::ControlDirect))) startHost(peer);
+        const auto& perms = authorize_(peer).permissions;
+        const bool directOk = camera_
+            ? perms.contains(perm::CameraDirect)
+            : perms.contains(perm::ScreenDirect) && (!wantControl || perms.contains(perm::ControlDirect));
+        if (directOk) startHost(peer);
         else {
             send_(peer, {{"t", "scr.wait"}, {"request", double(requestId)}});
             const auto access = authorize_(peer);
