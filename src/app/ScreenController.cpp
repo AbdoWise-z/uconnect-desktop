@@ -17,7 +17,8 @@ namespace ucd {
 ScreenController::ScreenController(Session* session, QObject* parent, bool camera)
     : QObject(parent), session_(session), camera_(camera) {
     const QVariantMap defaults{{"monitor", 0}, {"maxFps", 30}, {"maxWidth", 1920}, {"maxBitrate", 8000000},
-        {"maxViewers", 1}, {"gpuCapture", true}, {"releaseUsage", 228}, {"stopShortcut", "Ctrl+Alt+Shift+S"}, {"softwareCodec", false}, {"codecLibrary", ""}};
+        {"maxViewers", 1}, {"gpuCapture", true}, {"releaseUsage", 228}, {"stopShortcut", "Ctrl+Alt+Shift+S"}, {"softwareCodec", false}, {"codecLibrary", ""},
+        {"offered", QStringList{}}};  // camera ids the user offers; empty = all
     QSettings store;
     // The camera keeps its own device-specific settings (device, resolution,
     // fps) separate from screen sharing. The software H.264 codec, however, is
@@ -105,7 +106,7 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
         emit consentChanged();
     });
     connect(service, &screen::ScreenService::rememberPermission, this, &ScreenController::rememberPermission);
-    connect(&devices_, &QMediaDevices::videoInputsChanged, this, [this] { if (camera_) { stopHosting(); pushSettings(); } });
+    connect(&devices_, &QMediaDevices::videoInputsChanged, this, [this] { if (camera_) { stopHosting(); pushSettings(); emit settingsChanged(); } });
     connect(qGuiApp, &QGuiApplication::screenAdded, this, [this] { pushSettings(); });
     // A share follows its monitor and ends only with it (ScreenService::
     // followMonitors), so ending an extended display leaves other shares be.
@@ -169,10 +170,18 @@ void ScreenController::pushSettings(const QScreen* removed) {
 #endif
     if (settings_.value("softwareCodec").toBool()) settings.ciscoLibrary = settings_.value("codecLibrary").toString();
     if (camera_) {
-        for (const auto& device : QMediaDevices::videoInputs())
-            settings.monitors.push_back(QVariantMap{{"name", device.description()}, {"width", 0}, {"height", 0}});
+        // All cameras go to the settings UI; only the ones the user ticked (or
+        // all, when none are ticked) are offered to viewers.
+        const auto offered = settings_.value("offered").toStringList();
+        cameras_.clear();
+        for (const auto& device : QMediaDevices::videoInputs()) {
+            const QString id = QString::fromUtf8(device.id());
+            const QVariantMap entry{{"id", id}, {"name", device.description()}, {"width", 0}, {"height", 0}};
+            cameras_.push_back(entry);
+            if (offered.isEmpty() || offered.contains(id)) settings.monitors.push_back(entry);
+        }
         // Offer the camera the user chose as the default, bounded by what is
-        // actually connected (the list can change between runs).
+        // actually offered (the list can change between runs).
         settings.monitor = std::clamp(settings.monitor, 0, std::max(0, int(settings.monitors.size()) - 1));
     } else for (const auto* monitor : QGuiApplication::screens()) {
         if (monitor == removed) continue;  // still listed while it is being removed

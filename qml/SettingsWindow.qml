@@ -684,11 +684,45 @@ Window {
                           ? qsTr("Only trusted devices may request your camera, and each request asks first. The viewer picks a camera and a quality up to the caps below.")
                           : qsTr("This build needs Qt Multimedia and a shared LGPL FFmpeg SDK for camera sharing.")
                 }
+                FieldLabel { text: qsTr("Cameras to offer") }
+                Help {
+                    visible: (App.camera.cameras || []).length === 0
+                    text: qsTr("No cameras found on this device.")
+                }
+                Repeater {
+                    model: App.camera.cameras || []
+                    delegate: UCheckBox {
+                        required property var modelData
+                        text: modelData.name
+                        // An empty offered list means every camera is offered.
+                        checked: (draft.camera.offered || []).length === 0
+                                 || (draft.camera.offered || []).indexOf(modelData.id) >= 0
+                        onToggled: {
+                            const all = (App.camera.cameras || []).map(c => c.id)
+                            let set = (draft.camera.offered || []).slice()
+                            if (set.length === 0) set = all.slice()  // expand "all" before editing
+                            const i = set.indexOf(modelData.id)
+                            if (checked && i < 0) set.push(modelData.id)
+                            else if (!checked && i >= 0) set.splice(i, 1)
+                            if (set.length === 0) { checked = true; return }  // always offer at least one
+                            const offeredLen = set.length
+                            if (set.length === all.length) set = []  // all ticked = "offer all"
+                            dlg.setCameraSetting("offered", set)
+                            // The default index points into the offered list; keep it in range.
+                            if ((draft.camera.monitor || 0) >= offeredLen) dlg.setCameraSetting("monitor", 0)
+                        }
+                    }
+                }
                 FieldLabel { text: qsTr("Camera to offer by default") }
                 UComboBox {
                     Layout.preferredWidth: 280
-                    enabled: (App.camera.settings.monitors || []).length > 0
-                    model: (App.camera.settings.monitors || []).map(m => m.name)
+                    readonly property var offeredCams: {
+                        const off = draft.camera.offered || []
+                        const all = App.camera.cameras || []
+                        return off.length === 0 ? all : all.filter(c => off.indexOf(c.id) >= 0)
+                    }
+                    enabled: offeredCams.length > 1
+                    model: offeredCams.map(c => c.name)
                     currentIndex: draft.camera.monitor || 0
                     onActivated: index => dlg.setCameraSetting("monitor", index)
                 }

@@ -20,6 +20,9 @@ class ScreenController : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(QVariantMap settings READ settings NOTIFY settingsChanged)
+    // Every camera this machine has, as [{id, name}], for the settings UI to
+    // list and let the user pick which ones to offer. Empty for screen sharing.
+    Q_PROPERTY(QVariantList cameras READ cameras NOTIFY settingsChanged)
     Q_PROPERTY(QVariantList hosting READ hosting NOTIFY hostingChanged)
     Q_PROPERTY(QVariantList consents READ consents NOTIFY consentChanged)
     Q_PROPERTY(QString shortcutError READ shortcutError NOTIFY hostingChanged)
@@ -28,6 +31,7 @@ public:
     ~ScreenController() override;
     bool available() const;
     QVariantMap settings() const { return settings_; }
+    QVariantList cameras() const { return cameras_; }
     QVariantList hosting() const { return hosting_; }
     QVariantList consents() const { return consents_; }
     QString shortcutError() const { return shortcutError_; }
@@ -79,6 +83,7 @@ private:
     QTimer moveTimer_;
     QTimer cursorTimer_;
     quint64 sourceGeneration_ = 0;
+    QVariantList cameras_;  // all cameras on this machine (camera controller only)
     void startCamera(int index, quint64 generation);
     quintptr cursorShape_ = 0;
     void input(const QString& peer, const QJsonObject& message);
