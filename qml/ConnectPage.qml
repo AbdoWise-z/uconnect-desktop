@@ -159,6 +159,36 @@ Rectangle {
                     text: qsTr("Not a protected uconn:// link. Open topics (without a key) are not accepted.")
                 }
 
+                // A QR of the invite link, for a phone to scan to join. Shown
+                // only once the link is revealed, since it is as sensitive as
+                // the link text itself.
+                ColumnLayout {
+                    Layout.topMargin: 10
+                    Layout.alignment: Qt.AlignHCenter
+                    spacing: 6
+                    visible: App.topicLinkValid && (page.revealLink || page.justCreated)
+                    Rectangle {
+                        Layout.alignment: Qt.AlignHCenter
+                        implicitWidth: 176
+                        implicitHeight: 176
+                        radius: 8
+                        color: "white"
+                        QrCode {
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            text: App.topicLink
+                            color: "black"
+                            background: "white"
+                        }
+                    }
+                    Text {
+                        Layout.alignment: Qt.AlignHCenter
+                        text: qsTr("Scan on another device to join this topic")
+                        color: Theme.textSecondary
+                        font.pixelSize: Theme.smallFontSize
+                    }
+                }
+
                 RowLayout {
                     Layout.topMargin: 6
                     spacing: 8

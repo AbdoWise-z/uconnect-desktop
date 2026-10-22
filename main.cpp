@@ -5,6 +5,7 @@
 #include <QtQml>
 
 #include "app/AppController.hpp"
+#include "app/QrImage.hpp"
 #include "app/SingleInstance.hpp"
 #include "app/TrayIcon.hpp"
 #ifdef UCD_HAS_SCREEN
@@ -72,6 +73,7 @@ int main(int argc, char* argv[]) {
 
     ucd::AppController controller(options);
     qmlRegisterSingletonInstance("UConnect", 1, 0, "App", &controller);
+    qmlRegisterType<ucd::QrImage>("UConnect", 1, 0, "QrCode");
     QObject::connect(&instance, &ucd::SingleInstance::activated,
                      static_cast<ucd::TrayIcon*>(controller.tray()), &ucd::TrayIcon::showRequested);
 

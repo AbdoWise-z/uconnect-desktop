@@ -229,6 +229,10 @@ qt_add_executable(uconnect_desktop
     src/app/SingleInstance.hpp
     src/app/TrayIcon.cpp
     src/app/TrayIcon.hpp
+    src/app/QrImage.cpp
+    src/app/QrImage.hpp
+    src/third_party/qrcodegen/qrcodegen.cpp
+    src/third_party/qrcodegen/qrcodegen.hpp
 )
 
 if (QT_KNOWN_POLICY_QTP0004)
