@@ -74,7 +74,7 @@ in every session:
 `sig` is the Ed25519 signature over the following bytes:
 
 ```
-"uconnect-desktop identity v1"  (28 ASCII bytes)
+"uconnect identity v1"          (20 ASCII bytes)
 0x00
 channel_binding                 (32 bytes, the uconnect session's Topic::channel_binding,
                                  the same at both ends)
@@ -851,7 +851,9 @@ request gets `busy`.
 | screen/camera 1.0 | consented screen/camera sessions, H.264 datagrams, feedback/recovery, trusted control, cursor, shared sources (section 7) |
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
 | display 1.0 | extended display (7.6): `display` service, `display.show` / `display.direct`, `dsp.request`, `dsp.wait`, `dsp.err`, `dsp.accept`, the screen session under `dsp.*`, datagram kinds 4 and 5 |
+| identity | the proof context string (3) was `"uconnect-desktop identity v1"` before this revision; it is now the implementation-neutral `"uconnect identity v1"`. The `id` message keeps `"v":1`; peers from before and after do not verify each other's identity, so both ends update together. Connections and storage with default permissions are unaffected |
 
-Every change so far only adds messages, fields and codes, so an older peer
+Almost every change only adds messages, fields and codes, so an older peer
 ignores what it does not know. A request type that a peer does not
-understand gets no answer, so it fails by timeout.
+understand gets no answer, so it fails by timeout. The one exception is the
+identity-context change above, which both ends adopt together.

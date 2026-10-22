@@ -4,7 +4,7 @@
 //
 // Proving it to a peer (wire, kind 1 JSON):
 //     {"t":"id", "v":1, "key":"<64 hex public key>", "sig":"<128 hex signature>"}
-// where the signature covers  "uconnect-desktop identity v1" || 0x00 ||
+// where the signature covers  "uconnect identity v1" || 0x00 ||
 // channel_binding || public key,  and channel_binding is the uconnect session's
 // value (Topic::channel_binding), identical on both ends. Binding the proof to
 // the session stops anyone holding the topic key from replaying another

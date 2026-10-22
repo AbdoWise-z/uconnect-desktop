@@ -23,7 +23,7 @@ extern "C" {
 namespace ucd {
 namespace {
 
-constexpr char kProofContext[] = "uconnect-desktop identity v1";  // followed by a NUL byte
+constexpr char kProofContext[] = "uconnect identity v1";  // followed by a NUL byte
 constexpr int  kFileVersion    = 1;
 
 template <size_t N>
