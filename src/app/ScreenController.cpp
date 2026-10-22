@@ -169,9 +169,11 @@ void ScreenController::pushSettings(const QScreen* removed) {
 #endif
     if (settings_.value("softwareCodec").toBool()) settings.ciscoLibrary = settings_.value("codecLibrary").toString();
     if (camera_) {
-        settings.monitor = 0;
         for (const auto& device : QMediaDevices::videoInputs())
             settings.monitors.push_back(QVariantMap{{"name", device.description()}, {"width", 0}, {"height", 0}});
+        // Offer the camera the user chose as the default, bounded by what is
+        // actually connected (the list can change between runs).
+        settings.monitor = std::clamp(settings.monitor, 0, std::max(0, int(settings.monitors.size()) - 1));
     } else for (const auto* monitor : QGuiApplication::screens()) {
         if (monitor == removed) continue;  // still listed while it is being removed
         QRect input = monitor->geometry();
