@@ -12,6 +12,7 @@ ColumnLayout {
     property bool wantControl: false
     property var session: view.controller.state(devId)
     property bool fit: true
+    property int rotationDeg: 0  // camera preview rotation, 0/90/180/270
     property bool showStats: false
     readonly property string phase: view.session.state || ""
     readonly property bool active: view.phase === "live" || view.phase === "waiting" || view.phase === "requesting"
@@ -35,6 +36,11 @@ ColumnLayout {
         spacing: 8
         UToolButton { text: qsTr("Fit"); checkable: true; checked: view.fit; onClicked: view.fit = true }
         UToolButton { text: "100%"; checkable: true; checked: !view.fit; onClicked: view.fit = false }
+        UToolButton {
+            visible: view.camera
+            text: qsTr("Rotate")
+            onClicked: view.rotationDeg = (view.rotationDeg + 90) % 360
+        }
         UToolButton {
             text: view.fullScreen ? qsTr("Exit Full Screen") : qsTr("Full Screen")
             onClicked: view.Window.window.visibility = view.fullScreen ? Window.Windowed : Window.FullScreen
@@ -86,8 +92,12 @@ ColumnLayout {
         VideoOutput {
             id: video
             anchors.centerIn: parent
-            width: view.fit ? parent.width : sourceRect.width
-            height: view.fit ? parent.height : sourceRect.height
+            // When rotated a quarter turn, swap the fit box so the turned frame
+            // still fills the view.
+            readonly property bool sideways: view.rotationDeg === 90 || view.rotationDeg === 270
+            width: view.fit ? (sideways ? parent.height : parent.width) : sourceRect.width
+            height: view.fit ? (sideways ? parent.width : parent.height) : sourceRect.height
+            rotation: view.rotationDeg
             fillMode: VideoOutput.PreserveAspectFit
         }
         MouseArea {
