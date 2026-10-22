@@ -55,6 +55,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool autoConnect READ autoConnect NOTIFY settingsChanged)
     Q_PROPERTY(bool rememberTopic READ rememberTopic NOTIFY settingsChanged)
     Q_PROPERTY(bool verboseLogging READ verboseLogging NOTIFY settingsChanged)
+    // Chosen colour scheme id (see qml/Theme.qml): dark, darker, light, colorful, system.
+    Q_PROPERTY(QString colorScheme READ colorScheme NOTIFY settingsChanged)
     // Relay policy: 0 auto, 1 always, 2 direct (media never relays).
     Q_PROPERTY(int relayMode READ relayMode NOTIFY settingsChanged)
     Q_PROPERTY(bool debugOnStartup READ debugOnStartup NOTIFY settingsChanged)
@@ -121,6 +123,7 @@ public:
     bool        autoConnect() const { return autoConnect_; }
     bool        rememberTopic() const { return rememberTopic_; }
     bool        verboseLogging() const { return verbose_; }
+    QString     colorScheme() const { return colorScheme_; }
     int         relayMode() const { return relayMode_; }
     bool        debugOnStartup() const { return debugOnStartup_; }
     bool        closeToTray() const { return closeToTray_; }
@@ -327,6 +330,7 @@ private:
     bool     autoConnect_    = false;
     bool     rememberTopic_  = true;
     bool     verbose_        = false;
+    QString  colorScheme_    = QStringLiteral("dark");
     bool     forceRelay_     = false;  // --force-relay, for this run only
     int      relayMode_      = 0;      // persisted: 0 auto, 1 always, 2 direct
     bool     debugOnStartup_ = false;

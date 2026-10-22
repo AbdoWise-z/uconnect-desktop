@@ -47,6 +47,7 @@ constexpr auto Services       = "services";
 constexpr auto AutoConnect    = "autoConnect";
 constexpr auto RememberTopic  = "rememberTopic";
 constexpr auto Verbose        = "verboseLogging";
+constexpr auto ColorScheme    = "colorScheme";
 constexpr auto RelayMode      = "relayMode";
 constexpr auto DebugOnStartup = "debugOnStartup";
 constexpr auto CloseToTray    = "closeToTray";
@@ -131,6 +132,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     autoConnect_    = settings.value(Key::AutoConnect, false).toBool();
     rememberTopic_  = settings.value(Key::RememberTopic, true).toBool();
     verbose_        = settings.value(Key::Verbose, false).toBool() || options.verbose;
+    colorScheme_    = settings.value(Key::ColorScheme, QStringLiteral("dark")).toString();
     forceRelay_     = options.forceRelay;
     relayMode_      = std::clamp(settings.value(Key::RelayMode, 0).toInt(), 0, 2);
     // --force-relay overrides the stored mode to "always" for this run.
@@ -472,6 +474,14 @@ void AppController::applySettings(const QVariantMap& values) {
     };
     applyBool(Key::AutoConnect, autoConnect_);
     applyBool(Key::Verbose, verbose_);
+    if (values.contains(Key::ColorScheme)) {
+        const QString v = values.value(Key::ColorScheme).toString();
+        if (!v.isEmpty() && v != colorScheme_) {
+            colorScheme_ = v;
+            settings.setValue(Key::ColorScheme, v);
+            emit settingsChanged();
+        }
+    }
     if (values.contains(Key::RelayMode)) {
         const int v = std::clamp(values.value(Key::RelayMode).toInt(), 0, 2);
         if (v != relayMode_) {

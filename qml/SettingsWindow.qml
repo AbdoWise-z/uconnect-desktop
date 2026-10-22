@@ -43,6 +43,7 @@ Window {
         property bool autoConnect
         property bool rememberTopic
         property bool verboseLogging
+        property string colorScheme: "dark"
         property int relayMode: 0
         property bool debugOnStartup
         property bool closeToTray
@@ -70,6 +71,7 @@ Window {
                                      || draft.autoConnect !== App.autoConnect
                                      || draft.rememberTopic !== App.rememberTopic
                                      || draft.verboseLogging !== App.verboseLogging
+                                     || draft.colorScheme !== App.colorScheme
                                      || draft.relayMode !== App.relayMode
                                      || draft.debugOnStartup !== App.debugOnStartup
                                      || draft.closeToTray !== App.closeToTray
@@ -94,6 +96,7 @@ Window {
         draft.autoConnect = App.autoConnect
         draft.rememberTopic = App.rememberTopic
         draft.verboseLogging = App.verboseLogging
+        draft.colorScheme = App.colorScheme
         draft.relayMode = App.relayMode
         draft.debugOnStartup = App.debugOnStartup
         draft.closeToTray = App.closeToTray
@@ -118,6 +121,7 @@ Window {
             autoConnect: draft.autoConnect,
             rememberTopic: draft.rememberTopic,
             verboseLogging: draft.verboseLogging,
+            colorScheme: draft.colorScheme,
             relayMode: draft.relayMode,
             debugOnStartup: draft.debugOnStartup,
             closeToTray: draft.closeToTray,
@@ -290,6 +294,23 @@ Window {
                     visible: App.active && draft.relayMode !== App.relayMode
                     color: Theme.warning
                     text: qsTr("Reconnects to apply.")
+                }
+            }
+
+            TitledSeparator { text: qsTr("Appearance") }
+            RowLayout {
+                FieldLabel { text: qsTr("Color scheme:") }
+                UComboBox {
+                    Layout.preferredWidth: 220
+                    model: Theme.schemes.map(s => s.label)
+                    currentIndex: Math.max(0, Theme.schemes.findIndex(s => s.id === draft.colorScheme))
+                    onActivated: draft.colorScheme = Theme.schemes[currentIndex].id
+                }
+            }
+            Indented {
+                Layout.leftMargin: 148
+                Help {
+                    text: qsTr("Recolors the app when you save. “Follow system” matches your OS light or dark setting.")
                 }
             }
 
