@@ -16,6 +16,19 @@ Window {
     readonly property int stateCode: peer.stateCode !== undefined ? peer.stateCode : Theme.stateUnknown
     readonly property bool peerConnected: stateCode === Theme.stateConnected
 
+    // The live view state for this peer (includes the host's camera/monitor
+    // list and the current index), refreshed as the controller reports it.
+    property var mediaState: ({})
+    function refreshState() {
+        mediaState = (service === "camera" || service === "screen" || service === "control")
+            ? media.state(devId) : ({})
+    }
+    Connections {
+        target: win.media
+        function onStateChanged(peer) { if (peer === win.devId) win.refreshState() }
+    }
+    Component.onCompleted: refreshState()
+
     width: 1000
     height: 680
     minimumWidth: 560
@@ -59,7 +72,13 @@ Window {
         id: cameraToolbar
         RowLayout {
             spacing: 4
-            UToolButton { text: qsTr("Default Camera ▾"); enabled: false }
+            UComboBox {
+                Layout.preferredWidth: 180
+                enabled: (win.mediaState.monitors || []).length > 1
+                model: (win.mediaState.monitors || []).map(m => m.name)
+                currentIndex: win.mediaState.monitor || 0
+                onActivated: index => win.media.monitor(win.devId, index)
+            }
             Separator {}
             UToolButton { text: qsTr("Snapshot"); enabled: false }
             UToolButton { text: qsTr("Full Screen"); enabled: false }

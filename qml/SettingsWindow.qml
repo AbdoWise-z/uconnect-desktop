@@ -55,6 +55,7 @@ Window {
         property var defaultPermissions: []
         property var untrust: []  // public keys
         property var screen: ({})
+        property var camera: ({})
         property var display: ({})
     }
 
@@ -83,6 +84,7 @@ Window {
                                      || !sameServices(draft.defaultPermissions, App.defaultPermissions)
                                      || draft.untrust.length > 0
                                      || JSON.stringify(draft.screen) !== JSON.stringify(App.screen.settings)
+                                     || JSON.stringify(draft.camera) !== JSON.stringify(App.camera.settings)
                                      || JSON.stringify(draft.display) !== JSON.stringify(App.display.settings)
 
     function load() {
@@ -104,6 +106,7 @@ Window {
         draft.defaultPermissions = App.defaultPermissions.slice()
         draft.untrust = []
         draft.screen = Object.assign({}, App.screen.settings)
+        draft.camera = Object.assign({}, App.camera.settings)
         draft.display = Object.assign({}, App.display.settings)
     }
 
@@ -127,6 +130,7 @@ Window {
             defaultPermissions: draft.defaultPermissions,
             untrust: draft.untrust,
             screen: draft.screen,
+            camera: draft.camera,
             display: draft.display
         })
         load()  // the draft now matches what was applied
@@ -136,6 +140,11 @@ Window {
         const next = draft.defaultPermissions.filter(p => p !== permission)
         if (on) next.push(permission)
         draft.defaultPermissions = next
+    }
+    function setCameraSetting(key, value) {
+        const next = Object.assign({}, draft.camera)
+        next[key] = value
+        draft.camera = next
     }
     function setScreenSetting(key, value) {
         const next = Object.assign({}, draft.screen)
@@ -663,8 +672,37 @@ Window {
             }
             TitledSeparator { text: qsTr("Options") }
             Help {
-                visible: svcPage.service === "camera" || svcPage.service === "control"
-                text: qsTr("Quality, viewer limits and keyboard release are configured under Screen Sharing.")
+                visible: svcPage.service === "control"
+                text: qsTr("Keyboard release and related options are configured under Screen Sharing.")
+            }
+            ColumnLayout {
+                visible: svcPage.service === "camera"
+                Layout.fillWidth: true
+                spacing: 8
+                Help {
+                    text: App.camera.available
+                          ? qsTr("Only trusted devices may request your camera, and each request asks first. The viewer picks a camera and a quality up to the caps below.")
+                          : qsTr("This build needs Qt Multimedia and a shared LGPL FFmpeg SDK for camera sharing.")
+                }
+                FieldLabel { text: qsTr("Camera to offer by default") }
+                UComboBox {
+                    Layout.preferredWidth: 280
+                    enabled: (App.camera.settings.monitors || []).length > 0
+                    model: (App.camera.settings.monitors || []).map(m => m.name)
+                    currentIndex: draft.camera.monitor || 0
+                    onActivated: index => dlg.setCameraSetting("monitor", index)
+                }
+                GridLayout {
+                    columns: 2
+                    columnSpacing: 12
+                    rowSpacing: 8
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum FPS") }
+                    USpinBox { from: 1; to: 120; value: draft.camera.maxFps || 30; onValueModified: dlg.setCameraSetting("maxFps", value) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum width") }
+                    USpinBox { from: 320; to: 3840; stepSize: 160; value: draft.camera.maxWidth || 1280; onValueModified: dlg.setCameraSetting("maxWidth", value) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum viewers") }
+                    USpinBox { from: 1; to: 8; value: draft.camera.maxViewers || 1; onValueModified: dlg.setCameraSetting("maxViewers", value) }
+                }
             }
             Help {
                 visible: svcPage.service !== "screen" && svcPage.service !== "camera" && svcPage.service !== "control" && svcPage.service !== "display"

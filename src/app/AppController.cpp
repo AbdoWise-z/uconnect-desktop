@@ -383,9 +383,10 @@ void AppController::completeFirstRun(const QString& server, const QString& name)
 
 void AppController::applySettings(const QVariantMap& values) {
     if (values.contains("screen")) {
-        screen_->configure(values.value("screen").toMap()); camera_->configure(values.value("screen").toMap());
+        screen_->configure(values.value("screen").toMap());
         display_->refreshCodec();
     }
+    if (values.contains("camera")) camera_->configure(values.value("camera").toMap());
     if (values.contains("display")) display_->configure(values.value("display").toMap());
     QSettings settings;
     if (values.contains(Key::Server) && isValidServer(values.value(Key::Server).toString()))

@@ -19,7 +19,10 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
     const QVariantMap defaults{{"monitor", 0}, {"maxFps", 30}, {"maxWidth", 1920}, {"maxBitrate", 8000000},
         {"maxViewers", 1}, {"gpuCapture", true}, {"releaseUsage", 228}, {"stopShortcut", "Ctrl+Alt+Shift+S"}, {"softwareCodec", false}, {"codecLibrary", ""}};
     QSettings store;
-    for (auto it = defaults.begin(); it != defaults.end(); ++it) settings_[it.key()] = store.value("screen/" + it.key(), it.value());
+    // The camera keeps its own settings (device, resolution, fps) separate from
+    // screen sharing, so each is configured on its own.
+    const QString ns = camera_ ? "camera/" : "screen/";
+    for (auto it = defaults.begin(); it != defaults.end(); ++it) settings_[it.key()] = store.value(ns + it.key(), it.value());
 #ifdef UCD_HAS_SCREEN
     auto* service = this->service();
     moveTimer_.setInterval(9); moveTimer_.setTimerType(Qt::PreciseTimer);
@@ -134,7 +137,8 @@ void ScreenController::configure(const QVariantMap& values) {
     settings_["maxViewers"] = std::clamp(settings_["maxViewers"].toInt(), 1, 8);
     if (!QList<int>{228, 41, 69}.contains(settings_["releaseUsage"].toInt())) settings_["releaseUsage"] = 228;
     QSettings store;
-    for (auto it = settings_.begin(); it != settings_.end(); ++it) store.setValue("screen/" + it.key(), it.value());
+    const QString ns = camera_ ? "camera/" : "screen/";
+    for (auto it = settings_.begin(); it != settings_.end(); ++it) store.setValue(ns + it.key(), it.value());
     pushSettings(); emit settingsChanged();
 }
 void ScreenController::pushSettings(const QScreen* removed) {
