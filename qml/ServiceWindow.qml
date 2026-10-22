@@ -155,6 +155,7 @@ Window {
                 Avatar {
                     name: win.deviceName
                     seed: win.peer.identityKey ? win.peer.identityKey : win.devId
+                    os: win.peer.os ? win.peer.os : ""
                     size: 20
                 }
                 Text {

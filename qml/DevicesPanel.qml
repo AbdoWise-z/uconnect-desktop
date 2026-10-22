@@ -48,6 +48,7 @@ Rectangle {
             Avatar {
                 name: row.displayName
                 seed: row.identityKey.length > 0 ? row.identityKey : row.devId
+                os: row.os
                 size: 18
             }
             Text {

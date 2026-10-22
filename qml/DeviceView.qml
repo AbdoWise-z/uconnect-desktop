@@ -66,6 +66,7 @@ Flickable {
             Avatar {
                 name: view.name
                 seed: view.verified ? view.peer.identityKey : view.devId
+                os: view.peer.os ? view.peer.os : ""
                 size: 48
             }
             ColumnLayout {
