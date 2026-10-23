@@ -1024,16 +1024,21 @@ void ScreenService::adaptQuality(Host& host) {
     static constexpr int needs[] = {8000000, 4000000, 2000000, 800000, 0};  // at 30 fps
     const int bps = host.media.encoderBps();
     const double atFps = std::clamp(host.maxFps / 30., 0.5, 4.);
+    // Stepping down is only for a path that has shown its limit, and only
+    // while the source actually asks for more than it gets: a simple picture
+    // needing little is not a slow path.
+    const bool down = host.media.pathLimited() && !host.media.applicationLimited();
     // Frame rate first: under about half a megabit even the smallest picture
     // needs fewer frames to stay clean.
     int fps = host.maxFps;
-    if (bps < 250000) fps = std::min(fps, 10);
-    else if (bps < 400000 || (host.fps <= 15 && bps < 520000)) fps = std::min(fps, 15);
+    if (down && bps < 250000) fps = std::min(fps, 10);
+    else if (down && (bps < 400000 || (host.fps <= 15 && bps < 520000))) fps = std::min(fps, 15);
+    else if (!down && host.fps < host.maxFps && bps < 520000) fps = host.fps;  // no room yet to go back up
     int width = host.width;
     int rung = 0; while (rung < 4 && rungs[rung] > host.maxWidth) ++rung;
     int current = 0; while (current < 4 && rungs[current] > width) ++current;
     const double scale = fps >= 30 ? atFps : 0.6;
-    if (bps < needs[current] * scale * 0.8 && current < 4) width = rungs[current + 1];       // down a rung
+    if (down && bps < needs[current] * scale * 0.8 && current < 4) width = rungs[current + 1];  // down a rung
     else if (current > rung && bps > needs[current - 1] * scale * 1.3) width = rungs[current - 1];  // up a rung
     width = std::min(width, host.maxWidth);
     if (width != host.width || fps != host.fps) { host.width = width; host.fps = fps; host.media.setFps(fps); }

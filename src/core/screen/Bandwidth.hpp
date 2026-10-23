@@ -32,6 +32,12 @@ public:
     int targetBps() const { return targetBps_; }
     int receiveBps() const { return receiveBps_; }
     int sendBps() const { return sendBps_; }
+    // The path has pushed back at least once: the target reflects its limit,
+    // not just how far the ramp has got.
+    bool limited() const { return lastDecreaseBps_ > 0; }
+    // Sending well under the target: the source needs no more, and the
+    // target says nothing about the path.
+    bool applicationLimited() const { return sendBps_ < 0.7 * targetBps_; }
     double lossRate() const { return loss_; }
     double trendMs() const { return trend_; }  // the delay trend's current modified value
     QString state() const;

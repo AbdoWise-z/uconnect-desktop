@@ -42,26 +42,23 @@ QVector<MediaPacket> packetize(quint8 kind, const EncodedFrame& frame, quint32& 
     MediaPacket base;
     base.kind = kind; base.session = frame.session; base.frame = frame.number;
     base.count = quint16(count); base.captureMs = frame.captureMs; base.keyframe = frame.keyframe;
-    QByteArray repair; quint16 xorLength = 0; int inGroup = 0, groupStart = 0;
+    QByteArray repair; quint16 xorLength = 0; int inGroup = 0, groupStart = 0, longest = 0;
     for (int index = 0; index < count; ++index) {
         MediaPacket p = base;
         p.seq = nextSeq++; p.frag = quint16(index);
         p.payload = frame.bytes.mid(index * MediaPayload, MediaPayload);
         out.push_back(p);
         if (fecGroup > 0) {
-            if (inGroup == 0) { groupStart = index; repair = QByteArray(MediaPayload, '\0'); xorLength = 0; }
+            if (inGroup == 0) { groupStart = index; repair = QByteArray(MediaPayload, '\0'); xorLength = 0; longest = 0; }
             for (int i = 0; i < p.payload.size(); ++i) repair[i] = char(quint8(repair[i]) ^ quint8(p.payload[i]));
-            xorLength ^= quint16(p.payload.size());
+            xorLength ^= quint16(p.payload.size()); longest = std::max(longest, int(p.payload.size()));
             ++inGroup;
             if (inGroup == fecGroup || index + 1 == count) {
                 MediaPacket f = base;
                 f.type = PacketType::Fec; f.seq = nextSeq++;
                 f.frag = quint16(groupStart);
                 f.payload.resize(FecHeader); f.payload[0] = char(inGroup); write<quint16>(f.payload, 1, xorLength);
-                // Only as long as the longest fragment it covers.
-                int longest = 0;
-                for (int i = groupStart; i < groupStart + inGroup; ++i) longest = std::max(longest, int(out[i].payload.size()));
-                f.payload += repair.left(longest);
+                f.payload += repair.left(longest);  // only as long as the longest fragment it covers
                 out.push_back(f);
                 inGroup = 0;
             }

@@ -76,6 +76,8 @@ public:
     bool awaitingKeyframe() const { return awaitKey_; }  // the next frame must be a keyframe
     QString estimatorState() const { return bwe_.state(); }
     int sendBps() const { return bwe_.sendBps(); }
+    bool pathLimited() const { return bwe_.limited(); }
+    bool applicationLimited() const { return bwe_.applicationLimited(); }
     quint32 lastSentCaptureMs() const { return lastSentCaptureMs_; }
 
 private:
