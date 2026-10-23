@@ -498,6 +498,10 @@ if (UCD_BUILD_TESTS)
         ucd_add_test(VirtualCameraTest)
         target_link_libraries(VirtualCameraTest PRIVATE uconnect_desktop_screen_ui Qt6::Gui)
         target_link_libraries(ScreenSessionTest PRIVATE uconnect_rendezvous)
+        # Opt-in streaming benchmark (UCD_BENCH_ROLE), not part of ctest runs.
+        qt_add_executable(StreamBenchTest tests/StreamBenchTest.cpp)
+        set_target_properties(StreamBenchTest PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+        target_link_libraries(StreamBenchTest PRIVATE uconnect_desktop_core uconnect_rendezvous Qt6::Test Qt6::Gui)
         set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest ScreenSpreadTest PROPERTIES
             ENVIRONMENT "UCD_TEST_OPENH264=${UCD_TEST_OPENH264}")
         if (WIN32)
