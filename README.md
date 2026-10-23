@@ -50,6 +50,15 @@
   Hardware encoding (NVENC, Quick Sync, AMF, VideoToolbox) where available;
   without it, Settings › Sharing downloads Cisco's OpenH264 for a software
   fallback in one click.
+- **Smooth streams, your choice of quality.** The watching side picks the
+  resolution, frame rate (up to 120 fps, 60 by default) and bitrate it
+  receives, from the view menu or Settings › Watching; the sharing side's
+  limits cap them. Captured frames queue and are converted on several
+  threads, then encoded and sent in order with their own timestamps, and the
+  viewer plays them back at the pace they were captured after a short
+  buffer, so the stream neither speeds up nor stalls with the network.
+  Every limit, the queue and the threads are settings, and the view's
+  statistics show how both sides keep up.
 - **Another device's camera as a webcam.** While you watch a camera, the
   webcam button in its window shows it to every app on the computer as
   "uConnect Camera", for video calls (Discord, Teams...) or recording.
@@ -67,8 +76,9 @@
 - **Searchable settings.** Search finds single settings: matches are listed
   under their page, outlined on it, and a click scrolls to one. Settings that
   several services share have their own pages: **Sharing** (the stop-sharing
-  shortcut, video encoding) and **Watching** (using other devices: the
-  keyboard release key, uConnect Camera).
+  shortcut, video encoding, the sending pipeline) and **Watching** (using
+  other devices: the quality to ask for, the playback buffer, the keyboard
+  release key, uConnect Camera).
 - **Color schemes.** Follow system, Dark, Darker, Light or Colorful.
 
 ### Screenshots

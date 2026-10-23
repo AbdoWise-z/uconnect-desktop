@@ -704,13 +704,14 @@ pump, not dropped. Frames older than four frame intervals (at least 150 ms)
 are dropped with every frame queued behind them, and the next frame is a
 keyframe, so a blocked path cannot accumulate stale video.
 
-Bitrate starts at 4 Mbit/s on direct UDP, 1.5 Mbit/s on relay, 1 Mbit/s on
-TCP, and never goes below 300 kbit/s. Loss above 5% or a delay trend above
+Bitrate starts at 8 Mbit/s on direct UDP, 3 Mbit/s on relay, 2 Mbit/s on
+TCP or while the path is still opening (each within the session's cap), and
+never goes below 300 kbit/s. Loss above 5% or a delay trend above
 15 ms cuts it by 20%, at most once per three reports; persistent congestion
 at the floor lowers the frame rate (not below 15), then the width. Decoding
 slower than the frame interval (by 20%, three reports running) lowers only
 the frame rate, by a quarter (not below 5). Clean reports raise the bitrate
-by 5% (at least 50 kbit/s) each; every 10 clean reports widen the picture by
+by about 8% (at least 100 kbit/s) each; every 10 clean reports widen the picture by
 160 pixels and, unless decoding is slow, add 5 fps. Configuration caps apply
 throughout.
 
@@ -720,13 +721,34 @@ once a second, raises of more than 25% at most every 5 s, smaller drift after
 15 s. Changes beyond 2x reopen the encoder. Software OpenH264 follows every
 change.
 
+Pacing and playout (screen/camera 1.2). A host may convert several captured
+frames for the encoder at once, but encodes and sends them strictly in
+capture order, each stamped with its own `captureMs`; when its queue of
+captured frames is full it drops the newest capture before encoding, so no
+keyframe is needed. A viewer may keep a playback buffer: it shows each
+picture at its `captureMs` plus the smallest transit time of the last 5 s
+plus the buffer, so pictures keep the sender's pace whatever the network's
+jitter; a picture whose time has passed is shown at once (counted late), and
+of several due at once only the newest is shown. Without a buffer each
+picture is shown as soon as it is decoded.
+
+Once a second the host sends each viewer `scr.stats` (`session` and
+numbers, all optional): `fps` (frames encoded), `encodeMs`, `convertMs`,
+`threads`, `queue`, `queuePeak`, `dropped` and `throttled` (captures dropped
+for a full queue, or skipped to keep to the frame rate, per second),
+`sentKbps`, the controller's `targetFps`, `targetKbps` and `width`,
+`senderDrops` (frames the sender dropped in all), and the string `pipeline`.
+They are for display; a viewer may ignore them. A viewer's `scr.report` may
+add `shownFps`, `late`, `skipped`, `bufferMs`, `waitingMs` and
+`waitingFrames` about its playout.
+
 ### 7.3 Screen sessions and consent
 
 Reliable control messages have these types:
 
 | type | fields / meaning |
 |---|---|
-| `scr.request` | nonzero u32 `request`, `wantControl`, `maxWidth`, `maxFps` (1-165), `codecs:["h264"]` |
+| `scr.request` | nonzero u32 `request`, `wantControl`, `maxWidth`, `maxFps` (1-165), optional `maxBitrate` (bit/s; 0 or absent: the host's own limit), `codecs:["h264"]` |
 | `scr.wait` | `request`; host is asking its user |
 | `scr.err` | `request`, `code` (`forbidden`, `busy`, `codec`, `denied`, `transport`, `ended`) |
 | `scr.started` | matching `request`, nonzero u16 `session`, `codec:"h264"`, `width`, `height`, `fps`, `monitors`, `control`, `controlDetail` (why control asked for was not granted; the session is view-only) |
@@ -736,6 +758,7 @@ Reliable control messages have these types:
 | `scr.keyframe` | `session` |
 | `scr.nack` | `session`, `frame`, `indexes` |
 | `scr.report` | `session` plus the report fields in 7.2 |
+| `scr.stats` | host → viewer, `session` plus the figures in 7.2; once a second |
 | `scr.error` | `session`, human-readable `detail`, followed by stop |
 | `scr.status` | `session`, human-readable `detail`; the host has had nothing to send 5 s after starting (sent once) |
 | `scr.stop` | `session`; cancelling a pending request also carries `request` |
@@ -898,6 +921,7 @@ request gets `busy`.
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
 | display 1.0 | extended display (7.6): `display` service, `display.show` / `display.direct`, `dsp.request`, `dsp.wait`, `dsp.err`, `dsp.accept`, the screen session under `dsp.*`, datagram kinds 4 and 5 |
 | rules 1.0 | trust replaced by special rules; network rules per topic (4.2); `rules.get`, `rules.list`, `rules.err`. Sync membership needs a proven identity, special rules and the folder's grants (sync 1.1); sharing needs a proven identity, and any source may grant sensitive permissions, defaults included (screen/camera 1.1, display 1.1). Only local policy changed: no message changed shape |
+| screen/camera 1.2 | the viewer chooses the frame rate, width and (new `maxBitrate`) bitrate to receive, within the host's limits; `scr.stats` and the playout fields of `scr.report` (7.2); frames converted in parallel but sent in order; higher starting bitrates |
 | rules 1.1 | Permissions from special rules, the matching network rule and the defaults add up; special rules may be an exception that applies alone (4). Local policy only |
 | identity | the proof context string (3) was `"uconnect-desktop identity v1"` before this revision; it is now the implementation-neutral `"uconnect identity v1"`. The `id` message keeps `"v":1`; peers from before and after do not verify each other's identity, so both ends update together. Connections and storage with default permissions are unaffected |
 
