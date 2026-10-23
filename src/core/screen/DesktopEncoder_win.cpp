@@ -125,7 +125,10 @@ class D3DDesktop : public DesktopEncoder {
             codec_ = avcodec_alloc_context3(codec);
             codec_->width = output_.width(); codec_->height = output_.height(); codec_->time_base = {1, options.fps};
             codec_->framerate = {options.fps, 1}; codec_->bit_rate = codec_->rc_max_rate = options.bitrate;
-            codec_->rc_buffer_size = options.bitrate / 8; codec_->gop_size = options.fps * 4; codec_->max_b_frames = 0;
+            // Constant bitrate (the sender paces to it) and no keyframe on a
+            // schedule: the viewer asks for one when it needs one (forceKey_);
+            // between, intra refresh repairs the picture a few rows at a time.
+            codec_->rc_buffer_size = options.bitrate / 8; codec_->gop_size = 0xFFFF; codec_->max_b_frames = 0;
             codec_->flags |= AV_CODEC_FLAG_LOW_DELAY; codec_->hw_frames_ctx = av_buffer_ref(codecFrames);
             // As the video processor converts (YCbCr_Matrix 1, nominal range).
             codec_->colorspace = AVCOL_SPC_BT709; codec_->color_primaries = AVCOL_PRI_BT709;
@@ -135,8 +138,11 @@ class D3DDesktop : public DesktopEncoder {
             if (name == "h264_nvenc") {
                 av_dict_set(&tuning, "preset", "p1", 0); av_dict_set(&tuning, "tune", "ull", 0);
                 av_dict_set(&tuning, "delay", "0", 0); av_dict_set(&tuning, "forced-idr", "1", 0);
-            } else if (name == "h264_qsv") av_dict_set(&tuning, "async_depth", "1", 0);
-            else av_dict_set(&tuning, "usage", "ultralowlatency", 0);
+                av_dict_set(&tuning, "rc", "cbr", 0); av_dict_set(&tuning, "intra-refresh", "1", 0);
+            } else if (name == "h264_qsv") {
+                av_dict_set(&tuning, "async_depth", "1", 0);
+                av_dict_set(&tuning, "int_ref_type", "vertical", 0); av_dict_set_int(&tuning, "int_ref_cycle_size", options.fps * 2, 0);
+            } else { av_dict_set(&tuning, "usage", "ultralowlatency", 0); av_dict_set(&tuning, "rc", "cbr", 0); }
             const int status = avcodec_open2(codec_, codec, &tuning); av_dict_free(&tuning);
             if (status >= 0) { name_ = name; break; }
             avcodec_free_context(&codec_);

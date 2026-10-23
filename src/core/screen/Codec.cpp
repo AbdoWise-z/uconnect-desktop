@@ -80,8 +80,12 @@ struct Encoder::Impl {
         software->GetDefaultParams(&params);
         params.iUsageType = SCREEN_CONTENT_REAL_TIME;
         params.iPicWidth = width; params.iPicHeight = height;
-        params.iTargetBitrate = options.bitrate; params.iRCMode = RC_BITRATE_MODE;
-        params.fMaxFrameRate = options.fps; params.uiIntraPeriod = options.fps * 4;
+        // Held to the bitrate (the sender paces to it; a burst over it only
+        // queues or is lost), and no keyframe on a schedule: each costs
+        // several frames' worth of bytes and on a thin uplink is what gets
+        // lost. The viewer asks for one when it needs one (ForceIntraFrame).
+        params.iTargetBitrate = params.iMaxBitrate = options.bitrate; params.iRCMode = RC_BITRATE_MODE;
+        params.fMaxFrameRate = options.fps; params.uiIntraPeriod = 0;
         params.iSpatialLayerNum = 1; params.iTemporalLayerNum = 1;
         // Several threads need as many slices: each encodes one.
         const int threads = std::clamp(options.threads, 1, 8);
@@ -116,7 +120,9 @@ struct Encoder::Impl {
             context->time_base = {1, options.fps}; context->framerate = {options.fps, 1};
             context->bit_rate = options.bitrate; context->rc_max_rate = options.bitrate;
             context->rc_buffer_size = options.bitrate / 8;
-            context->gop_size = options.fps * 4; context->max_b_frames = 0;
+            // No keyframe on a schedule (see openCisco); intra refresh where
+            // the encoder offers it.
+            context->gop_size = 0xFFFF; context->max_b_frames = 0;
             context->flags |= AV_CODEC_FLAG_LOW_DELAY;
             // As swscale converts by default.
             context->colorspace = AVCOL_SPC_SMPTE170M; context->color_range = AVCOL_RANGE_MPEG;
@@ -126,12 +132,14 @@ struct Encoder::Impl {
                 av_dict_set(&settings, "preset", "p1", 0); av_dict_set(&settings, "tune", "ull", 0);
                 av_dict_set(&settings, "zerolatency", "1", 0); av_dict_set(&settings, "forced-idr", "1", 0);
                 av_dict_set(&settings, "delay", "0", 0);
+                av_dict_set(&settings, "rc", "cbr", 0); av_dict_set(&settings, "intra-refresh", "1", 0);
             } else if (candidate == "h264_qsv") {
                 av_dict_set(&settings, "async_depth", "1", 0); av_dict_set(&settings, "preset", "veryfast", 0);
+                av_dict_set(&settings, "int_ref_type", "vertical", 0); av_dict_set_int(&settings, "int_ref_cycle_size", options.fps * 2, 0);
             } else if (candidate == "h264_amf") {
-                av_dict_set(&settings, "usage", "ultralowlatency", 0);
+                av_dict_set(&settings, "usage", "ultralowlatency", 0); av_dict_set(&settings, "rc", "cbr", 0);
             } else if (candidate == "h264_videotoolbox") {
-                av_dict_set(&settings, "realtime", "1", 0);
+                av_dict_set(&settings, "realtime", "1", 0); av_dict_set(&settings, "constant_bit_rate", "1", 0);
             } else if (candidate == "h264_mf") {
                 av_dict_set(&settings, "hw_encoding", "1", 0);
             }

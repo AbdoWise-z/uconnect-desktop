@@ -15,7 +15,7 @@ constexpr double MaxTargetOverReceived = 1.5;  // never ask for much more than t
 void BandwidthEstimator::reset(const Options& options) {
     options_ = options;
     targetBps_ = std::clamp(options.startBps, options.minBps, options.maxBps);
-    receiveBps_ = 0; sendBps_ = 0; lastDecreaseBps_ = 0; loss_ = 0; trend_ = 0; threshold_ = OveruseThresholdMs;
+    receiveBps_ = 0; sendBps_ = 0; lastDecreaseBps_ = 0; loss_ = 0; burstLoss_ = 0; trend_ = 0; threshold_ = OveruseThresholdMs;
     state_ = State::Increase; lastUpdateMs_ = 0; overusingSinceMs_ = -1; lastLossCutMs_ = -1000000; previousTrend_ = 0;
     accumulatedDelayMs_ = smoothedDelayMs_ = 0; samples_.clear(); deltas_ = 0; haveSample_ = false; firstArrivalMs_ = 0;
     previousSendMs_ = 0; previousArrivalMs_ = 0; received_.clear(); lastArrivalMs_ = 0; sent_.clear(); lastSendMs_ = 0; minRttMs_ = 0;
@@ -75,6 +75,10 @@ void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64
     trend_ = double(deltas_) * slope * TrendGain;
     const double dt = lastUpdateMs_ ? double(nowMs - lastUpdateMs_) : 100.;
     lastUpdateMs_ = nowMs;
+    // The worst recent spell, halving every second; a handful of packets
+    // is too few to call a spell.
+    burstLoss_ *= std::pow(0.5, dt / 1000.);
+    if (got + lost >= 5) burstLoss_ = std::max(burstLoss_, double(lost) / double(got + lost));
     Signal signal = detect(trend_, dt);
     if (signal == Signal::Overuse) {
         if (overusingSinceMs_ < 0) overusingSinceMs_ = nowMs;

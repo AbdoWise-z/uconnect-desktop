@@ -175,6 +175,16 @@ private slots:
         QCOMPARE(out.size(), 1);
         QCOMPARE(out[0].bytes, frame.bytes);
         QCOMPARE(receiver.report().recovered, quint64(3));
+        // A group of one: the repair packet alone rebuilds its fragment.
+        quint32 seq2 = 0;
+        MediaReceiver doubled; doubled.reset(7, 1, 30);
+        QVector<EncodedFrame> twice;
+        for (const auto& p : packetize(1, frame, seq2, 1)) {
+            if (p.type == PacketType::Media) continue;  // every fragment lost
+            twice += doubled.receive(encodeMedia(p), 10);
+        }
+        QCOMPARE(twice.size(), 1);
+        QCOMPARE(twice[0].bytes, frame.bytes);
     }
 
     // Two fragments of a frame are lost; the feedback asks for them and the

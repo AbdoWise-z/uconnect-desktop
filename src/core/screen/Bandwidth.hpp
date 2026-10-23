@@ -39,6 +39,9 @@ public:
     // target says nothing about the path.
     bool applicationLimited() const { return sendBps_ < 0.7 * targetBps_; }
     double lossRate() const { return loss_; }
+    // The worst recent spell of loss, fading over a couple of seconds: a
+    // mobile uplink loses in spells, and repair is sized for those.
+    double burstLossRate() const { return burstLoss_; }
     double trendMs() const { return trend_; }  // the delay trend's current modified value
     QString state() const;
     static constexpr double OveruseThresholdMs = 12.5;
@@ -48,7 +51,7 @@ private:
     Signal detect(double trend, double dtMs);
     Options options_;
     int targetBps_ = 4000000, receiveBps_ = 0, sendBps_ = 0, lastDecreaseBps_ = 0;
-    double loss_ = 0, trend_ = 0, threshold_ = OveruseThresholdMs, minRttMs_ = 0;
+    double loss_ = 0, burstLoss_ = 0, trend_ = 0, threshold_ = OveruseThresholdMs, minRttMs_ = 0;
     State state_ = State::Increase;
     qint64 lastUpdateMs_ = 0, overusingSinceMs_ = -1, lastLossCutMs_ = -1000000;
     double previousTrend_ = 0;
