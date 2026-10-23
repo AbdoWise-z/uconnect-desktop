@@ -23,6 +23,8 @@ Window {
         { id: "screen", title: Theme.serviceLabel("screen"), depth: 1, parent: "services", icon: "screen", keywords: "display" },
         { id: "control", title: Theme.serviceLabel("control"), depth: 1, parent: "services", icon: "mouse", keywords: "mouse keyboard" },
         { id: "display", title: Theme.serviceLabel("display"), depth: 1, parent: "services", icon: "cast", keywords: "monitor second screen extend driver tablet" },
+        { id: "sharing", title: qsTr("Sharing"), depth: 0, icon: "share", keywords: "camera screen display video encoder codec stop shortcut hotkey" },
+        { id: "watching", title: qsTr("Watching"), depth: 0, icon: "visibility", keywords: "view watch control other devices keyboard webcam virtual camera" },
         { id: "permissions", title: qsTr("Permissions"), depth: 0, icon: "shield", keywords: "special rules identity fingerprint default access device" },
         { id: "network", title: qsTr("Network Rules"), depth: 1, parent: "permissions", icon: "lan", keywords: "lan local network subnet ip address pattern rules copy" },
         { id: "security", title: qsTr("Security"), depth: 0, icon: "lock", keywords: "invite link key remember store qr code scan phone" },
@@ -35,7 +37,114 @@ Window {
     function matches(p) {
         return query.length === 0 || (p.title + " " + p.keywords).toLowerCase().includes(query.toLowerCase())
     }
-    readonly property var visiblePages: pages.filter(p => matches(p) || pages.some(c => c.parent === p.id && matches(c)))
+    readonly property var visiblePages: pages.filter(p => matches(p) || settingsMatching(p.id).length > 0
+                                                         || pages.some(c => c.parent === p.id && (matches(c) || settingsMatching(c.id).length > 0)))
+
+    // --- search: single settings -------------------------------------------
+    // Every page's settings ({page, text}): the labels of its searchable
+    // controls (`searchable`: section titles, field labels, checkboxes and
+    // "..." buttons), read from offscreen copies of the pages when the window
+    // opens, so the index follows the pages by itself.
+    property var settingsIndex: []
+    // The setting a search result points at: scrolled to and flashed.
+    property string focusText: ""
+
+    function labelOf(text) { return text.replace(/(\.\.\.|…|:)$/, "") }
+    function textMatches(text) { return query.length > 0 && text.toLowerCase().includes(query.toLowerCase()) }
+    function settingsMatching(pageId) {
+        return query.length === 0 ? [] : settingsIndex.filter(s => s.page === pageId && textMatches(s.text))
+    }
+    // Only what is shown: a hidden part of a page (another service's block)
+    // is not on it.
+    function searchableItems(root, out) {
+        if (!root || !root.visible) return out
+        if (root.searchable === true && typeof root.text === "string" && root.text.length > 0) out.push(root)
+        for (let i = 0; i < root.children.length; ++i) searchableItems(root.children[i], out)
+        return out
+    }
+    function buildIndex() {
+        const out = []
+        for (const p of pages) {
+            const component = pageComponent(p.id)
+            const page = component.createObject(indexHost, component === servicePage ? { service: p.id } : {})
+            if (!page) continue
+            const seen = {}
+            for (const item of searchableItems(page, [])) {
+                if (seen[item.text]) continue
+                seen[item.text] = true
+                out.push({ page: p.id, text: item.text })
+            }
+            page.destroy()
+        }
+        settingsIndex = out
+    }
+    // Pages are read here: shown (so `visible` tells which parts are), but
+    // transparent, out of the way and without input.
+    Item { id: indexHost; width: 640; height: 0; opacity: 0; clip: true; enabled: false; z: -1 }
+    Component.onCompleted: Qt.callLater(buildIndex)
+
+    // The list beside the pages while searching: each page, then its matches.
+    readonly property var navEntries: {
+        const out = []
+        const shown = visiblePages
+        for (let i = 0; i < shown.length; ++i) {
+            const p = shown[i]
+            const next = shown[i + 1]
+            const lastChild = p.depth > 0 && (!next || next.depth === 0)
+            out.push({ kind: "page", page: p, lastChild: lastChild })
+            for (const s of settingsMatching(p.id).slice(0, 6))
+                out.push({ kind: "setting", page: p, text: s.text, guide: p.depth > 0 && !lastChild })
+        }
+        return out
+    }
+    function openSetting(pageId, text) {
+        currentPage = pageId
+        focusText = text
+        Qt.callLater(refreshHighlights)
+    }
+    // Goes to the page with the first match when the current one has none.
+    function followSearch() {
+        const here = pageById(currentPage)
+        if (query.length > 0 && settingsMatching(currentPage).length === 0 && !matches(here)) {
+            const withSetting = pages.find(p => settingsMatching(p.id).length > 0)
+            const shown = visiblePages
+            if (withSetting) currentPage = withSetting.id
+            else if (shown.length > 0) currentPage = shown[0].id
+        }
+        Qt.callLater(refreshHighlights)
+    }
+
+    // Matches on the current page, as rectangles over it.
+    property var highlights: []
+    property real focusGlow: 0
+    SequentialAnimation {
+        id: focusPulse
+        NumberAnimation { target: dlg; property: "focusGlow"; from: 0; to: 1; duration: 160 }
+        PauseAnimation { duration: 500 }
+        NumberAnimation { target: dlg; property: "focusGlow"; to: 0; duration: 900 }
+        ScriptAction { script: dlg.focusText = "" }
+    }
+    function refreshHighlights() {
+        const page = pageLoader.item
+        const out = []
+        let focus = null
+        if (page && query.length > 0) {
+            for (const item of searchableItems(page, [])) {
+                if (!item.visible || !textMatches(item.text)) continue
+                const at = item.mapToItem(pageFlick.contentItem, 0, 0)
+                const rect = { x: at.x - 4, y: at.y - 2, width: item.width + 8, height: item.height + 4,
+                               focus: item.text === focusText }
+                out.push(rect)
+                if (rect.focus && !focus) focus = rect
+            }
+        }
+        highlights = out
+        if (focus) {
+            pageFlick.contentY = Math.max(0, Math.min(focus.y - pageFlick.height / 3,
+                                                      pageFlick.contentHeight - pageFlick.height))
+            focusPulse.restart()
+        }
+    }
 
     QtObject {
         id: draft
@@ -435,6 +544,7 @@ Window {
         font.pixelSize: Theme.smallFontSize
     }
     component FieldLabel: Text {
+        readonly property bool searchable: true
         Layout.preferredWidth: 140
         color: Theme.text
     }
@@ -1029,7 +1139,8 @@ Window {
         id: servicePage
         ColumnLayout {
             id: svcPage
-            readonly property string service: dlg.currentPage
+            // Which service it shows; set when settings search reads it offscreen.
+            property string service: dlg.currentPage
             spacing: 8
             TitledSeparator { text: qsTr("Availability") }
             UCheckBox {
@@ -1050,7 +1161,7 @@ Window {
             TitledSeparator { text: qsTr("Options") }
             Help {
                 visible: svcPage.service === "control"
-                text: qsTr("Keyboard release and related options are configured under Screen Sharing.")
+                text: qsTr("Being controlled shares this screen, so Screen Sharing's limits apply. The key that gives back your keyboard when you control another device is under Watching.")
             }
             ColumnLayout {
                 visible: svcPage.service === "camera"
@@ -1058,7 +1169,7 @@ Window {
                 spacing: 8
                 Help {
                     text: App.camera.available
-                          ? qsTr("Only devices your special or network rules allow may request your camera, and each request asks first. The viewer picks a camera and a quality up to the caps below.")
+                          ? qsTr("Only devices your special or network rules allow may request your camera, and each request asks first. The viewer picks a camera and a quality up to the limits below. To use another device's camera here, see Watching.")
                           : qsTr("This build needs Qt Multimedia and a shared LGPL FFmpeg SDK for camera sharing.")
                 }
                 FieldLabel { text: qsTr("Cameras to offer") }
@@ -1111,48 +1222,10 @@ Window {
                     USpinBox { from: 1; to: 120; value: draft.camera.maxFps || 30; onValueModified: dlg.setCameraSetting("maxFps", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum width") }
                     USpinBox { from: 320; to: 3840; stepSize: 160; value: draft.camera.maxWidth || 1280; onValueModified: dlg.setCameraSetting("maxWidth", value) }
+                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum bitrate (Mbit/s)") }
+                    USpinBox { from: 1; to: 20; value: (draft.camera.maxBitrate || 8000000) / 1000000; onValueModified: dlg.setCameraSetting("maxBitrate", value * 1000000) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum viewers") }
                     USpinBox { from: 1; to: 8; value: draft.camera.maxViewers || 1; onValueModified: dlg.setCameraSetting("maxViewers", value) }
-                }
-
-                // Other devices' cameras as a webcam here (VirtualCamera). Its
-                // install and removal happen right away, not on Apply.
-                TitledSeparator {
-                    Layout.topMargin: 8
-                    visible: vcamRow.vcam !== null
-                    text: qsTr("Watched Cameras in Other Apps")
-                }
-                RowLayout {
-                    id: vcamRow
-                    readonly property var vcam: App.camera.virtualCamera
-                    visible: vcam !== null
-                    Layout.fillWidth: true
-                    spacing: 10
-                    UIcon {
-                        name: "webcam"
-                        size: 18
-                        color: vcamRow.vcam && vcamRow.vcam.installed ? Theme.success : Theme.textSecondary
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        color: Theme.text
-                        text: !vcamRow.vcam ? ""
-                              : vcamRow.vcam.task === "install" ? qsTr("Installing… accept the administrator prompt.")
-                              : vcamRow.vcam.task === "uninstall" ? qsTr("Removing… accept the administrator prompt.")
-                              : vcamRow.vcam.installed ? qsTr("uConnect Camera is installed.")
-                              : vcamRow.vcam.hint
-                    }
-                    UButton {
-                        visible: vcamRow.vcam !== null && vcamRow.vcam.supported && vcamRow.vcam.canInstall
-                        enabled: vcamRow.vcam !== null && vcamRow.vcam.task === ""
-                        text: vcamRow.vcam && vcamRow.vcam.installed ? qsTr("Uninstall...") : qsTr("Install...")
-                        onClicked: vcamRow.vcam.installed ? vcamRow.vcam.uninstall() : vcamRow.vcam.install()
-                    }
-                }
-                Help {
-                    visible: vcamRow.vcam !== null
-                    text: qsTr("While you watch another device's camera, the webcam button in its window shows it to every app on this computer as “uConnect Camera”, for calls or recording.")
                 }
             }
             Help {
@@ -1224,76 +1297,150 @@ Window {
                     USpinBox { from: 1; to: 20; value: (draft.screen.maxBitrate || 8000000) / 1000000; onValueModified: dlg.setScreenSetting("maxBitrate", value * 1000000) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum viewers") }
                     USpinBox { from: 1; to: 8; value: draft.screen.maxViewers || 1; onValueModified: dlg.setScreenSetting("maxViewers", value) }
-                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Stop sharing shortcut") }
-                    UTextField { Layout.preferredWidth: 220; text: draft.screen.stopShortcut || "Ctrl+Alt+Shift+S"; onTextEdited: dlg.setScreenSetting("stopShortcut", text) }
-                    FieldLabel { Layout.preferredWidth: 200; text: qsTr("Release keyboard") }
-                    UComboBox {
-                        model: [qsTr("Right Ctrl"), qsTr("Escape"), "F12"]
-                        currentIndex: [228, 41, 69].indexOf(draft.screen.releaseUsage || 228)
-                        onActivated: index => dlg.setScreenSetting("releaseUsage", [228, 41, 69][index])
-                    }
                 }
-                Help { text: qsTr("Viewers share one source and encoder. One viewer may control it at a time. Camera sharing uses these quality limits too.") }
+                Help { text: qsTr("Viewers share one source and encoder. One viewer may control it at a time. The stop-sharing shortcut and the video encoder are under Sharing.") }
                 UCheckBox {
                     text: qsTr("Use native GPU capture when available")
                     checked: draft.screen.gpuCapture !== false
                     onToggled: dlg.setScreenSetting("gpuCapture", checked)
                 }
-                UCheckBox {
-                    text: qsTr("Enable software fallback")
-                    checked: draft.screen.softwareCodec || false
-                    onToggled: dlg.setScreenSetting("softwareCodec", checked)
-                }
-                Help { text: "OpenH264 Video Codec provided by Cisco Systems, Inc." }
-                RowLayout {
+            }
+        }
+    }
+
+    // Settings several services share: camera, screen sharing and extended
+    // display all stop with one shortcut and encode with the same codecs.
+    Component {
+        id: sharingPage
+        ColumnLayout {
+            spacing: 8
+            Help { text: qsTr("Used by camera sharing, screen sharing and extended display alike.") }
+            TitledSeparator { text: qsTr("Stopping") }
+            GridLayout {
+                columns: 2
+                columnSpacing: 12
+                rowSpacing: 8
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Stop sharing shortcut") }
+                UTextField { Layout.preferredWidth: 220; text: draft.screen.stopShortcut || "Ctrl+Alt+Shift+S"; onTextEdited: dlg.setScreenSetting("stopShortcut", text) }
+            }
+            Help { text: qsTr("Stops all sharing at once (screen, camera and displays), from any app. It is active only while something is shared.") }
+            TitledSeparator { text: qsTr("Video Encoding") }
+            Help { text: qsTr("Hardware encoders (NVENC, Quick Sync, AMF, VideoToolbox) are used when the computer has one. Without one, sharing needs the software fallback.") }
+            UCheckBox {
+                text: qsTr("Enable software fallback")
+                checked: draft.screen.softwareCodec || false
+                onToggled: dlg.setScreenSetting("softwareCodec", checked)
+            }
+            Help { text: "OpenH264 Video Codec provided by Cisco Systems, Inc." }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                UTextField {
                     Layout.fillWidth: true
-                    spacing: 8
-                    UTextField {
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
-                        placeholderText: qsTr("Path to separately installed Cisco OpenH264 2.6 library")
-                        text: draft.screen.codecLibrary || ""
-                        onTextEdited: dlg.setScreenSetting("codecLibrary", text)
-                    }
-                    UButton {
-                        visible: App.openH264.supported
-                        enabled: App.openH264.state !== "downloading"
-                        text: App.openH264.exists(draft.screen.codecLibrary || "") ? qsTr("Download Again...")
-                                                                                   : qsTr("Download from Cisco...")
-                        onClicked: codecLicense.open()
-                    }
+                    Layout.minimumWidth: 0
+                    placeholderText: qsTr("Path to separately installed Cisco OpenH264 2.6 library")
+                    text: draft.screen.codecLibrary || ""
+                    onTextEdited: dlg.setScreenSetting("codecLibrary", text)
                 }
-                RowLayout {
-                    visible: App.openH264.state === "downloading"
+                UButton {
+                    visible: App.openH264.supported
+                    enabled: App.openH264.state !== "downloading"
+                    text: App.openH264.exists(draft.screen.codecLibrary || "") ? qsTr("Download Again...")
+                                                                               : qsTr("Download from Cisco...")
+                    onClicked: codecLicense.open()
+                }
+            }
+            RowLayout {
+                visible: App.openH264.state === "downloading"
+                Layout.fillWidth: true
+                spacing: 10
+                Rectangle {
                     Layout.fillWidth: true
-                    spacing: 10
+                    implicitHeight: 6
+                    radius: 3
+                    color: Theme.border
                     Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: 6
+                        width: parent.width * Math.max(0.03, App.openH264.progress)
+                        height: parent.height
                         radius: 3
-                        color: Theme.border
-                        Rectangle {
-                            width: parent.width * Math.max(0.03, App.openH264.progress)
-                            height: parent.height
-                            radius: 3
-                            color: Theme.accent
-                        }
+                        color: Theme.accent
                     }
-                    UButton { text: qsTr("Cancel"); onClicked: App.openH264.cancel() }
                 }
-                Help {
-                    readonly property string path: draft.screen.codecLibrary || ""
-                    color: App.openH264.state === "failed" || (path !== "" && !App.openH264.exists(path))
-                           ? Theme.error : Theme.textSecondary
-                    text: App.openH264.state === "downloading" ? qsTr("Downloading %1 from Cisco…").arg(App.openH264.fileName)
-                        : App.openH264.state === "failed" ? App.openH264.error
-                        : App.openH264.state === "done" && dlg.codecJustInstalled
-                          ? qsTr("Downloaded from Cisco and verified. Click OK or Apply to use it.")
-                        : path !== "" && !App.openH264.exists(path) ? qsTr("There is no file at this path.")
-                        : App.openH264.supported
-                          ? qsTr("“Download from Cisco” gets Cisco's binary for this system straight from Cisco, checks it against Cisco's published archive and saves it with its license. Or enter the path of one you installed yourself.")
-                          : qsTr("Cisco publishes no OpenH264 binary for this system.")
+                UButton { text: qsTr("Cancel"); onClicked: App.openH264.cancel() }
+            }
+            Help {
+                readonly property string path: draft.screen.codecLibrary || ""
+                color: App.openH264.state === "failed" || (path !== "" && !App.openH264.exists(path))
+                       ? Theme.error : Theme.textSecondary
+                text: App.openH264.state === "downloading" ? qsTr("Downloading %1 from Cisco…").arg(App.openH264.fileName)
+                    : App.openH264.state === "failed" ? App.openH264.error
+                    : App.openH264.state === "done" && dlg.codecJustInstalled
+                      ? qsTr("Downloaded from Cisco and verified. Click OK or Apply to use it.")
+                    : path !== "" && !App.openH264.exists(path) ? qsTr("There is no file at this path.")
+                    : App.openH264.supported
+                      ? qsTr("“Download from Cisco” gets Cisco's binary for this system straight from Cisco, checks it against Cisco's published archive and saves it with its license. Or enter the path of one you installed yourself.")
+                      : qsTr("Cisco publishes no OpenH264 binary for this system.")
+            }
+        }
+    }
+
+    // When this device watches or controls other devices.
+    Component {
+        id: watchingPage
+        ColumnLayout {
+            spacing: 8
+            Help { text: qsTr("For watching other devices' screens and cameras, and controlling them.") }
+            TitledSeparator { text: qsTr("Controlling Another Device") }
+            GridLayout {
+                columns: 2
+                columnSpacing: 12
+                rowSpacing: 8
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Release keyboard") }
+                UComboBox {
+                    model: [qsTr("Right Ctrl"), qsTr("Escape"), "F12"]
+                    currentIndex: [228, 41, 69].indexOf(draft.screen.releaseUsage || 228)
+                    onActivated: index => dlg.setScreenSetting("releaseUsage", [228, 41, 69][index])
                 }
+            }
+            Help { text: qsTr("While your keyboard is captured by another device's screen, this key gives it back.") }
+            // Other devices' cameras as a webcam here (VirtualCamera). Its
+            // install and removal happen right away, not on Apply.
+            TitledSeparator {
+                Layout.topMargin: 8
+                visible: vcamRow.vcam !== null
+                text: qsTr("Watched Cameras in Other Apps")
+            }
+            RowLayout {
+                id: vcamRow
+                readonly property var vcam: App.camera.virtualCamera
+                visible: vcam !== null
+                Layout.fillWidth: true
+                spacing: 10
+                UIcon {
+                    name: "webcam"
+                    size: 18
+                    color: vcamRow.vcam && vcamRow.vcam.installed ? Theme.success : Theme.textSecondary
+                }
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Theme.text
+                    text: !vcamRow.vcam ? ""
+                          : vcamRow.vcam.task === "install" ? qsTr("Installing… accept the administrator prompt.")
+                          : vcamRow.vcam.task === "uninstall" ? qsTr("Removing… accept the administrator prompt.")
+                          : vcamRow.vcam.installed ? qsTr("uConnect Camera is installed.")
+                          : vcamRow.vcam.hint
+                }
+                UButton {
+                    visible: vcamRow.vcam !== null && vcamRow.vcam.supported && vcamRow.vcam.canInstall
+                    enabled: vcamRow.vcam !== null && vcamRow.vcam.task === ""
+                    text: vcamRow.vcam && vcamRow.vcam.installed ? qsTr("Uninstall...") : qsTr("Install...")
+                    onClicked: vcamRow.vcam.installed ? vcamRow.vcam.uninstall() : vcamRow.vcam.install()
+                }
+            }
+            Help {
+                visible: vcamRow.vcam !== null
+                text: qsTr("While you watch another device's camera, the webcam button in its window shows it to every app on this computer as “uConnect Camera”, for calls or recording.")
             }
         }
     }
@@ -1381,6 +1528,8 @@ Window {
         case "screen":
         case "control":
         case "display": return servicePage
+        case "sharing": return sharingPage
+        case "watching": return watchingPage
         case "permissions": return permissionsPage
         case "network": return networkPage
         case "security": return securityPage
@@ -1411,11 +1560,22 @@ Window {
                     id: searchField
                     Layout.fillWidth: true
                     placeholderText: qsTr("Search settings")
+                    leftPadding: 30
                     onTextEdited: {
-                        dlg.query = text
-                        const visible = dlg.visiblePages
-                        if (visible.length > 0 && !visible.some(p => p.id === dlg.currentPage))
-                            dlg.currentPage = visible[0].id
+                        dlg.query = text.trim()
+                        dlg.followSearch()
+                    }
+                    // Enter: the first matching setting.
+                    onAccepted: {
+                        const first = dlg.navEntries.find(e => e.kind === "setting")
+                        if (first) dlg.openSetting(first.page.id, first.text)
+                    }
+                    UIcon {
+                        x: 9
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: "search"
+                        size: 15
+                        color: Theme.textSecondary
                     }
                 }
 
@@ -1424,25 +1584,62 @@ Window {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    model: dlg.visiblePages
+                    model: dlg.navEntries
                     // A page under another (Services > Storage...) hangs off a
                     // vertical guide that runs down from its parent's icon.
+                    // While searching, a page's matching settings follow it.
                     delegate: Item {
                         id: entry
                         required property var modelData
                         required property int index
-                        readonly property bool selected: modelData.id === dlg.currentPage
-                        readonly property bool child: modelData.depth > 0
-                        readonly property var next: index + 1 < dlg.visiblePages.length ? dlg.visiblePages[index + 1] : null
-                        readonly property bool lastChild: child && (!next || next.depth === 0)
+                        readonly property bool isSetting: modelData.kind === "setting"
+                        readonly property var page: modelData.page
+                        readonly property bool selected: !isSetting && page.id === dlg.currentPage
+                        readonly property bool child: page.depth > 0
+                        readonly property bool lastChild: !isSetting && modelData.lastChild === true
                         // The guide's x: under the parent's icon.
                         readonly property int guideX: 19
 
                         width: ListView.view.width
-                        height: child ? 28 : 32
+                        height: isSetting ? 24 : child ? 28 : 32
+
+                        // A matching setting: under its page, a click away.
+                        Rectangle {
+                            visible: entry.isSetting && entry.modelData.guide === true
+                            x: entry.guideX
+                            width: 1
+                            height: parent.height
+                            color: Theme.textDisabled
+                            opacity: 0.6
+                        }
+                        Rectangle {
+                            visible: entry.isSetting
+                            x: (entry.child ? entry.guideX + 12 : 0) + 22
+                            width: parent.width - x
+                            height: parent.height - 2
+                            anchors.verticalCenter: parent.verticalCenter
+                            radius: Theme.radius
+                            color: settingArea.containsMouse ? Theme.hover : "transparent"
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                x: 8
+                                width: parent.width - 12
+                                elide: Text.ElideRight
+                                text: entry.isSetting ? dlg.labelOf(entry.modelData.text) : ""
+                                color: Theme.accent
+                                font.pixelSize: Theme.smallFontSize
+                            }
+                            MouseArea {
+                                id: settingArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: dlg.openSetting(entry.page.id, entry.modelData.text)
+                            }
+                        }
 
                         Rectangle {
-                            visible: entry.child
+                            visible: entry.child && !entry.isSetting
                             x: entry.guideX
                             width: 1
                             y: 0
@@ -1451,7 +1648,7 @@ Window {
                             opacity: 0.6
                         }
                         Rectangle {
-                            visible: entry.child
+                            visible: entry.child && !entry.isSetting
                             x: entry.guideX
                             y: parent.height / 2
                             width: 9
@@ -1462,6 +1659,7 @@ Window {
 
                         Rectangle {
                             id: pill
+                            visible: !entry.isSetting
                             x: entry.child ? entry.guideX + 12 : 0
                             width: parent.width - x
                             height: parent.height - 2
@@ -1483,7 +1681,7 @@ Window {
                                 id: navIcon
                                 x: entry.child ? 8 : 10
                                 anchors.verticalCenter: parent.verticalCenter
-                                name: entry.modelData.icon || ""
+                                name: entry.page.icon || ""
                                 size: entry.child ? 15 : 17
                                 color: entry.selected ? Theme.accent : Theme.textSecondary
                             }
@@ -1494,16 +1692,17 @@ Window {
                                 anchors.right: parent.right
                                 anchors.rightMargin: 6
                                 elide: Text.ElideRight
-                                text: entry.modelData.title
+                                text: entry.page.title
                                 color: entry.child && !entry.selected ? Theme.textSecondary : Theme.text
-                                font.bold: dlg.query.length > 0 && dlg.matches(entry.modelData)
+                                font.bold: dlg.query.length > 0 && (dlg.matches(entry.page) || dlg.settingsMatching(entry.page.id).length > 0)
                             }
                         }
                         MouseArea {
                             id: entryArea
+                            enabled: !entry.isSetting
                             anchors.fill: parent
                             hoverEnabled: true
-                            onClicked: dlg.currentPage = entry.modelData.id
+                            onClicked: dlg.currentPage = entry.page.id
                         }
                     }
 
@@ -1542,6 +1741,7 @@ Window {
                 }
 
                 Flickable {
+                    id: pageFlick
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -1549,6 +1749,7 @@ Window {
                     contentHeight: pageLoader.implicitHeight + 32
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
+                    onWidthChanged: Qt.callLater(dlg.refreshHighlights)
 
                     Loader {
                         id: pageLoader
@@ -1556,6 +1757,32 @@ Window {
                         y: 4
                         width: parent.width - 40
                         sourceComponent: dlg.pageComponent(dlg.currentPage)
+                        onLoaded: {
+                            pageFlick.contentY = 0
+                            Qt.callLater(dlg.refreshHighlights)
+                        }
+                    }
+                    // Rows come and go as settings change: keep the marks on them.
+                    Connections {
+                        target: pageLoader.item
+                        function onImplicitHeightChanged() { Qt.callLater(dlg.refreshHighlights) }
+                    }
+
+                    // Search matches on this page; the one a result pointed at glows.
+                    Repeater {
+                        model: dlg.highlights
+                        delegate: Rectangle {
+                            required property var modelData
+                            x: modelData.x
+                            y: modelData.y
+                            width: modelData.width
+                            height: modelData.height
+                            radius: 4
+                            color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b,
+                                           modelData.focus ? 0.10 + 0.25 * dlg.focusGlow : 0.10)
+                            border.color: Theme.accent
+                            border.width: modelData.focus && dlg.focusGlow > 0 ? 2 : 1
+                        }
                     }
                 }
             }

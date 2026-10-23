@@ -13,6 +13,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <QQuickWindow>
 
 #include <memory>
 
@@ -189,41 +190,120 @@ private slots:
         QVERIFY2(host, qPrintable(safety.errorString()));
     }
 
-    // Settings > Camera shows the webcam component's state and its button.
-    void cameraPageShowsTheWebcamComponent() {
-        QStringList warnings;
+    // Shows a page and reports QML warnings and whether a text is on it.
+    bool showPage(const QString& page, const QStringList& texts, QStringList* warnings) {
         auto conn = connect(engine_.get(), &QQmlEngine::warnings, this, [&](const QList<QQmlError>& list) {
-            for (const QQmlError& e : list) warnings << e.toString();
+            for (const QQmlError& e : list) *warnings << e.toString();
         });
-        QVERIFY(dialog_->setProperty("currentPage", "camera"));
-        const auto hasText = [&](const QString& text) {
-            for (QObject* child : dialog_->findChildren<QObject*>())
-                if (child->property("text").toString() == text) return true;
-            return false;
+        dialog_->setProperty("currentPage", page);
+        const auto hasAll = [&] {
+            for (const QString& text : texts) {
+                bool found = false;
+                for (QObject* child : dialog_->findChildren<QObject*>())
+                    if (child->property("text").toString() == text) { found = true; break; }
+                if (!found) return false;
+            }
+            return true;
         };
-        QTRY_VERIFY(hasText("Watched Cameras in Other Apps"));
+        const bool ok = QTest::qWaitFor(hasAll, 5000);
         disconnect(conn);
+        return ok;
+    }
+
+    // Settings > Watching: the key that gives the keyboard back and the
+    // webcam component, both about using other devices.
+    void watchingPageHasViewerSettings() {
+        QStringList warnings;
+        QVERIFY(showPage("watching", {"Release keyboard", "Watched Cameras in Other Apps"}, &warnings));
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join(QStringLiteral(" | "))));
         dialog_->setProperty("currentPage", "general");
     }
 
-    // Settings > Screen Sharing offers to download Cisco's OpenH264 binary.
-    void screenPageOffersTheCodecDownload() {
+    // Settings > Sharing: what camera, screen and display sharing share, with
+    // the download of Cisco's OpenH264 binary.
+    void sharingPageHasSharedMediaSettings() {
         QStringList warnings;
-        auto conn = connect(engine_.get(), &QQmlEngine::warnings, this, [&](const QList<QQmlError>& list) {
-            for (const QQmlError& e : list) warnings << e.toString();
-        });
-        QVERIFY(dialog_->setProperty("currentPage", "screen"));
-        const auto hasText = [&](const QString& text) {
-            for (QObject* child : dialog_->findChildren<QObject*>())
-                if (child->property("text").toString() == text) return true;
-            return false;
-        };
-        QTRY_VERIFY(hasText("Download from Cisco...") || hasText("Download Again..."));
-        QVERIFY(hasText("Accept and Download"));  // the license prompt
-        disconnect(conn);
+        QVERIFY(showPage("sharing", {"Stop sharing shortcut", "Enable software fallback"}, &warnings));
+        QVERIFY(showPage("sharing", {"Accept and Download"}, &warnings));  // the license prompt
+        bool download = false;
+        for (QObject* child : dialog_->findChildren<QObject*>()) {
+            const QString text = child->property("text").toString();
+            download = download || text == "Download from Cisco..." || text == "Download Again...";
+        }
+        QVERIFY(download);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join(QStringLiteral(" | "))));
         dialog_->setProperty("currentPage", "general");
+    }
+
+    // Search finds single settings: the index puts each on its page, results
+    // follow their page, and opening one highlights it there.
+    void searchFindsAndHighlightsSettings() {
+        QTRY_VERIFY(!dialog_->property("settingsIndex").toList().isEmpty());
+        QHash<QString, QStringList> pagesOf;
+        for (const QVariant& v : dialog_->property("settingsIndex").toList())
+            pagesOf[v.toMap().value("text").toString()] << v.toMap().value("page").toString();
+        QCOMPARE(pagesOf.value("Stop sharing shortcut"), QStringList{"sharing"});
+        QCOMPARE(pagesOf.value("Enable software fallback"), QStringList{"sharing"});
+        QCOMPARE(pagesOf.value("Release keyboard"), QStringList{"watching"});
+        QVERIFY(pagesOf.value("Maximum bitrate (Mbit/s)").contains("camera"));
+        QVERIFY(pagesOf.value("Maximum bitrate (Mbit/s)").contains("screen"));
+        QVERIFY(pagesOf.value("Maximum bitrate (Mbit/s)").contains("display"));
+        QVERIFY(pagesOf.contains("Server address:"));
+
+        QVERIFY(dialog_->setProperty("query", "bitrate"));
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "followSearch"));
+        QStringList results;
+        for (const QVariant& v : dialog_->property("navEntries").toList())
+            if (v.toMap().value("kind") == "setting")
+                results << v.toMap().value("page").toMap().value("id").toString();
+        QVERIFY2(results == (QStringList{"camera", "screen", "display"}), qPrintable(results.join(",")));
+        QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "openSetting",
+                                          Q_ARG(QVariant, QVariant("camera")),
+                                          Q_ARG(QVariant, QVariant("Maximum bitrate (Mbit/s)"))));
+        QCOMPARE(dialog_->property("currentPage").toString(), QStringLiteral("camera"));
+        QTRY_VERIFY(!dialog_->property("highlights").toList().isEmpty());
+        bool focused = false;
+        for (const QVariant& v : dialog_->property("highlights").toList()) focused = focused || v.toMap().value("focus").toBool();
+        QVERIFY(focused);
+
+        dialog_->setProperty("query", "");
+        QMetaObject::invokeMethod(dialog_.get(), "followSearch");
+        QTRY_VERIFY(dialog_->property("highlights").toList().isEmpty());
+        dialog_->setProperty("currentPage", "general");
+    }
+
+    // With UCD_SETTINGS_SHOTS=<folder>, pictures of the search and the new
+    // pages, for reviewing the layout.
+    void picturesForReview() {
+        const QString folder = qEnvironmentVariable("UCD_SETTINGS_SHOTS");
+        if (folder.isEmpty()) QSKIP("set UCD_SETTINGS_SHOTS to a folder");
+        auto* window = qobject_cast<QQuickWindow*>(dialog_.get());
+        QVERIFY(window);
+        QGuiApplication::setFont(QFont(QStringLiteral("Segoe UI"), 10));  // offscreen has no default
+        window->resize(980, 680);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(!dialog_->property("settingsIndex").toList().isEmpty());
+        const auto shot = [&](const QString& name) {
+            QTest::qWait(400);
+            window->grabWindow().save(folder + "/" + name + ".png");
+        };
+        for (const char* page : {"sharing", "watching", "camera", "screen"}) {
+            dialog_->setProperty("currentPage", page);
+            shot(QStringLiteral("page-") + page);
+        }
+        dialog_->setProperty("query", "bitrate");
+        QMetaObject::invokeMethod(dialog_.get(), "followSearch");
+        QMetaObject::invokeMethod(dialog_.get(), "openSetting", Q_ARG(QVariant, QVariant("screen")),
+                                  Q_ARG(QVariant, QVariant("Maximum bitrate (Mbit/s)")));
+        QTest::qWait(200);
+        shot("search-bitrate");
+        dialog_->setProperty("query", "shortcut");
+        QMetaObject::invokeMethod(dialog_.get(), "followSearch");
+        shot("search-shortcut");
+        dialog_->setProperty("query", "");
+        QMetaObject::invokeMethod(dialog_.get(), "followSearch");
+        window->hide();
     }
 
     // A camera's viewer window, with the webcam button and its install prompt.

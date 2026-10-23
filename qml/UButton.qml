@@ -6,6 +6,8 @@ Button {
 
     // The one default action of a form or dialog: filled with the accent colour.
     property bool primary: false
+    // Settings search lists and highlights an action button ("Install...").
+    readonly property bool searchable: text.endsWith("...")
 
     implicitHeight: Theme.controlHeight
     leftPadding: 14

@@ -4,6 +4,7 @@ import QtQuick.Layouts
 // A group title followed by a rule, as used in JetBrains settings pages.
 RowLayout {
     property alias text: title.text
+    readonly property bool searchable: true  // settings search finds it
 
     Layout.fillWidth: true
     Layout.topMargin: 10

@@ -4,6 +4,9 @@ import QtQuick.Controls
 CheckBox {
     id: control
 
+    // Settings search lists and highlights it (SettingsWindow).
+    readonly property bool searchable: true
+
     font.pixelSize: Theme.fontSize
     spacing: 8
     padding: 2
