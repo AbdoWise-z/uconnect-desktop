@@ -16,7 +16,7 @@ void MediaSender::reset(const Options& options) {
     bwe_.reset({options.startBps, options.minBps, options.maxBps});
     nextSeq_ = 0; queue_.clear(); queuedBytes_ = 0; budgetBytes_ = MaxBurstBytes; lastPumpMs_ = 0;
     sent_.clear(); inflightBytes_ = 0; feedbackBase_ = 0; haveFeedback_ = false;
-    rttMs_ = 0; minRttMs_ = 0; lagMs_ = 0; smoothEncoderBps_ = 0; fecGroup_ = 0; lastSentCaptureMs_ = 0;
+    rttMs_ = 0; minRttMs_ = 0; lagMs_ = 0; smoothEncoderBps_ = 0; fecGroup_ = 0; lastSentCaptureMs_ = 0; reliableSinceMs_ = -1;
     awaitKey_ = false; lastKeyMs_ = -100000; behindAt_ = -100000;
     dropped_ = retransmitted_ = 0;
 }
@@ -68,6 +68,7 @@ void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)
     // at once.
     const double rate = bwe_.targetBps() * options_.pacingGain / 8000.;  // bytes per ms
     if (lastPumpMs_) budgetBytes_ = std::min(budgetBytes_ + rate * double(nowMs - lastPumpMs_), double(MaxBurstBytes) + rate * 5);
+    if (options_.reliable && reliableSinceMs_ < 0) reliableSinceMs_ = nowMs;
     const double weight = lastPumpMs_ && smoothEncoderBps_ > 0 ? std::min(1., double(nowMs - lastPumpMs_) / 1000.) : 1.;
     smoothEncoderBps_ += (encoderBps() - smoothEncoderBps_) * weight;
     lastPumpMs_ = nowMs;
@@ -137,7 +138,10 @@ void MediaSender::onFeedback(const QByteArray& packet, qint64 nowMs) {
     if (!results.isEmpty()) bwe_.onFeedback(results, nowMs, rttMs_);
     // On a reliable path the bound on what is in flight is what limits
     // sending when the path cannot drain it: the rate follows what arrives.
-    if (options_.reliable && !results.isEmpty() && inflightBytes_ >= 0.9 * double(inflightLimit()) && bwe_.receiveBps() > 0) {
+    // Not in the path's first moments (opening, or just moved to TCP), when
+    // what arrives says little.
+    if (options_.reliable && reliableSinceMs_ >= 0 && nowMs - reliableSinceMs_ > 2000 && !results.isEmpty() &&
+        inflightBytes_ >= 0.9 * double(inflightLimit()) && bwe_.receiveBps() > 0) {
         bwe_.limitTo(int(0.85 * bwe_.receiveBps()));
     }
     // Repeats: what it still wants, once per 40 ms each, while it is recent.

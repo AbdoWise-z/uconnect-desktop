@@ -47,7 +47,9 @@ private slots:
         service.handle(peer(1), request(5)); QCOMPARE(opens, 2);
         service.peerGone(peer(1)); QVERIFY(hosting.back()[0].toList().isEmpty()); QVERIFY(closes >= 2);
         service.handle(peer(1), request(6)); QCOMPARE(opens, 3);
-        time += 5001; service.tick(); QVERIFY(hosting.back()[0].toList().isEmpty());
+        // No feedback at all: while the media path is still opening, a session gets 40 s; 5 s after.
+        time += 5001; service.tick(); QVERIFY(!hosting.back()[0].toList().isEmpty());
+        time += 35001; service.tick(); QVERIFY(hosting.back()[0].toList().isEmpty());
     }
 
     // A session whose capture never delivers says so, once, to both sides.

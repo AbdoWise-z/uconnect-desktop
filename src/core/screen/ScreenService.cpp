@@ -958,7 +958,11 @@ void ScreenService::tick() {
         else if (host.live) {
             if (host.controlRequest && now >= host.controlExpires) setControl(peer, false, host.controlRequest, "control request timed out");
             if (host.control && !controlAllowed(peer)) setControl(peer, false, 0, "control permission withdrawn");
-            if (now - host.lastReport > 5000 || !allowed(peer)) expired.push_back(peer);
+            // Feedback travels on the media channel, which can take a while
+            // to open (punching, then the TCP fallback): no word for 5 s ends
+            // the session once the channel is up, 40 s while it is opening.
+            const qint64 quiet = host.path == "opening" ? 40000 : 5000;
+            if (now - host.lastReport > quiet || !allowed(peer)) expired.push_back(peer);
             else {
                 host.media.pump(now, [&](const QByteArray& packet) { return datagram_(peer, packet); });
                 if (host.media.takeKeyframeWanted(now)) host.forceKey = true;

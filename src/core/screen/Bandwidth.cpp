@@ -113,8 +113,16 @@ void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64
         target = int(0.85 * std::max(receiveBps_, options_.minBps));
         if (target < targetBps_) lastDecreaseBps_ = target;
         target = std::min(target, targetBps_);
-    } else if (signal == Signal::Underuse || limitedByApp) {
+    } else if (signal == Signal::Underuse) {
         state_ = State::Hold;
+    } else if (limitedByApp) {
+        // The source sends less than the target (a simple picture, or an
+        // encoder under its rate): the target creeps up, bounded by twice
+        // what flows, so a source that then has more to send (a bigger
+        // picture) finds room, and a still screen asks for nothing.
+        state_ = State::Hold;
+        const int bound = 2 * std::max(sendBps_, receiveBps_) + options_.minBps;
+        if (target < bound) target = std::min(bound, int(target * std::pow(1.02, seconds * 10)));
     } else {
         state_ = State::Increase;
         // Once the path has shown where it gives way, growth is gentle

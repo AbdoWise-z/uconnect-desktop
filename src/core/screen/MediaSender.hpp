@@ -54,7 +54,10 @@ public:
     // The queue is dropped (a monitor change, the viewer far behind): the next
     // frame must be a keyframe.
     void dropQueued();
-    void setReliable(bool reliable) { options_.reliable = reliable; }
+    void setReliable(bool reliable) {
+        if (reliable != options_.reliable) reliableSinceMs_ = -1;  // counted from the next pump
+        options_.reliable = reliable;
+    }
     void setFps(int fps) { options_.fps = std::max(1, fps); }
     // What the path takes, and what the encoder should produce: the path's
     // rate less the repair packets' share.
@@ -102,6 +105,7 @@ private:
     quint32 feedbackBase_ = 0;  // sequences before this were reported on
     bool haveFeedback_ = false;
     double rttMs_ = 0, minRttMs_ = 0, lagMs_ = 0, smoothEncoderBps_ = 0;
+    qint64 reliableSinceMs_ = -1;  // when the path became reliable (-1: not yet seen by pump)
     int fecGroup_ = 0;
     quint32 lastSentCaptureMs_ = 0;
     bool awaitKey_ = false;
