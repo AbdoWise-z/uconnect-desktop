@@ -24,7 +24,7 @@ Window {
         { id: "control", title: Theme.serviceLabel("control"), depth: 1, parent: "services", keywords: "mouse keyboard" },
         { id: "display", title: Theme.serviceLabel("display"), depth: 1, parent: "services", keywords: "monitor second screen extend driver tablet" },
         { id: "permissions", title: qsTr("Permissions"), depth: 0, keywords: "trust trusted untrust identity fingerprint default access" },
-        { id: "security", title: qsTr("Security"), depth: 0, keywords: "invite link key remember store" },
+        { id: "security", title: qsTr("Security"), depth: 0, keywords: "invite link key remember store qr code scan phone" },
         { id: "advanced", title: qsTr("Advanced"), depth: 0, keywords: "debug verbose logging diagnostics" }
     ]
 
@@ -882,6 +882,38 @@ Window {
             Indented {
                 Help {
                     text: qsTr("The link contains the topic's secret key. When remembered, it is stored unencrypted in this user's application settings. Turning this off also deletes the stored link.")
+                }
+            }
+
+            TitledSeparator { text: qsTr("Invite QR Code") }
+            ColumnLayout {
+                id: qrSection
+                property bool shown: false
+                spacing: 8
+                Help {
+                    text: App.topicLinkValid
+                          ? qsTr("Scan it with a phone's camera to open uConnect there and join this topic.")
+                          : qsTr("Connect to a topic to get its invite code.")
+                }
+                UButton {
+                    visible: App.topicLinkValid
+                    text: qrSection.shown ? qsTr("Hide QR Code") : qsTr("Show QR Code")
+                    onClicked: qrSection.shown = !qrSection.shown
+                }
+                Rectangle {
+                    visible: qrSection.shown && App.topicLinkValid
+                    Layout.topMargin: 4
+                    implicitWidth: 200
+                    implicitHeight: 200
+                    radius: 10
+                    color: "white"
+                    QrCode {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        text: qrSection.shown ? App.topicLink : ""
+                        color: "black"
+                        background: "white"
+                    }
                 }
             }
         }

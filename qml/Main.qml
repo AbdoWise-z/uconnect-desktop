@@ -141,6 +141,12 @@ ApplicationWindow {
         onTriggered: App.copyTopicLink()
     }
     Action {
+        id: inviteQrAction
+        text: qsTr("Show Invite QR Code...")
+        enabled: root.inWorkspace && App.topicLinkValid
+        onTriggered: inviteDialog.open()
+    }
+    Action {
         id: copyIdAction
         text: qsTr("Copy Topic ID")
         enabled: root.inWorkspace
@@ -216,6 +222,7 @@ ApplicationWindow {
                 action: copyLinkAction
                 hint: App.topicId.substring(0, 8)
             }
+            UMenuItem { action: inviteQrAction }
             UMenuItem { action: copyIdAction }
             UMenuSeparator {}
             UMenuItem { action: refreshAction }
@@ -304,6 +311,74 @@ ApplicationWindow {
 
     SyncWindow {
         id: syncWindow
+    }
+
+    // The topic's invite as a QR code, for a phone to scan with its camera
+    // (which opens the uConnect app and joins). Hidden until asked for, since
+    // it carries the topic key.
+    Popup {
+        id: inviteDialog
+
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        padding: 24
+        width: 400
+
+        background: Rectangle {
+            color: Theme.panel
+            border.color: Theme.popupBorder
+            radius: 8
+        }
+
+        ColumnLayout {
+            width: parent.width
+            spacing: 12
+
+            Text {
+                text: qsTr("Invite a Device")
+                color: Theme.text
+                font.pixelSize: 16
+                font.bold: true
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: Theme.textSecondary
+                text: qsTr("Scan this with your phone's camera to open uConnect and join topic %1.").arg(App.topicId.substring(0, 8))
+            }
+            Rectangle {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: 4
+                implicitWidth: 240
+                implicitHeight: 240
+                radius: 10
+                color: "white"
+                QrCode {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    text: inviteDialog.visible ? App.topicLink : ""
+                    color: "black"
+                    background: "white"
+                }
+            }
+            Banner {
+                Layout.fillWidth: true
+                text: qsTr("The code contains the topic key. Show it only to your own devices.")
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UButton {
+                    text: qsTr("Copy Link")
+                    onClicked: App.copyTopicLink()
+                }
+                UButton {
+                    text: qsTr("Close")
+                    primary: true
+                    onClicked: inviteDialog.close()
+                }
+            }
+        }
     }
 
     Popup {
