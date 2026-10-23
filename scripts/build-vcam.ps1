@@ -1,21 +1,22 @@
 # Builds the uConnect Camera media source (vcam/windows) with MSVC, runs its
 # test, and copies uconnect-vcam.dll and its installer to -Output (by default
-# <build directory>\vcam, where a development build of the app looks when
-# UCONNECT_VCAM_DIR points there).
+# <build directory>\vcam). The package script runs it, and so does the app's
+# own build when Visual Studio 2022 is installed (into <its build>\vcam).
 #
 #   powershell -File scripts/build-vcam.ps1 [-Output <dir>]
 param(
-    [string]$BuildDirectory = 'build-vcam',
-    [string]$Output = ''
+    [string]$BuildDirectory = 'build-vcam',  # relative to the project, or absolute
+    [string]$Output = '',
+    [string]$CMake = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $projectDirectory = Split-Path -Parent $PSScriptRoot
-$buildPath = Join-Path $projectDirectory $BuildDirectory
+$buildPath = if ([IO.Path]::IsPathRooted($BuildDirectory)) { $BuildDirectory } else { Join-Path $projectDirectory $BuildDirectory }
 if (-not $Output) { $Output = Join-Path $buildPath 'vcam' }
 
-$cmake = (Get-Command cmake -ErrorAction SilentlyContinue).Source
-if (-not $cmake) { throw 'cmake is not on PATH.' }
+$cmake = if ($CMake) { $CMake } else { (Get-Command cmake -ErrorAction SilentlyContinue).Source }
+if (-not $cmake) { throw 'cmake is not on PATH (or pass -CMake).' }
 
 & $cmake -S (Join-Path $projectDirectory 'vcam/windows') -B $buildPath -G 'Visual Studio 17 2022' -A x64
 if ($LASTEXITCODE -ne 0) { throw 'Configuring the virtual camera failed (needs Visual Studio 2022 with C++).' }

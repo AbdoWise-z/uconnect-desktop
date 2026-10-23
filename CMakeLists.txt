@@ -194,6 +194,26 @@ if (UCD_SCREEN_AVAILABLE)
         target_sources(uconnect_desktop_screen_ui PRIVATE src/app/vcam/VcamWindows.cpp)
         target_include_directories(uconnect_desktop_screen_ui PRIVATE vcam/include)
         target_link_libraries(uconnect_desktop_screen_ui PRIVATE mfplat ole32 advapi32 shell32)
+        # Build its component next to the app, as packages have it, when
+        # Visual Studio 2022 is there to build it (it needs MSVC).
+        find_program(UCD_VSWHERE vswhere PATHS "$ENV{ProgramFiles\(x86\)}/Microsoft Visual Studio/Installer" NO_DEFAULT_PATH)
+        if (UCD_VSWHERE)
+            execute_process(COMMAND "${UCD_VSWHERE}" -latest -products * -version "[17.0,18.0)"
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+                OUTPUT_VARIABLE _ucd_msvc OUTPUT_STRIP_TRAILING_WHITESPACE)
+        endif ()
+        if (_ucd_msvc)
+            file(GLOB _ucd_vcam_sources CONFIGURE_DEPENDS vcam/windows/* vcam/windows/test/* vcam/include/uconnect/*)
+            add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/vcam/uconnect-vcam.dll"
+                COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/scripts/build-vcam.ps1"
+                    -BuildDirectory "${CMAKE_BINARY_DIR}/vcam-msvc" -Output "${CMAKE_BINARY_DIR}/vcam" -CMake "${CMAKE_COMMAND}"
+                DEPENDS ${_ucd_vcam_sources} "${CMAKE_SOURCE_DIR}/scripts/build-vcam.ps1"
+                COMMENT "Building the uConnect Camera component with MSVC"
+                VERBATIM)
+            add_custom_target(uconnect_vcam ALL DEPENDS "${CMAKE_BINARY_DIR}/vcam/uconnect-vcam.dll")
+        else ()
+            message(STATUS "No Visual Studio 2022 with C++: the uConnect Camera component is not built")
+        endif ()
     elseif (UNIX AND NOT APPLE)
         target_sources(uconnect_desktop_screen_ui PRIVATE src/app/vcam/VcamLinux.cpp)
     else ()

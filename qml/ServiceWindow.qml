@@ -42,6 +42,13 @@ Window {
         if (!vcam.installed && vcam.canInstall) { installWebcam.open(); return }
         vcam.start(devId, content.item && content.item.rotationDeg !== undefined ? content.item.rotationDeg : 0)
     }
+    // Its last message (install result, why it could not start), shown here:
+    // the main window's status bar is out of sight from a viewer.
+    property string vcamMessage: ""
+    Connections {
+        target: win.vcam
+        function onNotify(text) { win.vcamMessage = text }
+    }
     Connections {
         target: content.item
         ignoreUnknownSignals: true
@@ -349,6 +356,24 @@ Window {
             visible: !win.peerConnected
             kind: "error"
             text: qsTr("%1 is not connected.").arg(win.deviceName)
+        }
+
+        Banner {
+            Layout.fillWidth: true
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            Layout.topMargin: 8
+            visible: win.vcam !== null && (win.vcam.installing || win.vcamMessage !== "")
+            kind: win.vcam !== null && !win.vcam.installing && !win.vcam.installed ? "error" : "info"
+            text: win.vcam !== null && win.vcam.installing
+                  ? qsTr("Installing the uConnect Camera… Accept the administrator prompt to continue.")
+                  : win.vcamMessage
+            UIconButton {
+                visible: win.vcam !== null && !win.vcam.installing
+                glyph: "close"
+                tip: qsTr("Dismiss")
+                onClicked: win.vcamMessage = ""
+            }
         }
 
         Loader {
