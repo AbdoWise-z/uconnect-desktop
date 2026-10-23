@@ -10,11 +10,12 @@ import UConnect
 Window {
     id: dlg
 
-    property string currentPage: "connection"
+    property string currentPage: "general"
     property string query: ""
 
     readonly property var pages: [
-        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address startup automatically tray close minimize background login sign in boot hidden" },
+        { id: "general", title: qsTr("General"), depth: 0, keywords: "appearance color colour scheme theme dark light system startup automatically tray close minimize background login sign in boot hidden" },
+        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address relay direct nat" },
         { id: "device", title: qsTr("Device"), depth: 0, keywords: "name computer" },
         { id: "services", title: qsTr("Services"), depth: 0, keywords: "offer share" },
         { id: "storage", title: Theme.serviceLabel("storage"), depth: 1, parent: "services", keywords: "files shared folders download upload drag drop" },
@@ -190,7 +191,7 @@ Window {
         load()
         query = ""
         searchField.text = ""
-        currentPage = pageId && pageById(pageId) ? pageId : "connection"
+        currentPage = pageId && pageById(pageId) ? pageId : "general"
         show()
         raise()
         requestActivate()
@@ -296,7 +297,14 @@ Window {
                     text: qsTr("Reconnects to apply.")
                 }
             }
+        }
+    }
 
+    // How the app looks and behaves on this computer.
+    Component {
+        id: generalPage
+        ColumnLayout {
+            spacing: 8
             TitledSeparator { text: qsTr("Appearance") }
             RowLayout {
                 FieldLabel { text: qsTr("Color scheme:") }
@@ -903,6 +911,7 @@ Window {
 
     function pageComponent(id) {
         switch (id) {
+        case "general": return generalPage
         case "connection": return connectionPage
         case "device": return devicePage
         case "services": return servicesPage
@@ -915,7 +924,7 @@ Window {
         case "security": return securityPage
         case "advanced": return advancedPage
         }
-        return connectionPage
+        return generalPage
     }
 
     // --- layout ------------------------------------------------------------
