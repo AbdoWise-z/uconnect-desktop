@@ -1,4 +1,4 @@
-uConnect Desktop 0.1.0 beta
+uConnect Desktop 0.2.0 beta
 
 Start
 -----

@@ -19,7 +19,7 @@ if ($Label -notmatch '^[A-Za-z0-9._-]+$') {
 }
 
 $distPath = Join-Path $projectDirectory 'dist'
-$packageName = "uConnect-0.1.0-$Label-win64"
+$packageName = "uConnect-0.2.0-$Label-win64"
 $packagePath = Join-Path $distPath $packageName
 $archivePath = "$packagePath.zip"
 if ((Test-Path -LiteralPath $packagePath) -or (Test-Path -LiteralPath $archivePath)) {

@@ -30,7 +30,7 @@ ctest --test-dir "$build_dir" --output-on-failure
 
 arch="$(uname -m)"
 revision="$(git -C "$project_dir" rev-parse --short HEAD 2>/dev/null || echo source)"
-package_name="uConnect-0.1.0-$revision-macos-$arch"
+package_name="uConnect-0.2.0-$revision-macos-$arch"
 mkdir -p "$project_dir/dist"
 package_dir="$project_dir/dist/$package_name"
 if [[ -e "$package_dir" || -e "$package_dir.zip" ]]; then
