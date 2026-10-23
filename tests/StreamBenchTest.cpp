@@ -14,6 +14,7 @@
 //   UCD_BENCH_BUFFER   the viewer's playout buffer in ms (default 100; 0 shows at once)
 //   UCD_BENCH_ASK_BITRATE  the bitrate the viewer asks for (default 0: the host's limit)
 //   UCD_BENCH_SNAPSHOTS    a folder: every 60th picture the viewer shows is saved there
+//   UCD_BENCH_NO_UDP       1: no punched UDP; media takes the TCP fallback
 //   UCD_BENCH_IDENTITY     a file keeping the viewer's identity across runs
 //   UCD_BENCH_HOST_NAME    the device the viewer watches (default "Bench host"; e.g. a phone)
 //   UCD_TEST_OPENH264  Cisco's library, for a system without a hardware encoder
@@ -108,7 +109,9 @@ private slots:
             topic = QString::fromStdString(uconnect::TopicCreds::generate_keyed().to_uri());
         }
         QVERIFY2(!address.isEmpty() && !topic.isEmpty(), "set UCD_BENCH_SERVER and UCD_BENCH_TOPIC");
-        const Session::Options options{address, topic};
+        Session::Options options{address, topic};
+        // UCD_BENCH_NO_UDP=1: no punched UDP, so media goes over the TCP fallback.
+        options.forceRelay = qEnvironmentVariableIntValue("UCD_BENCH_NO_UDP") == 1;
 
         // The host: any device in the topic may view its synthetic desktop without a prompt.
         std::unique_ptr<Session> host;

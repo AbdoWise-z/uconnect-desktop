@@ -61,6 +61,10 @@ public:
     ScreenService(Send send, Authorize authorize, Open open, Close close, Datagram datagram,
         QObject* parent = nullptr, Now now = {}, std::unique_ptr<InputBackend> input = {}, Kind kind = Kind::Screen);
     Kind kind() const { return kind_; }
+    // Moves a peer's media onto TCP (DatagramChannel::overTcp); used when its
+    // UDP path loses too much.
+    using OverTcp = std::function<bool(const Peer&)>;
+    void setOverTcp(OverTcp overTcp) { overTcp_ = std::move(overTcp); }
     // Extended display, sending side: the session `request` was agreed and
     // the virtual monitor is settings.monitors[0]. Streams it at `width`
     // (its pixel width) and `fps`.
@@ -141,6 +145,7 @@ private:
         QString path = "opening";
         PacedSender sender;
         CongestionController congestion;
+        LossyPath lossy;
     };
     struct Viewer {
         quint32 request = 0;
@@ -234,6 +239,7 @@ private:
     Open open_;
     Close close_;
     Datagram datagram_;
+    OverTcp overTcp_;
     Now now_;
     ScreenSettings settings_;
     Kind kind_ = Kind::Screen;

@@ -126,6 +126,20 @@ private:
 // that cannot decode fast enough lowers the frame rate instead: a smaller
 // bitrate would not help it. Clean reports raise the bitrate gradually, then
 // the frame rate and width.
+// Whether a UDP path loses too much to stream over, from the viewer's
+// reports: some networks (a mobile uplink policing UDP) drop a large share of
+// datagrams at any rate, and the stream gets through only over TCP. True once
+// `needed` of the last `window` reports lost more than `threshold`.
+class LossyPath {
+public:
+    bool report(quint64 received, quint64 lost);
+    void reset() { recent_.clear(); }
+    static constexpr int Window = 10, Needed = 6;
+    static constexpr double Threshold = 0.15;
+private:
+    std::deque<bool> recent_;
+};
+
 class CongestionController {
 public:
     // `startBitrate` replaces the default start on a direct path (extended

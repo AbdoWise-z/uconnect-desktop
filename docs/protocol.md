@@ -721,6 +721,14 @@ once a second, raises of more than 25% at most every 5 s, smaller drift after
 15 s. Changes beyond 2x reopen the encoder. Software OpenH264 follows every
 change.
 
+Lossy UDP. When more than 15% of the stream is lost in 6 of the last 10
+reports on a direct or relayed path (some mobile uplinks police UDP and drop
+a large share of it at any rate), the host sends the rest of the session
+over the TCP connection instead: late rather than lost. A viewer accepts
+datagrams over TCP whatever its own path. A viewer gives a frame whose
+datagrams are still arriving more time (each one moves its deadline), since
+a host may spread a keyframe over several frame intervals.
+
 Pacing and playout (screen/camera 1.2). A host may convert several captured
 frames for the encoder at once, but encodes and sends them strictly in
 capture order, each stamped with its own `captureMs`; when its queue of

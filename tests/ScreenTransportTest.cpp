@@ -281,6 +281,17 @@ private slots:
         QCOMPARE(nacks, 3); QVERIFY(keyframe);
     }
 
+    // A path losing much of the stream for seconds moves to TCP; a blip
+    // now and then does not.
+    void lossyPathNeedsSustainedLoss() {
+        LossyPath path;
+        for (int i = 0; i + 1 < LossyPath::Needed; ++i) QVERIFY(!path.report(50, 50));
+        QVERIFY(path.report(50, 50));
+        LossyPath blips;
+        for (int i = 0; i < 30; ++i) QVERIFY(!blips.report(100, i % 3 == 0 ? 40 : 0));
+        QVERIFY(!blips.report(0, 0));
+    }
+
     // A phone paces a keyframe over a slow uplink: arriving over 200 ms, a
     // piece every 10 ms, it is still arriving, not late or lost.
     void slowlyArrivingFrameIsNotLost() {

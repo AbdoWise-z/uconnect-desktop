@@ -226,6 +226,13 @@ Feedback Reassembler::report(double decodeMs) {
     return result;
 }
 
+bool LossyPath::report(quint64 received, quint64 lost) {
+    if (received + lost == 0) return false;
+    recent_.push_back(double(lost) / double(received + lost) > Threshold);
+    while (int(recent_.size()) > Window) recent_.pop_front();
+    return int(std::count(recent_.begin(), recent_.end(), true)) >= Needed;
+}
+
 void CongestionController::reset(const QString& path, int maxFps, int maxWidth, int maxBitrate, int startBitrate) {
     cap_ = std::clamp(maxBitrate, MinBitrate, MaxBitrate);
     maxFps_ = fps_ = std::clamp(maxFps, 1, MaxFps);

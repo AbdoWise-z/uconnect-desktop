@@ -495,7 +495,18 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         } else if (type == "scr.report") {
             if (const auto report = Feedback::parse(msg)) {
                 if (now_() - host->second.lastReport < 100) return true;
-                host->second.lastReport = now_(); host->second.congestion.update(*report);
+                host->second.lastReport = now_();
+                // UDP losing much of the stream for seconds: over TCP from now
+                // on, late rather than lost (not for an extended display, which
+                // must stay direct), starting the bitrate over.
+                auto& h = host->second;
+                if (!display_ && overTcp_ && (h.path == "direct" || h.path == "relayed") &&
+                    h.lossy.report(report->received, report->lost) && overTcp_(peer)) {
+                    emit activity(QStringLiteral("%1 loses too much over UDP: its stream goes over TCP now").arg(authorize_(peer).name));
+                    pathChanged(peer, QStringLiteral("tcp")); h.forceKey = true;
+                    return true;
+                }
+                h.congestion.update(*report);
                 host->second.reportLoss = double(report->lost) / std::max(1., double(report->received + report->lost));
                 host->second.reportTrendMs = report->owdTrendMs;
             }

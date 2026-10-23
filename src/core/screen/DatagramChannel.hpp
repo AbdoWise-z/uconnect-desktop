@@ -19,6 +19,8 @@ public:
     bool receive(const uconnect::DevId& peer, std::span<const uint8_t> bytes);
     bool active(const uconnect::DevId& peer) const { return active_.contains(peer); }
     uconnect::DatagramPath path(const uconnect::DevId& peer) const;
+    // Our datagrams to `peer` go over the TCP connection from now on.
+    bool overTcp(const uconnect::DevId& peer) { return topic_ && active(peer) && topic_->send_datagrams_over_tcp(peer); }
 private:
     uconnect::Topic* topic_ = nullptr;
     std::set<uconnect::DevId> active_;
