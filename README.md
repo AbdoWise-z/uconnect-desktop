@@ -26,16 +26,25 @@
 
 ## Features
 
-- **Devices you trust.** Devices meet in a *topic*, shared by an invite link.
-  Each verifies the others' fingerprints, then decides exactly what they may
-  do: every service is behind a permission.
+- **Topics and invite links.** Devices meet in a *topic*, shared by an
+  invite link, or a QR code a phone scans to open uConnect Mobile on it.
+- **Your rules, per device.** Every service is behind a permission, and for
+  each device the first of these applies: its **special rules** (permissions
+  of its own, added after checking its fingerprint), this topic's **network
+  rules** (ordered address patterns such as `m.m.m.x` for your own subnet,
+  matched against the address its direct connection comes from), then your
+  **defaults**. A device can copy another's rules for quick setup on a
+  trusted network.
 - **Storage.** Browse, download and upload files and whole folders in the
   folders a device shares, with read-only shares and a log of what others did.
-- **Folder sync.** Keep a folder the same on several devices, with conflicts
-  kept rather than overwritten.
-- **Screen sharing and remote control.** Each behind a consent prompt on the
-  sharing device, with a sharing bar and a hotkey to stop. Hardware
-  encoding (NVENC, VideoToolbox) where available.
+- **Folder sync.** Keep a folder the same on several devices, phones
+  included, with conflicts kept rather than overwritten. Only devices with
+  special rules take part.
+- **Screen, camera and remote control.** Share a screen or a camera, or be
+  controlled, each behind a consent prompt on the sharing device unless that
+  device's rules allow it without asking, with a sharing bar and a hotkey to
+  stop. Watch a phone's screen or camera, and control an Android phone.
+  Hardware encoding (NVENC, VideoToolbox) where available.
 - **Extended display.** A Windows or macOS computer gains a real extra monitor,
   shown full screen on another device: pick the resolution and refresh rate,
   or match the other screen. Windows uses the uConnect display driver
@@ -43,27 +52,40 @@
   the app; macOS needs nothing extra.
 - **Lives in the tray.** Closing the window keeps uConnect running in the
   system tray (the menu bar on macOS); it can start when you sign in.
-
-Camera sharing is in progress and not finished in this version.
+- **Color schemes.** Follow system, Dark, Darker, Light or Colorful.
 
 ### Screenshots
 
+<p align="center">
+  <img src="docs/images/tour.gif" width="760"
+       alt="Opening a phone's device tab, its services and context menu, then the settings pages">
+  <br><sub>A phone's device tab, what it lets you do, its menu, and the settings.</sub>
+</p>
+
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/devices.png" alt="A trusted device, its connection and the permissions it has"></td>
+    <td width="50%"><img src="docs/images/device.png" alt="A phone with special rules: where it connects from, its fingerprint and what it may do"></td>
+    <td width="50%"><img src="docs/images/services.png" alt="What the phone lets this computer do, per service, with buttons to open each"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A device: where it connects from, its fingerprint, the rules that apply</sub></td>
+    <td align="center"><sub>What it lets you do, service by service</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/settings.png" alt="Settings: default permissions, with the page tree on the left"></td>
+    <td width="50%"><img src="docs/images/menu.png" alt="A device's context menu in the Devices list"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Default permissions, under Settings › Permissions</sub></td>
+    <td align="center"><sub>The Devices list: a shield marks special rules</sub></td>
+  </tr>
+  <tr>
     <td width="50%"><img src="docs/images/storage.png" alt="Browsing another device's shared folder"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>A trusted device: its connection, fingerprint and what it may do</sub></td>
-    <td align="center"><sub>Browsing a MacBook's shared folder from a Windows PC</sub></td>
-  </tr>
-  <tr>
     <td width="50%"><img src="docs/images/extended-display-setup.png" alt="Starting an extended display, and the other device's consent prompt"></td>
-    <td width="50%"><img src="docs/images/settings.png" alt="Settings for the extended display service"></td>
   </tr>
   <tr>
-    <td align="center"><sub>An extended display, running, and the prompt the other device sees first</sub></td>
-    <td align="center"><sub>Every service is opt-in, under Settings</sub></td>
+    <td align="center"><sub>Browsing a MacBook's shared folder from a Windows PC</sub></td>
+    <td align="center"><sub>An extended display, and the prompt the other device sees first</sub></td>
   </tr>
 </table>
 
@@ -91,9 +113,12 @@ library; the server is its `uconnect-rendezvous`.
 3. **Start uConnect** on each device and give it the server's address
    (`host:port`).
 4. On one device create a **New Topic** and send its invite link privately to
-   the others; they paste it and connect.
-5. **Trust** each other's devices after checking the fingerprints, then grant
-   the permissions you want under each device.
+   the others; they paste it and connect. A phone can scan it instead (Topic ›
+   Show Invite QR Code).
+5. On each device's tab, compare fingerprints and **add special rules** to
+   the devices you own, then choose what they may do. For a home network, a
+   network rule (Settings › Permissions › Network Rules) can cover them all
+   at once.
 
 The beta builds are not signed yet: on Windows, SmartScreen may ask for
 confirmation; on macOS, choose **Open Anyway** under System Settings → Privacy
@@ -109,6 +134,9 @@ confirmation; on macOS, choose **Open Anyway** under System Settings → Privacy
 | Gain an extended display | ✓ | ✓ | — |
 | Be an extended display   | ✓ | ✓ | ✓ |
 | Tray, start at sign-in   | ✓ | ✓ | ✓ (where the desktop has a tray) |
+
+Phones join the same topics with
+[uConnect Mobile](https://github.com/AbdoWise-z/uconnect-mobile) (Android).
 
 The Linux packages need glibc 2.39 or newer (Ubuntu 24.04 or as new). macOS
 asks for Screen Recording (and Accessibility, for being controlled) the first
