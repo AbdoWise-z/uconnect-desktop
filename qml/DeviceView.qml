@@ -25,10 +25,20 @@ Flickable {
     // Its special rules entry (with its name when they were added), if any.
     readonly property var specialEntry: verified ? App.specialDevices.find(t => t.key === peer.identityKey) : undefined
 
-    function permissionLabel(id) {
-        const d = App.permissionDefinitions.find(p => p.id === id)
-        return d ? Theme.serviceLabel(d.service) + " › " + d.label : id
+    // The services it offers, and what it lets us do with each.
+    readonly property var offeredServices: gone ? [] : Theme.services.filter(s => peer.services.indexOf(s) >= 0)
+    readonly property var notOffered: Theme.services.filter(s => offeredServices.indexOf(s) < 0)
+    function grantsFor(service) {
+        if (gone) return []
+        return App.permissionDefinitions.filter(d => d.service === service && peer.grantedToMe.indexOf(d.id) >= 0)
+                                        .map(d => d.label)
     }
+    function mayUse(service) {
+        return !gone && peer.grantedToMe.indexOf(Theme.serviceGrant(service)) >= 0
+    }
+    readonly property string rulesIcon: special ? "verified" : peer.permissionSource === "rule" ? "lan" : "shield"
+    readonly property color rulesColor: special ? Theme.success
+                                        : peer.permissionSource === "rule" ? Theme.accent : Theme.textSecondary
 
     signal serviceRequested(string service, string devId)
     signal specialRulesRequested(string devId)
@@ -77,13 +87,28 @@ Flickable {
             ColumnLayout {
                 spacing: 2
                 Layout.fillWidth: true
-                Text {
-                    text: view.name
-                    color: Theme.text
-                    font.pixelSize: 20
-                    elide: Text.ElideRight
+                RowLayout {
+                    spacing: 8
                     Layout.fillWidth: true
-                    textFormat: Text.PlainText
+                    Text {
+                        text: view.name
+                        color: Theme.text
+                        font.pixelSize: 20
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: body.width - 260
+                        textFormat: Text.PlainText
+                    }
+                    UIcon {
+                        visible: view.special
+                        name: "verified"
+                        size: 18
+                        color: Theme.success
+                        HoverHandler { id: specialHover }
+                        ToolTip.visible: specialHover.hovered
+                        ToolTip.delay: 400
+                        ToolTip.text: qsTr("Special rules")
+                    }
+                    Item { Layout.fillWidth: true }
                 }
                 Text {
                     color: Theme.textSecondary
@@ -138,7 +163,29 @@ Flickable {
                 color: view.peer.relayed ? Theme.warning : Theme.text
                 text: view.peer.relayed
                       ? qsTr("Relayed through the rendezvous server. Still end-to-end encrypted, but the server sees traffic volume.")
-                      : view.peer.address ? qsTr("Direct, from %1").arg(view.peer.address) : qsTr("Direct")
+                      : qsTr("Direct (peer to peer)")
+            }
+
+            // The address of the direct connection's socket, as this device
+            // sees it: what network rules match against.
+            Field { text: qsTr("Connected from"); visible: view.connected }
+            RowLayout {
+                visible: view.connected
+                spacing: 10
+                Text {
+                    text: view.peer.address ? view.peer.address : qsTr("Not known (relayed)")
+                    color: view.peer.address ? Theme.text : Theme.textSecondary
+                    font.family: view.peer.address ? "Consolas, monospace" : Qt.application.font.family
+                }
+                UIconButton {
+                    visible: !!view.peer.address
+                    glyph: "copy"
+                    iconSize: 14
+                    implicitHeight: 22
+                    implicitWidth: 24
+                    tip: qsTr("Copy address")
+                    onClicked: App.copyText(view.peer.address)
+                }
             }
 
             Field { text: qsTr("Traffic"); visible: view.connected }
@@ -158,8 +205,12 @@ Flickable {
                     color: Theme.text
                     font.family: "Consolas, monospace"
                 }
-                ULink {
-                    text: qsTr("Copy")
+                UIconButton {
+                    glyph: "copy"
+                    iconSize: 14
+                    implicitHeight: 22
+                    implicitWidth: 24
+                    tip: qsTr("Copy device ID")
                     onClicked: App.copyText(view.devId)
                 }
             }
@@ -184,9 +235,13 @@ Flickable {
                     color: Theme.text
                     font.family: "Consolas, monospace"
                 }
-                ULink {
+                UIconButton {
                     visible: view.verified
-                    text: qsTr("Copy")
+                    glyph: "copy"
+                    iconSize: 14
+                    implicitHeight: 22
+                    implicitWidth: 24
+                    tip: qsTr("Copy fingerprint")
                     onClicked: App.copyText(view.peer.fingerprint)
                 }
                 Text {
@@ -204,9 +259,10 @@ Flickable {
             Field { text: qsTr("Rules") }
             RowLayout {
                 spacing: 10
-                StatusDot {
-                    color: view.special ? Theme.success
-                         : view.peer.permissionSource === "rule" ? Theme.accent : Theme.textSecondary
+                UIcon {
+                    name: view.rulesIcon
+                    size: 16
+                    color: view.rulesColor
                 }
                 Text {
                     Layout.fillWidth: true
@@ -246,24 +302,48 @@ Flickable {
             text: view.peer.permissionSource === "device"
                   ? qsTr("Its special rules. Changes apply immediately.")
                   : view.peer.permissionSource === "rule"
-                    ? qsTr("From the network rule %1, because it connects from %2. Add special rules to give it its own.")
+                    ? qsTr("From the network rule %1, because it connects from %2.")
                           .arg(view.matchedRule ? (view.matchedRule.label || view.matchedRule.pattern) : "")
                           .arg(view.peer.address)
-                    : qsTr("Your default permissions, which any device with the invite link gets. Add special rules to give it its own.")
+                    : qsTr("Your default permissions, which any device with the invite link gets.")
+        }
+        Rectangle {
+            visible: !view.special && !view.gone
+            Layout.fillWidth: true
+            implicitHeight: lockRow.implicitHeight + 16
+            radius: Theme.radius
+            color: Theme.panel
+            border.color: Theme.border
+            RowLayout {
+                id: lockRow
+                anchors.fill: parent
+                anchors.margins: 8
+                anchors.leftMargin: 12
+                spacing: 10
+                UIcon { name: "lock"; size: 16; color: Theme.textSecondary }
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Theme.textSecondary
+                    text: view.verified ? qsTr("Add special rules to change these for this device.")
+                                        : qsTr("Special rules can be added once it has proved its identity.")
+                }
+                UButton {
+                    visible: view.verified
+                    text: qsTr("Add Special Rules...")
+                    onClicked: view.specialRulesRequested(view.devId)
+                }
+            }
         }
         PermissionEditor {
             Layout.fillWidth: true
             granted: view.gone ? [] : view.peer.permissions
             editable: view.special
+            opacity: view.special ? 1 : 0.55
             onToggled: (permission, granted) => App.setDevicePermission(view.peer.identityKey, permission, granted)
         }
         RowLayout {
             spacing: 14
-            ULink {
-                visible: view.verified && !view.special
-                text: qsTr("Add special rules...")
-                onClicked: view.specialRulesRequested(view.devId)
-            }
             ULink {
                 visible: view.peer.permissionSource !== "device"
                 text: view.peer.permissionSource === "rule" ? qsTr("Edit network rules...") : qsTr("Edit default permissions...")
@@ -278,14 +358,14 @@ Flickable {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: Theme.textSecondary
-            text: !view.verified
-                  ? qsTr("A device takes part in folder sync once it has proved its identity.")
+            text: !view.special
+                  ? qsTr("Folders sync only with devices that have special rules.")
                   : view.syncFolderList.length === 0
                   ? qsTr("You have no synced folders yet.")
                   : qsTr("Send: it gets the folder and your changes. Accept: you take its changes.")
         }
         Repeater {
-            model: view.verified ? view.syncFolderList : []
+            model: view.special ? view.syncFolderList : []
             delegate: RowLayout {
                 id: syncRow
                 required property var modelData
@@ -327,66 +407,82 @@ Flickable {
         TitledSeparator {
             text: qsTr("What It Lets You Do")
         }
-        Text {
-            Layout.fillWidth: true
-            wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            color: Theme.textSecondary
-            text: !view.connected ? qsTr("Unknown until connected.")
-                  : view.peer.grantedToMe.length === 0 ? qsTr("Nothing yet. %1 has to give you permissions.").arg(view.name)
-                  : view.peer.grantedToMe.map(view.permissionLabel).join(", ")
-        }
-
-        TitledSeparator {
-            text: qsTr("Services")
-        }
 
         Text {
-            visible: view.connected && !view.peer.hasHello
+            visible: !view.connected || !view.peer.hasHello
             color: Theme.textSecondary
-            text: qsTr("Waiting for this device to introduce itself...")
-        }
-        Text {
-            visible: !view.connected
-            color: Theme.textSecondary
-            text: qsTr("Connect to this device to use its services.")
+            text: view.connected ? qsTr("Waiting for this device to introduce itself...")
+                                 : qsTr("Connect to this device to use its services.")
         }
 
         Repeater {
-            model: Theme.services
-            delegate: RowLayout {
+            model: view.connected && view.peer.hasHello ? view.offeredServices : []
+            delegate: Rectangle {
                 id: serviceRow
                 required property string modelData
-                readonly property bool offered: !view.gone && view.peer.services.indexOf(modelData) >= 0
+                readonly property var grants: view.grantsFor(modelData)
+                readonly property bool usable: view.mayUse(modelData)
 
                 Layout.fillWidth: true
-                spacing: 12
+                implicitHeight: 52
+                radius: Theme.radius
+                color: serviceArea.containsMouse && usable ? Theme.hover : "transparent"
+                border.color: Theme.border
 
-                ColumnLayout {
-                    spacing: 2
-                    Text {
-                        text: Theme.serviceLabel(modelData)
-                        color: serviceRow.offered ? Theme.text : Theme.textSecondary
-                    }
-                    Text {
-                        text: Theme.serviceDescription(modelData)
-                        color: Theme.textSecondary
-                        font.pixelSize: Theme.smallFontSize
-                    }
+                MouseArea {
+                    id: serviceArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    enabled: serviceRow.usable
+                    cursorShape: serviceRow.usable ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onDoubleClicked: view.serviceRequested(serviceRow.modelData, view.devId)
                 }
-                Item { Layout.fillWidth: true }
-                UButton {
-                    visible: offered
-                    text: qsTr("Open")
-                    enabled: view.connected
-                    onClicked: view.serviceRequested(modelData, view.devId)
-                }
-                Text {
-                    visible: !offered
-                    text: qsTr("Not offered")
-                    color: Theme.textDisabled
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 8
+                    spacing: 12
+
+                    UIcon {
+                        name: Theme.serviceIcon(serviceRow.modelData)
+                        size: 20
+                        color: serviceRow.usable ? Theme.accent : Theme.textDisabled
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+                        Text {
+                            text: Theme.serviceLabel(serviceRow.modelData)
+                            color: serviceRow.usable ? Theme.text : Theme.textSecondary
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                            font.pixelSize: Theme.smallFontSize
+                            color: serviceRow.usable ? Theme.textSecondary : Theme.textDisabled
+                            text: serviceRow.grants.length > 0
+                                  ? qsTr("Allowed: %1").arg(serviceRow.grants.join(", "))
+                                  : qsTr("Not allowed yet: %1 has to give you permission.").arg(view.name)
+                        }
+                    }
+                    UIconButton {
+                        glyph: "open"
+                        enabled: serviceRow.usable
+                        tip: qsTr("Open %1").arg(Theme.serviceLabel(serviceRow.modelData))
+                        onClicked: view.serviceRequested(serviceRow.modelData, view.devId)
+                    }
                 }
             }
+        }
+
+        Text {
+            visible: view.connected && view.peer.hasHello && view.notOffered.length > 0
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            color: Theme.textDisabled
+            font.pixelSize: Theme.smallFontSize
+            text: qsTr("Not offered: %1").arg(view.notOffered.map(s => Theme.serviceLabel(s)).join(", "))
         }
     }
 }

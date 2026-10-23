@@ -14,19 +14,19 @@ Window {
     property string query: ""
 
     readonly property var pages: [
-        { id: "general", title: qsTr("General"), depth: 0, keywords: "appearance color colour scheme theme dark light system startup automatically tray close minimize background login sign in boot hidden" },
-        { id: "connection", title: qsTr("Connection"), depth: 0, keywords: "rendezvous server host port address relay direct nat" },
-        { id: "device", title: qsTr("Device"), depth: 0, keywords: "name computer" },
-        { id: "services", title: qsTr("Services"), depth: 0, keywords: "offer share" },
-        { id: "storage", title: Theme.serviceLabel("storage"), depth: 1, parent: "services", keywords: "files shared folders download upload drag drop" },
-        { id: "camera", title: Theme.serviceLabel("camera"), depth: 1, parent: "services", keywords: "video webcam" },
-        { id: "screen", title: Theme.serviceLabel("screen"), depth: 1, parent: "services", keywords: "display" },
-        { id: "control", title: Theme.serviceLabel("control"), depth: 1, parent: "services", keywords: "mouse keyboard" },
-        { id: "display", title: Theme.serviceLabel("display"), depth: 1, parent: "services", keywords: "monitor second screen extend driver tablet" },
-        { id: "permissions", title: qsTr("Permissions"), depth: 0, keywords: "special rules identity fingerprint default access device" },
-        { id: "network", title: qsTr("Network Rules"), depth: 1, parent: "permissions", keywords: "lan local network subnet ip address pattern rules copy" },
-        { id: "security", title: qsTr("Security"), depth: 0, keywords: "invite link key remember store qr code scan phone" },
-        { id: "advanced", title: qsTr("Advanced"), depth: 0, keywords: "debug verbose logging diagnostics" }
+        { id: "general", title: qsTr("General"), depth: 0, icon: "settings", keywords: "appearance color colour scheme theme dark light system startup automatically tray close minimize background login sign in boot hidden" },
+        { id: "connection", title: qsTr("Connection"), depth: 0, icon: "dns", keywords: "rendezvous server host port address relay direct nat" },
+        { id: "device", title: qsTr("Device"), depth: 0, icon: "computer", keywords: "name computer" },
+        { id: "services", title: qsTr("Services"), depth: 0, icon: "apps", keywords: "offer share" },
+        { id: "storage", title: Theme.serviceLabel("storage"), depth: 1, parent: "services", icon: "folder", keywords: "files shared folders download upload drag drop" },
+        { id: "camera", title: Theme.serviceLabel("camera"), depth: 1, parent: "services", icon: "videocam", keywords: "video webcam" },
+        { id: "screen", title: Theme.serviceLabel("screen"), depth: 1, parent: "services", icon: "screen", keywords: "display" },
+        { id: "control", title: Theme.serviceLabel("control"), depth: 1, parent: "services", icon: "mouse", keywords: "mouse keyboard" },
+        { id: "display", title: Theme.serviceLabel("display"), depth: 1, parent: "services", icon: "cast", keywords: "monitor second screen extend driver tablet" },
+        { id: "permissions", title: qsTr("Permissions"), depth: 0, icon: "shield", keywords: "special rules identity fingerprint default access device" },
+        { id: "network", title: qsTr("Network Rules"), depth: 1, parent: "permissions", icon: "lan", keywords: "lan local network subnet ip address pattern rules copy" },
+        { id: "security", title: qsTr("Security"), depth: 0, icon: "lock", keywords: "invite link key remember store qr code scan phone" },
+        { id: "advanced", title: qsTr("Advanced"), depth: 0, icon: "code", keywords: "debug verbose logging diagnostics" }
     ]
 
     function pageById(id) {
@@ -545,20 +545,21 @@ Window {
 
             TitledSeparator { text: qsTr("Default Permissions") }
             Help {
-                text: qsTr("What a device may do here when no special or network rule covers it, including devices whose identity is unknown. Sensitive permissions (camera, screen, control, display) cannot be defaults.")
+                text: qsTr("What a device may do here when no special or network rule covers it, including devices whose identity is unknown.")
             }
             PermissionEditor {
                 Layout.fillWidth: true
                 Layout.topMargin: 4
                 granted: draft.defaultPermissions
-                allowSensitive: false
                 onToggled: (permission, on) => dlg.setDefaultPermission(permission, on)
             }
             Banner {
                 Layout.fillWidth: true
                 visible: draft.defaultPermissions.length > 0
                 kind: "error"
-                text: qsTr("Any device with this topic's invite link gets these permissions.")
+                text: draft.defaultPermissions.some(id => App.permissionDefinitions.some(d => d.id === id && d.sensitive))
+                      ? qsTr("Any device with this topic's invite link gets these permissions, including camera, screen or control. Special or network rules are usually the better place for those.")
+                      : qsTr("Any device with this topic's invite link gets these permissions.")
             }
 
             TitledSeparator { text: qsTr("Devices With Special Rules") }
@@ -1249,26 +1250,84 @@ Window {
                 }
 
                 ListView {
+                    id: navList
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
                     model: dlg.visiblePages
-                    delegate: Rectangle {
+                    // A page under another (Services > Storage...) hangs off a
+                    // vertical guide that runs down from its parent's icon.
+                    delegate: Item {
                         id: entry
                         required property var modelData
+                        required property int index
                         readonly property bool selected: modelData.id === dlg.currentPage
+                        readonly property bool child: modelData.depth > 0
+                        readonly property var next: index + 1 < dlg.visiblePages.length ? dlg.visiblePages[index + 1] : null
+                        readonly property bool lastChild: child && (!next || next.depth === 0)
+                        // The guide's x: under the parent's icon.
+                        readonly property int guideX: 19
 
                         width: ListView.view.width
-                        height: 26
-                        radius: Theme.radius
-                        color: selected ? Theme.selection : entryArea.containsMouse ? Theme.hover : "transparent"
+                        height: child ? 28 : 32
 
-                        Text {
+                        Rectangle {
+                            visible: entry.child
+                            x: entry.guideX
+                            width: 1
+                            y: 0
+                            height: entry.lastChild ? parent.height / 2 : parent.height
+                            color: Theme.textDisabled
+                            opacity: 0.6
+                        }
+                        Rectangle {
+                            visible: entry.child
+                            x: entry.guideX
+                            y: parent.height / 2
+                            width: 9
+                            height: 1
+                            color: Theme.textDisabled
+                            opacity: 0.6
+                        }
+
+                        Rectangle {
+                            id: pill
+                            x: entry.child ? entry.guideX + 12 : 0
+                            width: parent.width - x
+                            height: parent.height - 2
                             anchors.verticalCenter: parent.verticalCenter
-                            x: 10 + entry.modelData.depth * 18
-                            text: entry.modelData.title
-                            color: Theme.text
-                            font.bold: dlg.query.length > 0 && dlg.matches(entry.modelData)
+                            radius: Theme.radius
+                            color: entry.selected ? Theme.selection : entryArea.containsMouse ? Theme.hover : "transparent"
+
+                            // The current page's accent bar.
+                            Rectangle {
+                                visible: entry.selected
+                                x: 0
+                                width: 3
+                                height: parent.height - 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                radius: 1.5
+                                color: Theme.accent
+                            }
+                            UIcon {
+                                id: navIcon
+                                x: entry.child ? 8 : 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: entry.modelData.icon || ""
+                                size: entry.child ? 15 : 17
+                                color: entry.selected ? Theme.accent : Theme.textSecondary
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.left: navIcon.right
+                                anchors.leftMargin: 9
+                                anchors.right: parent.right
+                                anchors.rightMargin: 6
+                                elide: Text.ElideRight
+                                text: entry.modelData.title
+                                color: entry.child && !entry.selected ? Theme.textSecondary : Theme.text
+                                font.bold: dlg.query.length > 0 && dlg.matches(entry.modelData)
+                            }
                         }
                         MouseArea {
                             id: entryArea

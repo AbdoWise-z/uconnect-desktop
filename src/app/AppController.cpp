@@ -104,13 +104,12 @@ QString joinRemote(const QString& folder, const QString& name) {
     return folder.endsWith(QLatin1Char('/')) ? folder + name : folder + QLatin1Char('/') + name;
 }
 
-// `sensitive` keeps permissions the defaults may not hold (camera, screen...).
-QStringList knownOnly(const QStringList& permissions, bool sensitive = true) {
+QStringList knownOnly(const QStringList& permissions) {
     QStringList out;
     for (QString p : permissions) {
         // "storage.download" was folded into "storage.read"; saved grants keep working.
         if (p == QLatin1String("storage.download")) p = perm::StorageRead;
-        if (isKnownPermission(p) && (sensitive || !isTrustedOnlyPermission(p)) && !out.contains(p)) out << p;
+        if (isKnownPermission(p) && !out.contains(p)) out << p;
     }
     out.sort();
     return out;
@@ -463,7 +462,7 @@ void AppController::applySettings(const QVariantMap& values) {
 
     bool rulesTouched = false;
     if (values.contains(QStringLiteral("defaultPermissions"))) {
-        const QStringList perms = knownOnly(values.value(QStringLiteral("defaultPermissions")).toStringList(), false);
+        const QStringList perms = knownOnly(values.value(QStringLiteral("defaultPermissions")).toStringList());
         if (perms != defaultPermissions_) {
             defaultPermissions_ = perms;
             settings.setValue(Key::DefaultPerms, perms);
@@ -1162,7 +1161,7 @@ void AppController::setDevicePermission(const QString& key, const QString& permi
 
 void AppController::loadSpecialRules() {
     QSettings settings;
-    defaultPermissions_ = knownOnly(settings.value(Key::DefaultPerms).toStringList(), false);
+    defaultPermissions_ = knownOnly(settings.value(Key::DefaultPerms).toStringList());
     settings.beginGroup(Key::Special);
     for (const QString& key : settings.childGroups()) {
         if (!keyFromHex(key)) continue;
@@ -1396,11 +1395,9 @@ QVariantList AppController::syncFolders() const {
         folder.insert("path", QDir::toNativeSeparators(c.path));
         folder.insert("paused", c.paused);
         if (!folder.contains("state")) folder.insert("state", c.paused ? "paused" : "scanning");
-        // Devices with special rules, and proven devices seen in this topic,
-        // can be made members; members are listed anyway, as they hold grants.
+        // Only devices with special rules sync, so they are the ones that can
+        // be made members; members are listed anyway, as they hold grants.
         QStringList keys = special_.keys();
-        for (const QString& key : identityOf_)
-            if (!keys.contains(key)) keys << key;
         for (auto it = c.peers.begin(); it != c.peers.end(); ++it)
             if (!keys.contains(it.key())) keys << it.key();
         QVariantList members;
@@ -1469,8 +1466,8 @@ QString AppController::createSyncFolder(const QUrl& folder, const QString& label
 
 bool AppController::joinSyncFolder(const QString& key, const QString& id, const QString& label, const QUrl& folder) {
     const QString path = folder.toLocalFile();
-    // Offers come only from devices that proved their key this session.
-    const bool known = special_.contains(key) || std::find(identityOf_.begin(), identityOf_.end(), key) != identityOf_.end();
+    // Folders sync only with devices that have special rules.
+    const bool known = special_.contains(key);
     if (path.isEmpty() || !QFileInfo(path).isDir() || !known) return false;
     if (std::any_of(syncFolders_.begin(), syncFolders_.end(), [&](const sync::FolderConfig& c) { return c.id == id; }))
         return false;

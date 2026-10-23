@@ -18,7 +18,7 @@ namespace ucd::screen {
 struct PeerAccess {
     QString key, name, fingerprint;
     PermissionSet permissions;
-    bool trusted = false;   // special or network rules cover it (not just the defaults): needed to share with it
+    bool trusted = false;   // proven identity: needed to share with it (its permissions then decide what)
     bool verified = false;  // its identity is proven: enough to watch what it shares
 };
 struct ScreenSettings {

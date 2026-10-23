@@ -30,7 +30,7 @@ Rectangle {
         required property string identityState
         required property string identityKey
         required property bool special
-        required property var permissions
+        required property var grantedToMe
 
         width: ListView.view ? ListView.view.width : 0
         implicitHeight: 28
@@ -65,17 +65,26 @@ Rectangle {
                 color: Theme.textSecondary
                 font.pixelSize: Theme.smallFontSize
             }
-            Text {
+            // Badges: special rules (or a failed identity proof), relayed path.
+            UIcon {
                 visible: row.special || row.identityState === "invalid"
-                text: row.special ? qsTr("special rules") : qsTr("invalid ID")
+                name: row.special ? "verified" : "warning"
+                size: 14
                 color: row.special ? Theme.success : Theme.error
-                font.pixelSize: Theme.smallFontSize
+                HoverHandler { id: ruleHover }
+                ToolTip.visible: ruleHover.hovered
+                ToolTip.delay: 400
+                ToolTip.text: row.special ? qsTr("Special rules") : qsTr("Identity proof failed")
             }
-            Text {
+            UIcon {
                 visible: row.relayed && row.stateCode === Theme.stateConnected
-                text: qsTr("relay")
+                name: "cloud"
+                size: 14
                 color: Theme.warning
-                font.pixelSize: Theme.smallFontSize
+                HoverHandler { id: relayHover }
+                ToolTip.visible: relayHover.hovered
+                ToolTip.delay: 400
+                ToolTip.text: qsTr("Relayed through the server")
             }
             StatusDot {
                 color: Theme.stateColor(row.stateCode)
@@ -97,7 +106,7 @@ Rectangle {
                     contextMenu.identityKey = row.identityKey
                     contextMenu.special = row.special
                     contextMenu.verified = row.identityState === "verified"
-                    contextMenu.permissions = row.permissions
+                    contextMenu.grantedToMe = row.grantedToMe
                     contextMenu.popup()
                 } else {
                     panel.openRequested(row.devId)
@@ -131,8 +140,8 @@ Rectangle {
                 color: Theme.textSecondary
             }
             Item { Layout.fillWidth: true }
-            UToolButton {
-                text: "↻"
+            UIconButton {
+                glyph: "refresh"
                 tip: qsTr("Refresh (F5)")
                 onClicked: App.refreshPeers()
             }
@@ -162,18 +171,6 @@ Rectangle {
         }
     }
 
-    // Synced folders for the menu, rebuilt only when folders come, go or are
-    // renamed: App.syncFolders changes with every bit of sync progress.
-    property var syncFolderList: []
-    readonly property string syncSignature: App.syncFolders.map(f => f.id + "\u0001" + f.label).join("\u0002")
-    onSyncSignatureChanged: syncFolderList = App.syncFolders.map(f => ({ id: f.id, label: f.label }))
-    Component.onCompleted: syncFolderList = App.syncFolders.map(f => ({ id: f.id, label: f.label }))
-    function syncGrant(folderId, key) {
-        const f = App.syncFolders.find(x => x.id === folderId)
-        const m = f ? f.members.find(x => x.key === key) : undefined
-        return m ? m : { receive: false, contribute: false }
-    }
-
     UMenu {
         id: contextMenu
 
@@ -184,103 +181,56 @@ Rectangle {
         property string identityKey: ""
         property bool special: false
         property bool verified: false
-        property var permissions: []
-        readonly property bool linked: stateCode === Theme.stateConnected
+        property var grantedToMe: []
+        readonly property bool connected: stateCode === Theme.stateConnected
+        readonly property bool linked: connected
                                        || stateCode === Theme.stateProbing
                                        || stateCode === Theme.stateHandshaking
+        // Services it offers that it lets us use.
+        readonly property var usable: services.filter(s => grantedToMe.indexOf(Theme.serviceGrant(s)) >= 0)
 
         UMenuItem {
-            text: qsTr("Open")
+            text: qsTr("Open Device Tab")
+            glyph: "info"
             onTriggered: panel.openRequested(contextMenu.devId)
         }
-        UMenuSeparator {}
         UMenuItem {
             text: contextMenu.linked ? qsTr("Disconnect") : qsTr("Connect")
+            glyph: contextMenu.linked ? "power" : "link"
             onTriggered: contextMenu.linked ? App.disconnectPeer(contextMenu.devId)
                                             : App.connectPeer(contextMenu.devId)
         }
         UMenuSeparator {}
         Instantiator {
-            model: contextMenu.services
+            model: contextMenu.usable
             delegate: UMenuItem {
                 required property string modelData
-                text: qsTr("Open %1").arg(Theme.serviceLabel(modelData))
-                enabled: contextMenu.stateCode === Theme.stateConnected
+                text: Theme.serviceLabel(modelData)
+                glyph: Theme.serviceIcon(modelData)
+                enabled: contextMenu.connected
                 onTriggered: panel.serviceRequested(modelData, contextMenu.devId)
             }
-            onObjectAdded: (index, object) => contextMenu.insertItem(4 + index, object)
+            onObjectAdded: (index, object) => contextMenu.insertItem(3 + index, object)
             onObjectRemoved: (index, object) => contextMenu.removeItem(object)
         }
         UMenuSeparator {
-            visible: contextMenu.services.length > 0
+            visible: contextMenu.usable.length > 0
         }
         UMenuItem {
             text: qsTr("Add Special Rules...")
+            glyph: "verified"
             visible: contextMenu.verified && !contextMenu.special
-            enabled: contextMenu.identityState === "verified"
             onTriggered: panel.specialRulesRequested(contextMenu.devId)
         }
         UMenuItem {
             text: qsTr("Remove Special Rules")
+            glyph: "block"
             visible: contextMenu.special
             onTriggered: App.removeSpecialRules(contextMenu.identityKey)
         }
-        UMenu {
-            id: permissionsMenu
-            title: qsTr("Permissions")
-            enabled: contextMenu.special  // editing them needs special rules (added with the fingerprint check)
-
-            Instantiator {
-                model: App.permissionDefinitions
-                delegate: UMenuItem {
-                    required property var modelData
-                    text: Theme.serviceLabel(modelData.service) + " › " + modelData.label
-                    hint: modelData.available ? "" : qsTr("not available yet")
-                    checkable: true
-                    checked: contextMenu.permissions.indexOf(modelData.id) >= 0
-                    onTriggered: {
-                        App.setDevicePermission(contextMenu.identityKey, modelData.id, checked)
-                        // Clicking broke the binding; restore it for the next time.
-                        checked = Qt.binding(() => contextMenu.permissions.indexOf(modelData.id) >= 0)
-                    }
-                }
-                onObjectAdded: (index, object) => permissionsMenu.insertItem(index, object)
-                onObjectRemoved: (index, object) => permissionsMenu.removeItem(object)
-            }
-        }
-        // Folder sync has its own permissions, per folder.
-        UMenu {
-            id: syncMenu
-            title: qsTr("Synced Folders")
-            enabled: contextMenu.verified && panel.syncFolderList.length > 0
-
-            Instantiator {
-                model: panel.syncFolderList.reduce((all, f) => all.concat([{ id: f.id, label: f.label, send: true },
-                                                                           { id: f.id, label: f.label, send: false }]), [])
-                delegate: UMenuItem {
-                    required property var modelData
-                    readonly property bool grantedNow: {
-                        const g = panel.syncGrant(modelData.id, contextMenu.identityKey)
-                        return modelData.send ? g.receive : g.contribute
-                    }
-                    text: modelData.label + " › " + (modelData.send ? qsTr("Send") : qsTr("Accept"))
-                    hint: modelData.send ? qsTr("it gets the folder") : qsTr("you take its changes")
-                    checkable: true
-                    checked: grantedNow
-                    onTriggered: {
-                        const g = panel.syncGrant(modelData.id, contextMenu.identityKey)
-                        App.setSyncMember(modelData.id, contextMenu.identityKey,
-                                          modelData.send ? checked : g.receive, modelData.send ? g.contribute : checked)
-                        checked = Qt.binding(() => grantedNow)
-                    }
-                }
-                onObjectAdded: (index, object) => syncMenu.insertItem(index, object)
-                onObjectRemoved: (index, object) => syncMenu.removeItem(object)
-            }
-        }
-        UMenuSeparator {}
         UMenuItem {
             text: qsTr("Copy Device ID")
+            glyph: "copy"
             onTriggered: App.copyText(contextMenu.devId)
         }
     }

@@ -130,9 +130,9 @@ gives a peer its permissions:
    identity is verified.
 3. **Defaults**: for everyone else, including peers without a verified key.
 
-Camera, screen, control and display ids are **sensitive**: special and network
-rules may grant them; the defaults never do, since any holder of the invite
-link gets the defaults.
+Camera, screen, control and display ids are **sensitive**. Any of the three
+may grant them, but since any holder of the invite link gets the defaults,
+apps warn when the defaults include one.
 
 | id | allows |
 |----|--------|
@@ -409,8 +409,10 @@ member through any chain of members that are online.
 - **Folder id.** A folder has a random 128-bit id (32 hex digits), the same
   on every member, and a label.
 - **Who takes part.** Only a peer that has proven its identity (`id`,
-  section 3), and only in folders whose grants name its key. Any other peer
-  gets no sync messages, and its sync messages are ignored.
+  section 3) **and** has special rules on this device (4), and only in folders
+  whose grants name its key. Network rules and defaults never reach sync.
+  Any other peer gets no sync messages, and its sync messages are ignored;
+  removing a device's special rules takes it out of every folder.
 - **Grants.** Each device decides two things, per folder and per peer key:
   - **send:** give the peer this folder's index and blocks.
   - **accept:** take the peer's changes into this device's copy.
@@ -643,10 +645,10 @@ These are MUSTs for any implementation:
 Media uses uConnect's encrypted datagram channel (maximum 1100 bytes),
 separate from reliable message kinds. A channel is delivered to the screen
 service only while a consented session is active. A media channel needs a
-proven identity; sharing additionally needs the host's special or network
-rules to allow it (4, 7.3). `screen.view`, `screen.direct`, `control.input`,
-`control.direct`, `camera.view`, `display.show` and `display.direct` are
-sensitive: never default permissions. Datagram kinds are separate from the reliable envelope in section
+proven identity; the host's permissions for it (special rules, network
+rules or defaults, 4) then decide what it may do (7.3). `screen.view`,
+`screen.direct`, `control.input`, `control.direct`, `camera.view`,
+`display.show` and `display.direct` are sensitive (4). Datagram kinds are separate from the reliable envelope in section
 2: 1 = screen video, 2 = screen cursor, 3 = camera video, 4 = extended display video, 5 = extended display cursor.
 
 ### 7.1 Video fragments
@@ -892,7 +894,7 @@ request gets `busy`.
 | screen/camera 1.0 | consented screen/camera sessions, H.264 datagrams, feedback/recovery, control, cursor, shared sources (section 7) |
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
 | display 1.0 | extended display (7.6): `display` service, `display.show` / `display.direct`, `dsp.request`, `dsp.wait`, `dsp.err`, `dsp.accept`, the screen session under `dsp.*`, datagram kinds 4 and 5 |
-| rules 1.0 | trust replaced by special rules; network rules per topic (4.2); `rules.get`, `rules.list`, `rules.err`. Sync membership needs a proven identity and the folder's grants (sync 1.1); sharing needs special or network rules (screen/camera 1.1, display 1.1). Only local policy changed: no message changed shape |
+| rules 1.0 | trust replaced by special rules; network rules per topic (4.2); `rules.get`, `rules.list`, `rules.err`. Sync membership needs a proven identity, special rules and the folder's grants (sync 1.1); sharing needs a proven identity, and any source may grant sensitive permissions, defaults included (screen/camera 1.1, display 1.1). Only local policy changed: no message changed shape |
 | identity | the proof context string (3) was `"uconnect-desktop identity v1"` before this revision; it is now the implementation-neutral `"uconnect identity v1"`. The `id` message keeps `"v":1`; peers from before and after do not verify each other's identity, so both ends update together. Connections and storage with default permissions are unaffected |
 
 Almost every change only adds messages, fields and codes, so an older peer

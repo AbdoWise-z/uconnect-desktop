@@ -6,6 +6,8 @@ MenuItem {
 
     // Right-aligned secondary text; defaults to the action's shortcut.
     property string hint: action && action.shortcut ? String(action.shortcut) : ""
+    // A UIcon name drawn in the left gutter (where a check mark goes).
+    property string glyph: ""
 
     implicitWidth: Math.max(220, leftPadding + label.implicitWidth + 32 + hintLabel.implicitWidth + rightPadding)
     implicitHeight: visible ? 26 : 0
@@ -15,25 +17,13 @@ MenuItem {
     bottomPadding: 0
     font.pixelSize: Theme.fontSize
 
-    indicator: Canvas {
-        x: 7
+    indicator: UIcon {
+        x: 6
         anchors.verticalCenter: parent.verticalCenter
-        width: 12
-        height: 12
-        visible: item.checkable && item.checked
-        onVisibleChanged: requestPaint()
-        onPaint: {
-            const ctx = getContext("2d")
-            ctx.reset()
-            ctx.strokeStyle = Theme.text
-            ctx.lineWidth = 1.6
-            ctx.lineCap = "round"
-            ctx.beginPath()
-            ctx.moveTo(1, 6.5)
-            ctx.lineTo(4.5, 10)
-            ctx.lineTo(11, 2.5)
-            ctx.stroke()
-        }
+        size: 14
+        name: item.checkable && item.checked ? "check" : item.glyph
+        visible: name.length > 0
+        color: item.enabled ? (item.checkable ? Theme.text : Theme.textSecondary) : Theme.textDisabled
     }
 
     arrow: Text {

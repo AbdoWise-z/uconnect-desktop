@@ -33,7 +33,7 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::CameraDirect, "camera", tr("Without asking"),
-         tr("View the camera without a consent prompt. Only through special or network rules."),
+         tr("View the camera without a consent prompt."),
 #ifdef UCD_HAS_SCREEN
          true,
 #else
@@ -49,7 +49,7 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::ScreenDirect, "screen", tr("Without asking"),
-         tr("View the screen without a consent prompt. Only through special or network rules."),
+         tr("View the screen without a consent prompt."),
 #ifdef UCD_HAS_SCREEN
          true,
 #else
@@ -65,7 +65,7 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::ControlDirect, "control", tr("Without asking"),
-         tr("Control mouse and keyboard without a consent prompt. Only through special or network rules."),
+         tr("Control mouse and keyboard without a consent prompt."),
 #ifdef UCD_HAS_SCREEN
          true,
 #else
@@ -81,7 +81,7 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::DisplayDirect, "display", tr("Without asking"),
-         tr("Use this device's screen as a monitor without a consent prompt. Only through special or network rules."),
+         tr("Use this device's screen as a monitor without a consent prompt."),
 #ifdef UCD_HAS_SCREEN
          true,
 #else
@@ -97,15 +97,15 @@ bool isKnownPermission(const QString& id) {
     return std::any_of(t.begin(), t.end(), [&](const PermissionInfo& p) { return p.id == id; });
 }
 
-bool isTrustedOnlyPermission(const QString& id) {
+bool isSensitivePermission(const QString& id) {
     const auto& table = permissionTable();
-    return std::any_of(table.begin(), table.end(), [&](const PermissionInfo& p) { return p.id == id && p.trustedOnly; });
+    return std::any_of(table.begin(), table.end(), [&](const PermissionInfo& p) { return p.id == id && p.sensitive; });
 }
 
-PermissionSet permissionsForUntrusted(const PermissionSet& permissions) {
+PermissionSet knownPermissions(const PermissionSet& permissions) {
     PermissionSet out;
     for (const auto& permission : permissions)
-        if (isKnownPermission(permission) && !isTrustedOnlyPermission(permission)) out.insert(permission);
+        if (isKnownPermission(permission)) out.insert(permission);
     return out;
 }
 
@@ -118,7 +118,7 @@ QVariantList permissionsForQml() {
             {"label", p.label},
             {"description", p.description},
             {"available", p.available},
-            {"trustedOnly", p.trustedOnly},
+            {"sensitive", p.sensitive},
         });
     }
     return out;

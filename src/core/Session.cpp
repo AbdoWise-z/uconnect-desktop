@@ -106,8 +106,9 @@ Session::Session(QObject* parent)
                 const QString key  = have && it->second.identity ? keyToHex(*it->second.identity) : QString();
                 emit storageActivity(hex(dev), name, key, action, path, detail);
             });
-    // Sync is only for peers that proved who they are; each folder then names
-    // its members (by key) and what they may send and receive.
+    // Sync is only for peers that proved who they are and have special rules
+    // (network rules and defaults never reach it); each folder then names its
+    // members (by key) and what they may send and receive.
     sync_ = new SyncService(
         [this](const uconnect::DevId& dev, std::span<const uint8_t> bytes) {
             return topic_ && topic_->send(dev, bytes);
@@ -115,7 +116,8 @@ Session::Session(QObject* parent)
         [this](const uconnect::DevId& dev) {
             const auto it = peers_.find(dev);
             if (it == peers_.end() || !it->second.identity) return QString();
-            return keyToHex(*it->second.identity);
+            const QString key = keyToHex(*it->second.identity);
+            return policy_.special.contains(key) ? key : QString();
         },
         [this](const uconnect::DevId& dev) {
             const auto it = peers_.find(dev);
@@ -720,7 +722,7 @@ std::pair<PermissionSet, QString> Session::resolvePermissions(const uconnect::De
             return {PermissionSet(list.begin(), list.end()), QStringLiteral("rule")};
         }
     }
-    return {permissionsForUntrusted(policy_.defaults), QStringLiteral("default")};
+    return {knownPermissions(policy_.defaults), QStringLiteral("default")};
 }
 
 QHostAddress Session::peerAddress(const uconnect::DevId& dev) const {
@@ -756,10 +758,9 @@ screen::PeerAccess Session::accessFor(const uconnect::DevId& peer) const {
         access.fingerprint = fingerprint(*it->second.identity);
         access.name = it->second.hello ? it->second.hello->name : shortId(hex(peer));
         access.verified = true;
-        const auto [perms, source] = resolvePermissions(peer);
-        // Sharing needs more than the defaults: special or network rules.
-        access.trusted = source != QLatin1String("default");
-        access.permissions = perms;
+        // A proven peer may share whatever its rules grant, defaults included.
+        access.trusted = true;
+        access.permissions = resolvePermissions(peer).first;
     }
     return access;
 }

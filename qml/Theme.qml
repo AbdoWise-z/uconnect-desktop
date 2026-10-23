@@ -137,6 +137,29 @@ QtObject {
         return service
     }
 
+    // The UIcon for a service, and the grant it takes to use it on a peer.
+    function serviceIcon(service) {
+        switch (service) {
+        case "storage": return "folder"
+        case "camera": return "videocam"
+        case "screen": return "screen"
+        case "control": return "mouse"
+        case "display": return "cast"
+        case "sync": return "sync"
+        }
+        return "apps"
+    }
+    function serviceGrant(service) {
+        switch (service) {
+        case "storage": return "storage.observe"
+        case "camera": return "camera.view"
+        case "screen": return "screen.view"
+        case "control": return "control.input"
+        case "display": return "display.show"
+        }
+        return ""
+    }
+
     function serviceDescription(service) {
         switch (service) {
         case "storage": return qsTr("Browse shared folders, download files and upload new ones.")

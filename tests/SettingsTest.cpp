@@ -149,17 +149,17 @@ private slots:
         QCOMPARE(restarted.readOnlyFolders(), QStringList{a});
     }
 
-    void screenGrantsCannotBecomeDefaults() {
+    void anyKnownGrantCanBeADefault() {
         controller_->applySettings({{"defaultPermissions", QStringList{
-            "screen.view", "screen.direct", "control.input", "control.direct", "storage.observe"}}});
-        QCOMPARE(controller_->defaultPermissions(), QStringList{"storage.observe"});
+            "screen.view", "control.direct", "storage.observe", "bogus.grant"}}});
+        QCOMPARE(controller_->defaultPermissions(), (QStringList{"control.direct", "screen.view", "storage.observe"}));
         const QString key(64, QLatin1Char('b'));
         controller_->addSpecialRules(key, "Screen peer");
         controller_->setDevicePermission(key, "screen.direct", true);
         const auto devices = controller_->specialDevices();
         QCOMPARE(devices.size(), 1);
         QVERIFY(devices.first().toMap().value("permissions").toStringList().contains("screen.direct"));
-        controller_->applySettings({{"defaultPermissions", QStringList{"control.direct"}}});
+        controller_->applySettings({{"defaultPermissions", QStringList{}}});
         QVERIFY(controller_->defaultPermissions().isEmpty());
     }
     void screenSettingsSurviveApplyAndRestart() {

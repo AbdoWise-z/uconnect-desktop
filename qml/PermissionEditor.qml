@@ -46,7 +46,7 @@ ColumnLayout {
                     UCheckBox {
                         Layout.preferredWidth: 130
                         text: entry.modelData.label
-                        enabled: editor.editable && (editor.allowSensitive || !entry.modelData.trustedOnly)
+                        enabled: editor.editable && (editor.allowSensitive || !entry.modelData.sensitive)
                         checked: editor.granted.indexOf(entry.modelData.id) >= 0
                         onToggled: editor.toggled(entry.modelData.id, checked)
                     }

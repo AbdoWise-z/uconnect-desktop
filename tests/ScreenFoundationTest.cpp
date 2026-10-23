@@ -18,12 +18,11 @@ using namespace std::chrono_literals;
 class ScreenFoundationTest : public QObject {
     Q_OBJECT
 private slots:
-    void trustedOnly() {
-        const ucd::PermissionSet grants{ucd::perm::ScreenView, ucd::perm::ScreenDirect,
-            ucd::perm::ControlInput, ucd::perm::ControlDirect, ucd::perm::StorageObserve};
-        QCOMPARE(ucd::permissionsForUntrusted(grants), ucd::PermissionSet{ucd::perm::StorageObserve});
+    void sensitive() {
+        const ucd::PermissionSet grants{ucd::perm::ScreenView, ucd::perm::StorageObserve, QStringLiteral("bogus.perm")};
+        QCOMPARE(ucd::knownPermissions(grants), (ucd::PermissionSet{ucd::perm::ScreenView, ucd::perm::StorageObserve}));
         QVERIFY(ucd::isKnownPermission(ucd::perm::ScreenDirect));
-        QVERIFY(ucd::isTrustedOnlyPermission(ucd::perm::ControlDirect));
+        QVERIFY(ucd::isSensitivePermission(ucd::perm::ControlDirect));
     }
 
     void datagrams_data() {
