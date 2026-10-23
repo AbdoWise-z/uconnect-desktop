@@ -17,6 +17,7 @@
 //   UCD_BENCH_NO_UDP       1: no punched UDP; media takes the TCP fallback
 //   UCD_BENCH_IDENTITY     a file keeping the viewer's identity across runs
 //   UCD_BENCH_HOST_NAME    the device the viewer watches (default "Bench host"; e.g. a phone)
+//   UCD_BENCH_VERBOSE      1: the uConnect library's own log on stderr
 //   UCD_TEST_OPENH264  Cisco's library, for a system without a hardware encoder
 //
 // Per-second [stats] lines from the services (UCD_SCREEN_STATS) show each
@@ -112,6 +113,7 @@ private slots:
         Session::Options options{address, topic};
         // UCD_BENCH_NO_UDP=1: no punched UDP, so media goes over the TCP fallback.
         options.forceRelay = qEnvironmentVariableIntValue("UCD_BENCH_NO_UDP") == 1;
+        options.verbose = qEnvironmentVariableIntValue("UCD_BENCH_VERBOSE") == 1;  // the library's own log on stderr
 
         // The host: any device in the topic may view its synthetic desktop without a prompt.
         std::unique_ptr<Session> host;
