@@ -102,8 +102,9 @@ bash scripts/build-macos.sh ~/Qt/6.8.3/macos
 ```
 
 The FFmpeg helper downloads a pinned source archive and builds shared libraries.
-The macOS build script picks that local SDK up automatically. Enable the separate
-Cisco library in Settings when software fallback is wanted. Camera privacy usage
+The macOS build script picks that local SDK up automatically. For the software
+fallback, Settings > Sharing > Download from Cisco installs Cisco's library (or
+use the script above and enter its path there), then enable the fallback. Camera privacy usage
 text is embedded in the app's Info.plist. Packages never include the Cisco binary.
 Native macOS/Linux builds, cross-layout input, physical camera capture, induced
 network loss and common-clock glass-to-glass latency remain manual acceptance.

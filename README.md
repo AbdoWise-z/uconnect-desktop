@@ -28,14 +28,16 @@
 
 - **Topics and invite links.** Devices meet in a *topic*, shared by an
   invite link, or a QR code a phone scans to open uConnect Mobile on it.
-- **Your rules, per device.** Every service is behind a permission, and for
-  each device gets what its **special rules** (permissions of its own, added
-  after checking its fingerprint), this topic's **network rules** (ordered
-  address patterns such as `m.m.m.x` for your own subnet, matched against the
-  address its direct connection comes from) and your **defaults** grant,
-  together; the device page shows which layer grants each permission. Mark a
-  device's special rules as an **exception** to apply only those. A device
-  can copy another's rules for quick setup on a trusted network.
+- **Your rules, per device.** Every service is behind a permission, and each
+  device gets what its **special rules** (permissions of its own, added after
+  checking its fingerprint), this topic's **network rules** (ordered address
+  patterns such as `m.m.m.x` for your own subnet, matched against the address
+  its direct connection comes from) and your **defaults** grant, together.
+  The device's tab marks which of them grants each permission. Mark a
+  device's special rules as an **exception** to apply only those, for
+  example to give it less than the defaults. A device can copy another's
+  network rules for quick setup on a trusted network; the picker shows each
+  device's fingerprint, since names can be copied.
 - **Storage.** Browse, download and upload files and whole folders in the
   folders a device shares, with read-only shares and a log of what others did.
 - **Folder sync.** Keep a folder the same on several devices, phones
@@ -45,12 +47,16 @@
   controlled, each behind a consent prompt on the sharing device unless that
   device's rules allow it without asking, with a sharing bar and a hotkey to
   stop. Watch a phone's screen or camera, and control an Android phone.
-  Hardware encoding (NVENC, VideoToolbox) where available.
-- **Another device's camera as a webcam** *(in progress)*. While you watch a
-  camera, the webcam button in its header shows it to every other app as
-  "uConnect Camera" (video calls, recording). Windows 11 uses a small media
-  source, installed once with administrator rights from that button; Linux
-  uses a [v4l2loopback](https://github.com/umlaeute/v4l2loopback) device.
+  Hardware encoding (NVENC, Quick Sync, AMF, VideoToolbox) where available;
+  without it, Settings › Sharing downloads Cisco's OpenH264 for a software
+  fallback in one click.
+- **Another device's camera as a webcam.** While you watch a camera, the
+  webcam button in its window shows it to every app on the computer as
+  "uConnect Camera", for video calls (Discord, Teams...) or recording.
+  Windows 11 uses a small media source, installed once with administrator
+  rights from that button (or Settings › Watching, which also removes it).
+  Linux uses a [v4l2loopback](https://github.com/umlaeute/v4l2loopback)
+  device (not tested yet).
 - **Extended display.** A Windows or macOS computer gains a real extra monitor,
   shown full screen on another device: pick the resolution and refresh rate,
   or match the other screen. Windows uses the uConnect display driver
@@ -58,6 +64,11 @@
   the app; macOS needs nothing extra.
 - **Lives in the tray.** Closing the window keeps uConnect running in the
   system tray (the menu bar on macOS); it can start when you sign in.
+- **Searchable settings.** Search finds single settings: matches are listed
+  under their page, outlined on it, and a click scrolls to one. Settings that
+  several services share have their own pages: **Sharing** (the stop-sharing
+  shortcut, video encoding) and **Watching** (using other devices: the
+  keyboard release key, uConnect Camera).
 - **Color schemes.** Follow system, Dark, Darker, Light or Colorful.
 
 ### Screenshots
@@ -139,7 +150,7 @@ confirmation; on macOS, choose **Open Anyway** under System Settings → Privacy
 | Watch a shared screen    | ✓ | ✓ | ✓ |
 | Gain an extended display | ✓ | ✓ | — |
 | Be an extended display   | ✓ | ✓ | ✓ |
-| A camera as a webcam     | ✓ (Windows 11) | — | ✓ (v4l2loopback) |
+| A camera as a webcam     | ✓ (Windows 11) | — | v4l2loopback (untested) |
 | Tray, start at sign-in   | ✓ | ✓ | ✓ (where the desktop has a tray) |
 
 Phones join the same topics with
@@ -203,7 +214,7 @@ third-party software it uses keeps its own licenses, below.
 
 uConnect uses [Qt](https://www.qt.io) (LGPL v3), [FFmpeg](https://ffmpeg.org)
 (LGPL, dynamically linked and replaceable) and, optionally, Cisco's OpenH264
-binary, downloaded from Cisco by the user (Settings > Screen Sharing, or
+binary, downloaded from Cisco by the user (Settings › Sharing, or
 `scripts/install-openh264.py`). The Windows extended display
 driver is a fork of [SudoVDA](https://github.com/SudoMaker/SudoVDA), based on
 Microsoft's indirect display driver sample (MS-PL). See

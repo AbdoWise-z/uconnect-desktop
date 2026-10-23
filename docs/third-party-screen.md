@@ -23,7 +23,7 @@ binary patent license. A Cisco binary fallback is a separate dependency.
 The fallback uses OpenH264 API headers from Cisco commit
 `652bdb7719f30b52b08e506645a7322ff1b2cc6f` (v2.6.0), under the BSD license
 retained in each header. The binary is downloaded separately from Cisco,
-never embedded in our packages. Settings > Screen Sharing downloads it: after
+never embedded in our packages. Settings > Sharing downloads it: after
 showing Cisco's license, the app fetches Cisco's archive for the system from
 ciscobinary.openh264.org, checks its SHA-256 against the pinned value,
 unpacks it (bzip2, `src/core/Bunzip2.cpp`) and saves it with its license in
@@ -33,7 +33,7 @@ on Windows, macOS and Linux (x64/ARM64) with
 The Windows x64 compressed archive SHA-256 is
 `dab5f2a872777f9a58b69bfa9fbcf20d9f82f2d6ec91383fd70bff49bd34ac9f`.
 
-Enable or disable it in Settings > Screen Sharing, where the Cisco attribution
+Enable or disable it in Settings > Sharing, where the Cisco attribution
 is displayed. Its complete license is in `OpenH264-BINARY-LICENSE.txt`.
 The application invokes that library directly for the software fallback;
 it does not select FFmpeg's source-built `libopenh264` encoder. Hardware
