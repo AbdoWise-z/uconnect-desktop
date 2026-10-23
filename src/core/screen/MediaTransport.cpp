@@ -95,8 +95,10 @@ QVector<QByteArray> PacedSender::retransmit(quint32 frame, const QVector<int>& i
 void PacedSender::reset() { queue_.clear(); history_.clear(); dropped_ = 0; }
 
 QJsonObject Feedback::json() const {
-    return {{"received", double(received)}, {"lost", double(lost)}, {"late", double(late)},
+    QJsonObject result{{"received", double(received)}, {"lost", double(lost)}, {"late", double(late)},
         {"jitterMs", jitterMs}, {"owdTrendMs", owdTrendMs}, {"decodeMs", decodeMs}};
+    if (latestMs >= 0) result["latestMs"] = latestMs;
+    return result;
 }
 
 std::optional<Feedback> Feedback::parse(const QJsonObject& message) {
@@ -106,15 +108,18 @@ std::optional<Feedback> Feedback::parse(const QJsonObject& message) {
             return std::nullopt;
         if (QLatin1String(key) != QLatin1String("owdTrendMs") && value.toDouble() < 0) return std::nullopt;
     }
-    return Feedback{quint64(message.value("received").toDouble()), quint64(message.value("lost").toDouble()),
+    Feedback result{quint64(message.value("received").toDouble()), quint64(message.value("lost").toDouble()),
         quint64(message.value("late").toDouble()), message.value("jitterMs").toDouble(),
         message.value("owdTrendMs").toDouble(), message.value("decodeMs").toDouble()};
+    if (const auto latest = message.value("latestMs"); latest.isDouble() && latest.toDouble() >= 0 && latest.toDouble() <= 4294967295.)
+        result.latestMs = latest.toDouble();
+    return result;
 }
 
 void Reassembler::reset(quint16 session, int fps) {
     session_ = session; interval_ = 1000 / std::clamp(fps, 1, MaxFps);
     frames_.clear(); buffered_ = 0; waiting_ = true; haveLast_ = false; requestKey_ = false;
-    stats_ = {}; previousTransit_.reset(); trend_ = 0; lastKeyRequest_ = -1000;
+    stats_ = {}; previousTransit_.reset(); trend_ = 0; lastKeyRequest_ = -1000; latestCaptureMs_.reset();
 }
 
 void Reassembler::erase(std::map<quint32, Assembly>::iterator it) {
@@ -186,7 +191,7 @@ QVector<EncodedFrame> Reassembler::deliver() {
         auto frame = it->second.frame;
         for (const auto& part : it->second.parts) frame.bytes += part;
         if (frame.bytes.size() > MaxFrameBytes) { waiting_ = true; requestKey_ = true; erase(it); break; }
-        last_ = frame.number;
+        last_ = frame.number; latestCaptureMs_ = frame.captureMs;
         result.push_back(std::move(frame)); erase(it);
     }
     for (auto it = frames_.begin(); it != frames_.end();) {
@@ -222,6 +227,7 @@ Recovery Reassembler::expire(qint64 nowMs) {
 Feedback Reassembler::report(double decodeMs) {
     Feedback result = stats_;
     result.owdTrendMs = trend_; result.decodeMs = std::clamp(decodeMs, 0., 10000.);
+    result.latestMs = latestCaptureMs_ ? double(*latestCaptureMs_) : -1;
     stats_.received = stats_.lost = stats_.late = 0;
     return result;
 }
@@ -243,7 +249,7 @@ void CongestionController::reset(const QString& path, int maxFps, int maxWidth, 
     bad_ = good_ = slowDecode_ = cooldown_ = congestedStreak_ = 0;
 }
 
-void CongestionController::update(const Feedback& report) {
+void CongestionController::update(const Feedback& report, double lagMs) {
     if (cooldown_ > 0) --cooldown_;
     // Decoding slower than frames arrive: fewer frames, same quality.
     if (report.decodeMs > 1000. / fps_ * 1.2) {
@@ -256,7 +262,8 @@ void CongestionController::update(const Feedback& report) {
     // Tolerant (extended displays, nearby on Wi-Fi): short bursts of loss and
     // delay are the radio, not a full link, and every cut costs a hardware
     // encoder a keyframe; only sustained trouble lowers the bitrate.
-    const bool congested = tolerant_ ? loss > .10 || report.owdTrendMs > 30 : loss > .05 || report.owdTrendMs > 15;
+    const bool congested = tolerant_ ? loss > .10 || report.owdTrendMs > 30 || lagMs > 500
+                                     : loss > .05 || report.owdTrendMs > 15 || lagMs > 300;
     if (congested) {
         good_ = 0;
         if (tolerant_ && ++congestedStreak_ < 2) return;

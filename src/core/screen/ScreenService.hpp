@@ -61,6 +61,8 @@ public:
     ScreenService(Send send, Authorize authorize, Open open, Close close, Datagram datagram,
         QObject* parent = nullptr, Now now = {}, std::unique_ptr<InputBackend> input = {}, Kind kind = Kind::Screen);
     Kind kind() const { return kind_; }
+    // A viewer this far behind has the host drop its queue and restart from a keyframe.
+    static constexpr int BehindMs = 600;
     // Moves a peer's media onto TCP (DatagramChannel::overTcp); used when its
     // UDP path loses too much.
     using OverTcp = std::function<bool(const Peer&)>;
@@ -147,6 +149,10 @@ private:
         CongestionController congestion;
         LossyPath lossy;
         quint64 sentSinceReport = 0;  // datagrams, for the viewer's next report
+        bool delivered = false;       // the viewer has received something: the stream is up
+        quint32 lastSentCaptureMs = 0;  // of the newest frame queued to send
+        double lagMs = 0;               // how far behind the viewer is, from its reports
+        qint64 behindAt = 0;            // when the queue was last dropped for lag
     };
     struct Viewer {
         quint32 request = 0;

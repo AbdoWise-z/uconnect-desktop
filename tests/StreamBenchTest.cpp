@@ -219,7 +219,11 @@ private slots:
                                      .arg(lastState.value("fps").toDouble(), 0, 'f', 1).arg(lastState.value("waitingFrames").toInt())
                                      .arg(lastState.value("waitingMs").toDouble(), 0, 'f', 0).arg(lastState.value("late").toInt())
                                      .arg(lastState.value("skipped").toInt())
-                              + QStringLiteral(", host sends over %1").arg(lastState.value("host").toMap().value("transport").toString());
+                              + QStringLiteral(", host sends over %1, lag %2 ms, host %3 fps %4 kbit/s")
+                                     .arg(lastState.value("host").toMap().value("transport").toString())
+                                     .arg(lastState.value("host").toMap().value("lagMs").toDouble(), 0, 'f', 0)
+                                     .arg(lastState.value("host").toMap().value("fps").toDouble(), 0, 'f', 0)
+                                     .arg(lastState.value("host").toMap().value("sentKbps").toDouble(), 0, 'f', 0);
         }
         const qint64 to = clock.elapsed();
         QVector<double> gaps;

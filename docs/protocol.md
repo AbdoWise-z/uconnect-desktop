@@ -729,6 +729,15 @@ datagrams over TCP whatever its own path. A viewer gives a frame whose
 datagrams are still arriving more time (each one moves its deadline), since
 a host may spread a keyframe over several frame intervals.
 
+Lag. A `scr.report` may carry `latestMs`, the `captureMs` of the newest
+complete frame the viewer has. The host compares it with the newest frame it
+sent (the same clock) to learn how far behind the viewer is, which no loss
+figure shows over TCP, where what the path cannot carry queues instead.
+Behind by 300 ms the bitrate is eased off as under loss; behind by 600 ms
+the host drops everything queued to send, sends a keyframe next, and skips
+delta frames until it (at most once per 1.5 s). `scr.stats` carries the
+host's `lagMs` and its sending `transport` (`udp` or `tcp`).
+
 Pacing and playout (screen/camera 1.2). A host may convert several captured
 frames for the encoder at once, but encodes and sends them strictly in
 capture order, each stamped with its own `captureMs`; when its queue of

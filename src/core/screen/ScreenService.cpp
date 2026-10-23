@@ -463,7 +463,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         // How the sending side keeps up, for the viewer's statistics.
         QVariantMap host;
         for (const char* key : {"fps", "encodeMs", "convertMs", "queue", "queuePeak", "dropped", "throttled", "sentKbps",
-                                "targetFps", "targetKbps", "width", "threads", "senderDrops"}) {
+                                "targetFps", "targetKbps", "width", "threads", "senderDrops", "lagMs"}) {
             const auto value = msg.value(QLatin1String(key));
             if (value.isDouble() && std::isfinite(value.toDouble())) host[QLatin1String(key)] = value.toDouble();
         }
@@ -506,7 +506,10 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
                 auto& h = host->second;
                 // Nothing at all arrived of what was sent: all of it is lost
                 // (the viewer cannot count frames it never saw a piece of).
-                const quint64 lost = report->received + report->lost == 0 ? h.sentSinceReport : report->lost;
+                // (Once something has arrived: before that the stream is still
+                // starting, not lost.)
+                if (report->received > 0) h.delivered = true;
+                const quint64 lost = h.delivered && report->received + report->lost == 0 ? h.sentSinceReport : report->lost;
                 h.sentSinceReport = 0;
                 if (!display_ && overTcp_ && (h.path == "direct" || h.path == "relayed") &&
                     h.lossy.report(report->received, lost) && overTcp_(peer)) {
@@ -514,7 +517,15 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
                     pathChanged(peer, QStringLiteral("tcp")); h.forceKey = true;
                     return true;
                 }
-                h.congestion.update(*report);
+                // How far behind the viewer is: the newest frame it has against
+                // the newest sent, on this clock. Well behind (TCP queuing what
+                // the path cannot carry): drop what waits, start again from a
+                // keyframe, and ease the bitrate.
+                if (report->latestMs >= 0) h.lagMs = std::max(0, int(qint32(h.lastSentCaptureMs - quint32(report->latestMs))));
+                if (h.lagMs > BehindMs && now_() - h.behindAt > 1500) {
+                    h.behindAt = now_(); h.sender.dropQueued(); h.forceKey = true;
+                }
+                h.congestion.update(*report, h.lagMs);
                 host->second.reportLoss = double(report->lost) / std::max(1., double(report->received + report->lost));
                 host->second.reportTrendMs = report->owdTrendMs;
             }
@@ -882,6 +893,7 @@ void ScreenService::encoded(const std::map<Peer, quint16>& targets, quint64 gene
             // shorter spread costs less latency.
             const double spread = display_ && it->second.path == "direct" ? 0.25 : 0.5;
             const int paceBps = display_ ? 3 * it->second.congestion.bitrate() : 0;
+            it->second.lastSentCaptureMs = frame.captureMs;
             if (!it->second.sender.enqueue(frame, now_(), 1000 / fps, spread, paceBps)) { it->second.forceKey = true; ++stats_.refused; }
             else { ++it->second.framesSent; ++stats_.queued; stats_.bytesSent += frame.bytes.size(); }
         } else if (!error.isEmpty()) {
@@ -916,7 +928,7 @@ void ScreenService::publishStats(qint64 now) {
         msg["targetFps"] = host.congestion.fps(); msg["targetKbps"] = host.congestion.bitrate() / 1000;
         msg["width"] = host.congestion.width(); msg["threads"] = converterThreads();
         msg["senderDrops"] = double(host.sender.dropped()); msg["pipeline"] = lastPipeline_;
-        msg["transport"] = host.path == "tcp" ? "tcp" : "udp";
+        msg["transport"] = host.path == "tcp" ? "tcp" : "udp"; msg["lagMs"] = host.lagMs;
         send_(peer, msg);
     }
     if (statsOn_ && (!hosts_.empty() || !viewers_.empty())) {

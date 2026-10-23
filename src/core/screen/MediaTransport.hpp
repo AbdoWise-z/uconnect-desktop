@@ -47,6 +47,9 @@ public:
     // Fragments of a frame sent in the last half second, marked as repairs.
     QVector<QByteArray> retransmit(quint32 frame, const QVector<int>& indexes, qint64 nowMs) const;
     void reset();
+    // Drops everything queued (the host fell behind): the frames are
+    // counted dropped; the next one must be a keyframe.
+    void dropQueued() { dropped_ += queue_.size(); queue_.clear(); }
     bool busy() const { return !queue_.empty(); }
     int queuedFrames() const { return int(queue_.size()); }
     quint64 dropped() const { return dropped_; }
@@ -73,6 +76,9 @@ private:
 struct Feedback {
     quint64 received = 0, lost = 0, late = 0;
     double jitterMs = 0, owdTrendMs = 0, decodeMs = 0;
+    // Capture time (the host's clock) of the newest complete frame, or -1:
+    // the host reads its lag from it, which no loss figure shows over TCP.
+    double latestMs = -1;
     QJsonObject json() const;
     static std::optional<Feedback> parse(const QJsonObject& message);
 };
@@ -117,6 +123,7 @@ private:
     quint16 session_ = 0;
     int interval_ = 33;
     bool waiting_ = true, haveLast_ = false, requestKey_ = false, patient_ = false, reliable_ = false;
+    std::optional<quint32> latestCaptureMs_;
     quint32 last_ = 0;
     qint64 lastKeyRequest_ = -1000;
     std::map<quint32, Assembly> frames_;
@@ -153,7 +160,9 @@ public:
     // Starts at 8 Mbit/s on a direct path, 3 relayed, 2 while still opening,
     // within `maxBitrate`; clean reports raise it about 8% each.
     void reset(const QString& path, int maxFps = 60, int maxWidth = 1920, int maxBitrate = 16000000, int startBitrate = 0);
-    void update(const Feedback& report);
+    // `lagMs`: how far behind the viewer is (from Feedback::latestMs); a
+    // queue building on the path (TCP never loses, it waits).
+    void update(const Feedback& report, double lagMs = 0);
     // Ride out short bursts of loss and delay (kept across resets).
     void setTolerant(bool tolerant) { tolerant_ = tolerant; }
     int bitrate() const { return bitrate_; }
