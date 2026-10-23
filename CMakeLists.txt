@@ -270,6 +270,8 @@ qt_add_qml_module(uconnect_desktop
         # controls
         qml/UButton.qml
         qml/UToolButton.qml
+        qml/UIcon.qml
+        qml/UIconButton.qml
         qml/UTextField.qml
         qml/USpinBox.qml
         qml/UComboBox.qml

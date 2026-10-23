@@ -214,15 +214,17 @@ void ScreenController::pushSettings(const QScreen* removed) {
     QMetaObject::invokeMethod(service, [service, settings] { service->configure(settings); });
 #endif
 }
-void ScreenController::request(const QString& id, bool control) {
+void ScreenController::request(const QString& id, bool control, int maxWidth, int maxFps) {
 #ifdef UCD_HAS_SCREEN
     const auto peer = uconnect::from_hex<uconnect::kDevIdLen>(id.toStdString()); if (!peer) return;
     auto* service = this->service();
-    // Ask for what this device is set to show; the host caps it by its own settings.
-    const int width = settings_.value("maxWidth").toInt(), fps = settings_.value("maxFps").toInt();
+    // Ask for the quality the viewer chose, or this device's configured caps
+    // when it did not. Either way the host caps it by its own settings.
+    const int width = maxWidth > 0 ? maxWidth : settings_.value("maxWidth").toInt();
+    const int fps = maxFps > 0 ? maxFps : settings_.value("maxFps").toInt();
     QMetaObject::invokeMethod(service, [service, peer, control, width, fps] { service->request(*peer, control, width, fps); });
 #else
-    Q_UNUSED(id); Q_UNUSED(control);
+    Q_UNUSED(id); Q_UNUSED(control); Q_UNUSED(maxWidth); Q_UNUSED(maxFps);
 #endif
 }
 void ScreenController::stop(const QString& id) {

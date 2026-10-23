@@ -15,6 +15,8 @@ Window {
     readonly property string deviceName: peer.displayName !== undefined ? peer.displayName : qsTr("Unknown device")
     readonly property int stateCode: peer.stateCode !== undefined ? peer.stateCode : Theme.stateUnknown
     readonly property bool peerConnected: stateCode === Theme.stateConnected
+    readonly property bool isVideo: service === "camera" || service === "screen" || service === "control"
+    readonly property bool fullScreen: win.visibility === Window.FullScreen
 
     // The live view state for this peer (includes the host's camera/monitor
     // list and the current index), refreshed as the controller reports it.
@@ -22,6 +24,9 @@ Window {
     function refreshState() {
         mediaState = (service === "camera" || service === "screen" || service === "control")
             ? media.state(devId) : ({})
+    }
+    function releaseKeyName() {
+        return ({228: "Right Ctrl", 41: "Escape", 69: "F12"})[media.settings.releaseUsage || 228]
     }
     Connections {
         target: win.media
@@ -67,45 +72,6 @@ Window {
         }
     }
 
-    // --- per-service toolbars ----------------------------------------------
-    Component {
-        id: cameraToolbar
-        RowLayout {
-            spacing: 4
-            UComboBox {
-                Layout.preferredWidth: 180
-                enabled: (win.mediaState.monitors || []).length > 1
-                model: (win.mediaState.monitors || []).map(m => m.name)
-                currentIndex: win.mediaState.monitor || 0
-                onActivated: index => win.media.monitor(win.devId, index)
-            }
-            Separator {}
-            UToolButton { text: qsTr("Snapshot"); enabled: false }
-            UToolButton { text: qsTr("Full Screen"); enabled: false }
-        }
-    }
-    Component {
-        id: screenToolbar
-        RowLayout {
-            spacing: 4
-            UToolButton { text: qsTr("Fit"); checkable: true; checked: true; enabled: false }
-            UToolButton { text: "100%"; checkable: true; enabled: false }
-            Separator {}
-            UToolButton { text: qsTr("Full Screen"); enabled: false }
-        }
-    }
-    Component {
-        id: controlToolbar
-        RowLayout {
-            spacing: 4
-            UToolButton { text: qsTr("Ctrl+Alt+Del"); enabled: false }
-            UToolButton { text: qsTr("Sync Clipboard"); checkable: true; enabled: false }
-            Separator {}
-            UToolButton { text: qsTr("Fit"); checkable: true; checked: true; enabled: false }
-            UToolButton { text: qsTr("Full Screen"); enabled: false }
-        }
-    }
-
     // --- per-service content ------------------------------------------------
     Component {
         id: storageContent
@@ -132,8 +98,77 @@ Window {
     }
     Component {
         id: screenContent
-        Loader {
-            Component.onCompleted: setSource(Qt.resolvedUrl("ScreenView.qml"), {devId: win.devId, controller: win.media, camera: win.service === "camera", wantControl: win.service === "control"})
+        ScreenView {
+            devId: win.devId
+            controller: win.media
+            camera: win.service === "camera"
+            wantControl: win.service === "control"
+        }
+    }
+
+    // The settings menu for the video view, opened from the header's tune
+    // button. Bound to the loaded ScreenView (content.item).
+    UMenu {
+        id: viewMenu
+        readonly property var v: content.item
+
+        UMenuItem {
+            text: qsTr("Fit to window")
+            checkable: true; checked: viewMenu.v && viewMenu.v.fit
+            onTriggered: if (viewMenu.v) viewMenu.v.fit = true
+        }
+        UMenuItem {
+            text: qsTr("Actual size (100%)")
+            checkable: true; checked: viewMenu.v && !viewMenu.v.fit
+            onTriggered: if (viewMenu.v) viewMenu.v.fit = false
+        }
+        UMenuSeparator {}
+        UMenu {
+            title: qsTr("Quality")
+            Instantiator {
+                model: viewMenu.v ? viewMenu.v.qualities : []
+                delegate: UMenuItem {
+                    required property var modelData
+                    required property int index
+                    text: modelData.label
+                    checkable: true
+                    checked: viewMenu.v && viewMenu.v.qualityIndex === index
+                    onTriggered: if (viewMenu.v) viewMenu.v.setQuality(index)
+                }
+                onObjectAdded: (i, obj) => qualityMenu.insertItem(i, obj)
+                onObjectRemoved: (i, obj) => qualityMenu.removeItem(obj)
+            }
+            id: qualityMenu
+        }
+        UMenu {
+            title: qsTr("Rotation")
+            enabled: win.service === "camera"  // rotating a controlled screen misplaces input
+            UMenuItem {
+                text: qsTr("None"); checkable: true
+                checked: viewMenu.v && viewMenu.v.rotationDeg === 0
+                onTriggered: if (viewMenu.v) viewMenu.v.rotationDeg = 0
+            }
+            UMenuItem {
+                text: qsTr("90°"); checkable: true
+                checked: viewMenu.v && viewMenu.v.rotationDeg === 90
+                onTriggered: if (viewMenu.v) viewMenu.v.rotationDeg = 90
+            }
+            UMenuItem {
+                text: qsTr("180°"); checkable: true
+                checked: viewMenu.v && viewMenu.v.rotationDeg === 180
+                onTriggered: if (viewMenu.v) viewMenu.v.rotationDeg = 180
+            }
+            UMenuItem {
+                text: qsTr("270°"); checkable: true
+                checked: viewMenu.v && viewMenu.v.rotationDeg === 270
+                onTriggered: if (viewMenu.v) viewMenu.v.rotationDeg = 270
+            }
+        }
+        UMenuSeparator {}
+        UMenuItem {
+            text: qsTr("Show statistics")
+            checkable: true; checked: viewMenu.v && viewMenu.v.showStats
+            onTriggered: if (viewMenu.v) viewMenu.v.showStats = !viewMenu.v.showStats
         }
     }
 
@@ -168,12 +203,64 @@ Window {
                     text: Theme.serviceLabel(win.service)
                     color: Theme.textSecondary
                 }
-                Separator {}
-                // Storage keeps its navigation bar inside StorageView.
-                Loader {
-                    sourceComponent: null
+
+                Separator { visible: win.isVideo && (sourceCombo.visible || controlButton.visible) }
+
+                // The video controls live here, in the one header bar.
+                // Which camera / monitor to watch.
+                UComboBox {
+                    id: sourceCombo
+                    visible: win.isVideo && (win.mediaState.monitors || []).length > 0
+                    Layout.preferredWidth: 170
+                    model: (win.mediaState.monitors || []).map(m => m.name)
+                    currentIndex: win.mediaState.monitor || 0
+                    enabled: win.mediaState.state === "live" && (win.mediaState.monitors || []).length > 1
+                    onActivated: index => win.media.monitor(win.devId, index)
                 }
+                UIconButton {
+                    id: controlButton
+                    visible: win.service === "screen" || win.service === "control"
+                    glyph: "mouse"
+                    checked: win.mediaState.control === true
+                    enabled: win.mediaState.state === "live" && win.mediaState.controlPending !== true
+                    tip: win.mediaState.controlPending ? qsTr("Waiting for control…")
+                         : win.mediaState.control ? qsTr("Stop controlling") : qsTr("Request control")
+                    onClicked: win.media.requestControl(win.devId, win.mediaState.control !== true)
+                }
+                UIconButton {
+                    visible: (win.service === "screen" || win.service === "control") && win.mediaState.control === true
+                    glyph: "keyboard"
+                    checked: win.mediaState.keyboardCaptured === true
+                    tip: win.mediaState.keyboardCaptured
+                         ? qsTr("Keyboard captured — press %1 to release").arg(win.releaseKeyName())
+                         : qsTr("Capture keyboard")
+                    onClicked: win.media.captureKeyboard(win.devId, win, win.mediaState.keyboardCaptured !== true)
+                }
+
                 Item { Layout.fillWidth: true }
+
+                UIconButton {
+                    id: tuneButton
+                    visible: win.isVideo
+                    glyph: "tune"
+                    tip: qsTr("View options")
+                    enabled: content.item !== null
+                    onClicked: viewMenu.popup(tuneButton, 0, tuneButton.height)
+                }
+                UIconButton {
+                    visible: win.isVideo
+                    glyph: win.fullScreen ? "fullscreen-exit" : "fullscreen"
+                    tip: win.fullScreen ? qsTr("Exit full screen") : qsTr("Full screen")
+                    onClicked: win.visibility = win.fullScreen ? Window.Windowed : Window.FullScreen
+                }
+                UIconButton {
+                    visible: win.isVideo && content.item !== null && content.item.active
+                    glyph: "stop"
+                    tip: qsTr("Stop")
+                    onClicked: win.media.stop(win.devId)
+                }
+                Separator { visible: win.isVideo }
+
                 StatusDot {
                     color: Theme.stateColor(win.stateCode)
                 }
@@ -200,10 +287,11 @@ Window {
         }
 
         Loader {
+            id: content
             Layout.fillWidth: true
             Layout.fillHeight: true
             sourceComponent: win.service === "storage" ? storageContent
-                             : (win.service === "screen" || win.service === "control" || win.service === "camera") && win.media.available ? screenContent : videoContent
+                             : win.isVideo && win.media.available ? screenContent : videoContent
         }
     }
 }

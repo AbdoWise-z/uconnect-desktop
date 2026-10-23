@@ -41,7 +41,10 @@ public:
     // Re-read the OpenH264 codec library the user configured under Screen
     // Sharing, which the camera shares, so a change applies without a restart.
     void reloadSharedCodec();
-    Q_INVOKABLE void request(const QString& peer, bool control = false);
+    // maxWidth/maxFps < 0 fall back to this device's configured caps; a viewer
+    // can pass its own to watch at a different quality than the host's default.
+    Q_INVOKABLE void request(const QString& peer, bool control = false,
+                             int maxWidth = -1, int maxFps = -1);
     Q_INVOKABLE void stop(const QString& peer);
     Q_INVOKABLE void stopHosting();
     Q_INVOKABLE void consent(const QString& peer, quint32 request, bool allow, bool remember);

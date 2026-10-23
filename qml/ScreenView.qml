@@ -14,76 +14,43 @@ ColumnLayout {
     property bool fit: true
     property int rotationDeg: 0  // camera preview rotation, 0/90/180/270
     property bool showStats: false
+
+    // Quality the viewer asks the host to encode at; the host caps it by its
+    // own settings. Picking one re-requests the stream at that size.
+    readonly property var qualities: [
+        { label: qsTr("Full — 1080p 60fps"), w: 1920, f: 60 },
+        { label: qsTr("High — 1080p"), w: 1920, f: 30 },
+        { label: qsTr("Medium — 720p"), w: 1280, f: 30 },
+        { label: qsTr("Low — 480p"), w: 854, f: 30 }
+    ]
+    property int qualityIndex: 1
+
+    function requestView() {
+        const q = view.qualities[view.qualityIndex]
+        view.controller.request(view.devId, view.wantControl, q.w, q.f)
+    }
+    function setQuality(i) {
+        if (i === view.qualityIndex) return
+        view.qualityIndex = i
+        if (view.active) view.requestView()
+    }
     readonly property string phase: view.session.state || ""
     readonly property bool active: view.phase === "live" || view.phase === "waiting" || view.phase === "requesting"
     // Live, but no frame decoded yet.
     readonly property bool starting: view.phase === "live" && view.session.pictured !== true
-    readonly property bool fullScreen: view.Window.window !== null && view.Window.window.visibility === Window.FullScreen
     spacing: 0
 
     Component.onCompleted: {
         view.controller.attachSink(devId, video.videoSink)
-        view.controller.request(devId, wantControl)
+        view.requestView()
     }
     Component.onDestruction: view.controller.attachSink(devId, null)
     Connections {
         target: view.controller
         function onStateChanged(peer) { if (peer === view.devId) view.session = view.controller.state(peer) }
     }
-    RowLayout {
-        Layout.fillWidth: true
-        Layout.margins: 8
-        spacing: 8
-        UToolButton { text: qsTr("Fit"); checkable: true; checked: view.fit; onClicked: view.fit = true }
-        UToolButton { text: "100%"; checkable: true; checked: !view.fit; onClicked: view.fit = false }
-        UToolButton {
-            visible: view.camera
-            text: qsTr("Rotate")
-            onClicked: view.rotationDeg = (view.rotationDeg + 90) % 360
-        }
-        UToolButton {
-            text: view.fullScreen ? qsTr("Exit Full Screen") : qsTr("Full Screen")
-            onClicked: view.Window.window.visibility = view.fullScreen ? Window.Windowed : Window.FullScreen
-        }
-        UToolButton { text: qsTr("Stats"); checkable: true; checked: view.showStats; onClicked: view.showStats = !view.showStats }
-        UComboBox {
-            Layout.preferredWidth: 180
-            Layout.maximumWidth: 220
-            model: view.session.monitors || []
-            textRole: "name"
-            currentIndex: view.session.monitor || 0
-            enabled: view.session.state === "live" && count > 1
-            onActivated: index => view.controller.monitor(view.devId, index)
-        }
-        Item { Layout.fillWidth: true }
-        UButton {
-            text: view.active ? qsTr("Stop") : qsTr("Connect")
-            onClicked: {
-                if (view.active) view.controller.stop(view.devId)
-                else view.controller.request(view.devId, view.wantControl)
-            }
-        }
-    }
-    RowLayout {
-        visible: !view.camera && view.session.state === "live"
-        Layout.fillWidth: true
-        Layout.leftMargin: 8
-        Layout.rightMargin: 8
-        Layout.bottomMargin: 8
-        spacing: 8
-        UToolButton {
-            text: view.session.controlPending ? qsTr("Waiting for control…") : view.session.control ? qsTr("Stop control") : qsTr("Request control")
-            visible: !view.camera
-            enabled: view.session.state === "live" && !view.session.controlPending
-            onClicked: view.controller.requestControl(view.devId, !view.session.control)
-        }
-        UToolButton {
-            visible: view.session.control === true
-            text: view.session.keyboardCaptured ? qsTr("Keyboard captured: %1 to release").arg(({228: "Right Ctrl", 41: "Escape", 69: "F12"})[view.controller.settings.releaseUsage || 228]) : qsTr("Capture keyboard")
-            onClicked: view.controller.captureKeyboard(view.devId, view.Window.window, !view.session.keyboardCaptured)
-        }
-        Item { Layout.fillWidth: true }
-    }
+    // The toolbar and view-settings menu live in the window header
+    // (ServiceWindow.qml); this component is just the video surface.
     Rectangle {
         Layout.fillWidth: true
         Layout.fillHeight: true
@@ -169,7 +136,7 @@ ColumnLayout {
                 Layout.topMargin: 4
                 visible: !view.active || (view.starting && view.session.stalled === true)
                 text: qsTr("Try Again")
-                onClicked: view.controller.request(view.devId, view.wantControl)
+                onClicked: view.requestView()
             }
         }
         Rectangle {
