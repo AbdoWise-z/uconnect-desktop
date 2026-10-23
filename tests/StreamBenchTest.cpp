@@ -14,6 +14,8 @@
 //   UCD_BENCH_BUFFER   the viewer's playout buffer in ms (default 100; 0 shows at once)
 //   UCD_BENCH_ASK_BITRATE  the bitrate the viewer asks for (default 0: the host's limit)
 //   UCD_BENCH_SNAPSHOTS    a folder: every 60th picture the viewer shows is saved there
+//   UCD_BENCH_IDENTITY     a file keeping the viewer's identity across runs
+//   UCD_BENCH_HOST_NAME    the device the viewer watches (default "Bench host"; e.g. a phone)
 //   UCD_TEST_OPENH264  Cisco's library, for a system without a hardware encoder
 //
 // Per-second [stats] lines from the services (UCD_SCREEN_STATS) show each
@@ -22,6 +24,7 @@
 #include <QtTest>
 
 #include <QElapsedTimer>
+#include <QTimer>
 #include <QPainter>
 #include <QVideoFrame>
 
@@ -152,13 +155,17 @@ private slots:
 
         // The viewer: finds the bench host, asks for its screen and times every frame shown.
         Session viewer;
-        viewer.setIdentity(Identity::generate());
+        // UCD_BENCH_IDENTITY=<file>: the same identity every run, so a device's
+        // special rules for "Bench viewer" keep applying.
+        const QString identityFile = qEnvironmentVariable("UCD_BENCH_IDENTITY");
+        viewer.setIdentity(identityFile.isEmpty() ? Identity::generate() : Identity::loadOrCreate(identityFile, nullptr));
         viewer.setAccessPolicy({});
         viewer.setLocalHello({"Bench viewer", QSysInfo::productType(), 0});
         QString hostId;
-        connect(&viewer, &Session::peersChanged, this, [&](const auto& peers) {
+        const QString hostName = qEnvironmentVariable("UCD_BENCH_HOST_NAME", QStringLiteral("Bench host"));
+        connect(&viewer, &Session::peersChanged, this, [&, hostName](const auto& peers) {
             for (const auto& p : peers)
-                if (p.name == "Bench host" && p.identityState == "verified" && p.stateCode == 3) hostId = p.devId;
+                if (p.name == hostName && p.identityState == "verified" && p.stateCode == 3) hostId = p.devId;
         });
         viewer.start(options);
         QTRY_VERIFY_WITH_TIMEOUT(!hostId.isEmpty(), 30000);
@@ -175,10 +182,22 @@ private slots:
         });
         connect(viewer.screen(), &ScreenService::viewerChanged, this, [&](const QString&, const QVariantMap& update) {
             for (auto it = update.begin(); it != update.end(); ++it) lastState[it.key()] = it.value();
+            if (update.contains("state"))
+                qInfo().noquote() << "[viewer] state" << update.value("state").toString() << update.value("detail").toString();
         });
-        viewer.screen()->request(*uconnect::from_hex<uconnect::kDevIdLen>(hostId.toStdString()), false, width, fps,
-                                 envInt("UCD_BENCH_ASK_BITRATE", 0), envInt("UCD_BENCH_BUFFER", 100));
-        QTRY_VERIFY_WITH_TIMEOUT(!shown.isEmpty(), 20000);
+        const auto ask = [&] {
+            viewer.screen()->request(*uconnect::from_hex<uconnect::kDevIdLen>(hostId.toStdString()), false, width, fps,
+                                     envInt("UCD_BENCH_ASK_BITRATE", 0), envInt("UCD_BENCH_BUFFER", 100));
+        };
+        ask();
+        // Refused or ended (e.g. while a phone is still being given the rights): ask again.
+        QTimer retry; retry.setInterval(5000);
+        connect(&retry, &QTimer::timeout, this, [&] {
+            const auto state = lastState.value("state").toString();
+            if (shown.isEmpty() && (state == "denied" || state == "busy" || state == "ended" || state == "failed")) ask();
+        });
+        retry.start();
+        QTRY_VERIFY_WITH_TIMEOUT(!shown.isEmpty(), envInt("UCD_BENCH_FIRST_MS", 20000));
 
         // Measure after a few seconds of ramp-up, a line per second.
         QTest::qWait(3000);
@@ -192,7 +211,11 @@ private slots:
                                      .arg(lastState.value("bitrate").toDouble() / 1000, 0, 'f', 0)
                                      .arg(lastState.value("loss").toDouble() * 100, 0, 'f', 1)
                                      .arg(lastState.value("jitterMs").toDouble(), 0, 'f', 1)
-                                     .arg(lastState.value("decodeMs").toDouble(), 0, 'f', 1);
+                                     .arg(lastState.value("decodeMs").toDouble(), 0, 'f', 1)
+                              + QStringLiteral(", decoded %1 fps, waiting %2 (%3 ms), late %4, skipped %5")
+                                     .arg(lastState.value("fps").toDouble(), 0, 'f', 1).arg(lastState.value("waitingFrames").toInt())
+                                     .arg(lastState.value("waitingMs").toDouble(), 0, 'f', 0).arg(lastState.value("late").toInt())
+                                     .arg(lastState.value("skipped").toInt());
         }
         const qint64 to = clock.elapsed();
         QVector<double> gaps;
