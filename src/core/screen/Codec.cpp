@@ -139,7 +139,7 @@ struct Encoder::Impl {
             } else if (candidate == "h264_amf") {
                 av_dict_set(&settings, "usage", "ultralowlatency", 0); av_dict_set(&settings, "rc", "cbr", 0);
             } else if (candidate == "h264_videotoolbox") {
-                av_dict_set(&settings, "realtime", "1", 0); av_dict_set(&settings, "constant_bit_rate", "1", 0);
+                av_dict_set(&settings, "realtime", "1", 0);  // constant_bit_rate is refused by some Macs: the rate alone
             } else if (candidate == "h264_mf") {
                 av_dict_set(&settings, "hw_encoding", "1", 0);
             }
