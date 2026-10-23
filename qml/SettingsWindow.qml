@@ -1053,6 +1053,46 @@ Window {
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum viewers") }
                     USpinBox { from: 1; to: 8; value: draft.camera.maxViewers || 1; onValueModified: dlg.setCameraSetting("maxViewers", value) }
                 }
+
+                // Other devices' cameras as a webcam here (VirtualCamera). Its
+                // install and removal happen right away, not on Apply.
+                TitledSeparator {
+                    Layout.topMargin: 8
+                    visible: vcamRow.vcam !== null
+                    text: qsTr("Watched Cameras in Other Apps")
+                }
+                RowLayout {
+                    id: vcamRow
+                    readonly property var vcam: App.camera.virtualCamera
+                    visible: vcam !== null
+                    Layout.fillWidth: true
+                    spacing: 10
+                    UIcon {
+                        name: "webcam"
+                        size: 18
+                        color: vcamRow.vcam && vcamRow.vcam.installed ? Theme.success : Theme.textSecondary
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        color: Theme.text
+                        text: !vcamRow.vcam ? ""
+                              : vcamRow.vcam.task === "install" ? qsTr("Installing… accept the administrator prompt.")
+                              : vcamRow.vcam.task === "uninstall" ? qsTr("Removing… accept the administrator prompt.")
+                              : vcamRow.vcam.installed ? qsTr("uConnect Camera is installed.")
+                              : vcamRow.vcam.hint
+                    }
+                    UButton {
+                        visible: vcamRow.vcam !== null && vcamRow.vcam.supported && vcamRow.vcam.canInstall
+                        enabled: vcamRow.vcam !== null && vcamRow.vcam.task === ""
+                        text: vcamRow.vcam && vcamRow.vcam.installed ? qsTr("Uninstall...") : qsTr("Install...")
+                        onClicked: vcamRow.vcam.installed ? vcamRow.vcam.uninstall() : vcamRow.vcam.install()
+                    }
+                }
+                Help {
+                    visible: vcamRow.vcam !== null
+                    text: qsTr("While you watch another device's camera, the webcam button in its window shows it to every app on this computer as “uConnect Camera”, for calls or recording.")
+                }
             }
             Help {
                 visible: svcPage.service !== "screen" && svcPage.service !== "camera" && svcPage.service !== "control" && svcPage.service !== "display"

@@ -223,6 +223,15 @@ Window {
             }
         }
         UMenuSeparator {}
+        // The webcam component: install it here, or remove it once it is.
+        UMenuItem {
+            visible: win.vcam !== null && win.vcam.supported && win.vcam.canInstall
+            glyph: "webcam"
+            enabled: win.vcam !== null && win.vcam.task === ""
+            text: win.vcam !== null && win.vcam.installed ? qsTr("Uninstall uConnect Camera…")
+                                                          : qsTr("Install uConnect Camera…")
+            onTriggered: win.vcam.installed ? win.vcam.uninstall() : win.vcam.install()
+        }
         UMenuItem {
             text: qsTr("Show statistics")
             checkable: true; checked: viewMenu.v && viewMenu.v.showStats
@@ -301,9 +310,10 @@ Window {
                     visible: win.vcam !== null && win.vcam.supported
                     glyph: "webcam"
                     checked: win.vcamOn
-                    enabled: (win.vcamOn || win.mediaState.state === "live") && !win.vcam.installing
+                    enabled: (win.vcamOn || win.mediaState.state === "live") && win.vcam.task === ""
                     tip: win.vcam === null ? ""
-                         : win.vcam.installing ? qsTr("Installing the uConnect Camera…")
+                         : win.vcam.task === "install" ? qsTr("Installing the uConnect Camera…")
+                         : win.vcam.task === "uninstall" ? qsTr("Removing the uConnect Camera…")
                          : win.vcamOn ? (win.vcam.inUse ? qsTr("An app is using it as “uConnect Camera” — click to stop")
                                                         : qsTr("Shown to apps as “uConnect Camera” — click to stop"))
                          : win.vcam.installed ? qsTr("Use as a webcam in other apps")
@@ -363,13 +373,15 @@ Window {
             Layout.leftMargin: 8
             Layout.rightMargin: 8
             Layout.topMargin: 8
-            visible: win.vcam !== null && (win.vcam.installing || win.vcamMessage !== "")
-            kind: win.vcam !== null && !win.vcam.installing && !win.vcam.installed ? "error" : "info"
-            text: win.vcam !== null && win.vcam.installing
-                  ? qsTr("Installing the uConnect Camera… Accept the administrator prompt to continue.")
+            visible: win.vcam !== null && (win.vcam.task !== "" || win.vcamMessage !== "")
+            kind: win.vcam !== null && win.vcam.task === "" && !win.vcam.installed && win.vcamMessage.indexOf("removed") < 0
+                  ? "error" : "info"
+            text: win.vcam === null ? ""
+                  : win.vcam.task === "install" ? qsTr("Installing the uConnect Camera… Accept the administrator prompt to continue.")
+                  : win.vcam.task === "uninstall" ? qsTr("Removing the uConnect Camera… Accept the administrator prompt to continue.")
                   : win.vcamMessage
             UIconButton {
-                visible: win.vcam !== null && !win.vcam.installing
+                visible: win.vcam !== null && win.vcam.task === ""
                 glyph: "close"
                 tip: qsTr("Dismiss")
                 onClicked: win.vcamMessage = ""

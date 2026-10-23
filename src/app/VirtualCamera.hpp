@@ -23,7 +23,9 @@ class VirtualCamera : public QObject {
     Q_PROPERTY(bool supported READ supported NOTIFY changed)
     Q_PROPERTY(bool installed READ installed NOTIFY changed)
     Q_PROPERTY(bool canInstall READ canInstall CONSTANT)
-    Q_PROPERTY(bool installing READ installing NOTIFY changed)
+    // "install" or "uninstall" while that runs (it asks for administrator
+    // rights), otherwise empty.
+    Q_PROPERTY(QString task READ task NOTIFY changed)
     Q_PROPERTY(QString hint READ hint NOTIFY changed)
     // The device whose camera it shows, empty when off; `live` once the system
     // has it, `inUse` while an app reads it.
@@ -37,7 +39,7 @@ public:
     bool    supported() const { return supported_; }
     bool    installed() const { return installed_; }
     bool    canInstall() const;
-    bool    installing() const { return installing_; }
+    QString task() const { return task_; }
     QString hint() const { return hint_; }
     QString peer() const { return peer_; }
     bool    live() const { return live_; }
@@ -48,8 +50,10 @@ public:
     Q_INVOKABLE void start(const QString& peer, int rotation = 0);
     Q_INVOKABLE void stop();
     Q_INVOKABLE void setRotation(int rotation);
-    // Installs the system component (Windows: asks for administrator rights).
+    // Installs or removes the system component (Windows: asks for
+    // administrator rights). Removing it stops the camera first.
     Q_INVOKABLE void install();
+    Q_INVOKABLE void uninstall();
 
     // A decoded frame from a camera being watched.
     void push(const QString& peer, const QVideoFrame& frame);
@@ -60,10 +64,12 @@ signals:
 
 private:
     void refreshSupport();
+    void runInstaller(bool uninstall);
     void run();
     void setState(bool live, bool inUse);
 
-    bool    supported_ = false, installed_ = false, installing_ = false;
+    bool    supported_ = false, installed_ = false;
+    QString task_;
     QString hint_;
     QString peer_;
     bool    live_ = false, inUse_ = false;

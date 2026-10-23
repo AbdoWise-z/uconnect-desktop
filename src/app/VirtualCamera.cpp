@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QPointer>
 
@@ -178,47 +179,77 @@ void VirtualCamera::run() {
     }
 }
 
-void VirtualCamera::install() {
+void VirtualCamera::install() { runInstaller(false); }
+
+void VirtualCamera::uninstall() {
+    stop();  // nothing may be using it
+    runInstaller(true);
+}
+
+// Runs install-vcam.ps1 elevated. Asking Windows for that blocks until its
+// prompt is up, so it all happens off the GUI thread.
+void VirtualCamera::runInstaller(bool uninstall) {
 #ifdef Q_OS_WIN
-    if (installing_) return;
+    if (!task_.isEmpty()) return;
     const QString dir    = componentDir();
     const QString dll    = QDir::toNativeSeparators(dir + "/uconnect-vcam.dll");
-    const QString script = QDir::toNativeSeparators(dir + "/install-vcam.ps1");
-    if (!QFileInfo::exists(dll) || !QFileInfo::exists(script)) {
+    QString       script = QDir::toNativeSeparators(dir + "/install-vcam.ps1");
+    // Removing it works from the copy the installer leaves beside it, too.
+    const QString installedScript = QDir::toNativeSeparators(
+        qEnvironmentVariable("ProgramFiles", "C:/Program Files") + "/uConnect/VirtualCamera/install-vcam.ps1");
+    if (uninstall && !QFileInfo::exists(script) && QFileInfo::exists(installedScript)) {
+        // Run a copy: the script removes the folder it is kept in.
+        script = QDir::toNativeSeparators(QDir::temp().filePath("uconnect-uninstall-vcam.ps1"));
+        QFile::remove(script);
+        QFile::copy(installedScript, script);
+    }
+    if (!QFileInfo::exists(script) || (!uninstall && !QFileInfo::exists(dll))) {
         emit notify(tr("This build has no uConnect Camera component (%1).").arg(QDir::toNativeSeparators(dir)));
         return;
     }
-    const std::wstring parameters = QStringLiteral("-NoProfile -ExecutionPolicy Bypass -File \"%1\" -Source \"%2\"")
-                                        .arg(script, dll).toStdWString();
-    SHELLEXECUTEINFOW info{sizeof(info)};
-    info.fMask        = SEE_MASK_NOCLOSEPROCESS;
-    info.lpVerb       = L"runas";
-    info.lpFile       = L"powershell.exe";
-    info.lpParameters = parameters.c_str();
-    info.nShow        = SW_HIDE;
-    if (!ShellExecuteExW(&info) || !info.hProcess) {
-        if (GetLastError() != ERROR_CANCELLED)
-            emit notify(tr("Could not start the installer (error %1).").arg(GetLastError()));
-        return;
-    }
-    installing_ = true;
+    const QString arguments = uninstall
+        ? QStringLiteral("-NoProfile -ExecutionPolicy Bypass -File \"%1\" -Uninstall").arg(script)
+        : QStringLiteral("-NoProfile -ExecutionPolicy Bypass -File \"%1\" -Source \"%2\"").arg(script, dll);
+    task_ = uninstall ? QStringLiteral("uninstall") : QStringLiteral("install");
     emit changed();
-    // Wait for it off the GUI thread.
+
     QPointer<VirtualCamera> self(this);
-    std::thread([self, process = info.hProcess] {
-        WaitForSingleObject(process, INFINITE);
-        DWORD code = 1;
-        GetExitCodeProcess(process, &code);
-        CloseHandle(process);
-        QMetaObject::invokeMethod(qApp, [self, code] {
+    std::thread([self, uninstall, parameters = arguments.toStdWString()] {
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        SHELLEXECUTEINFOW info{sizeof(info)};
+        info.fMask        = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        info.lpVerb       = L"runas";
+        info.lpFile       = L"powershell.exe";
+        info.lpParameters = parameters.c_str();
+        info.nShow        = SW_HIDE;
+        const bool  started = ShellExecuteExW(&info) && info.hProcess;
+        const DWORD error   = started ? 0 : GetLastError();
+        DWORD       code    = 1;
+        if (started) {
+            WaitForSingleObject(info.hProcess, INFINITE);
+            GetExitCodeProcess(info.hProcess, &code);
+            CloseHandle(info.hProcess);
+        }
+        CoUninitialize();
+        QMetaObject::invokeMethod(qApp, [self, uninstall, started, error, code] {
             if (!self) return;
-            self->installing_ = false;
+            self->task_.clear();
             self->refreshSupport();
             emit self->changed();
-            emit self->notify(self->installed_ ? tr("The uConnect Camera is installed.")
-                                               : tr("Installing the uConnect Camera failed (code %1).").arg(code));
+            if (!started) {
+                if (error != ERROR_CANCELLED)
+                    emit self->notify(tr("Could not start the installer (error %1).").arg(error));
+            } else if (uninstall) {
+                emit self->notify(!self->installed_ ? tr("The uConnect Camera was removed.")
+                                                    : tr("Removing the uConnect Camera failed (code %1).").arg(code));
+            } else {
+                emit self->notify(self->installed_ ? tr("The uConnect Camera is installed.")
+                                                   : tr("Installing the uConnect Camera failed (code %1).").arg(code));
+            }
         });
     }).detach();
+#else
+    Q_UNUSED(uninstall);
 #endif
 }
 

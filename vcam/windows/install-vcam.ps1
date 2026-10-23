@@ -48,6 +48,8 @@ if (-not $Source -or -not (Test-Path $Source)) {
 }
 New-Item -ItemType Directory -Force $target | Out-Null
 Copy-OrStopCameraService { Copy-Item -Force $Source $dll }
+# Kept beside it, so uConnect can remove it later without its package.
+Copy-Item -Force $PSCommandPath (Join-Path $target 'install-vcam.ps1')
 $code = Invoke-Regsvr @('/s', "`"$dll`"")
 if ($code -ne 0) { exit $code }
 
