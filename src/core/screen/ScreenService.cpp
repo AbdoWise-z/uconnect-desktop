@@ -572,13 +572,13 @@ void ScreenService::decodeNext(const Peer& peer) {
     auto complete = std::move(viewer.toDecode);
     viewer.toDecode.clear();
     const auto token = viewer.token; const auto generation = decoderGeneration_; const auto started = monotonicMs();
-    // Played out at the host's pace, every picture is needed; shown at once,
-    // only the last of a batch (the others just advance the decoder). A
-    // picture costs a copy out of the decoder (from the GPU, for hardware
-    // decoding), so a decoder that has fallen behind (a batch of several:
-    // e.g. a phone's 1220x2712 screen at 60 fps) makes only the last one and
-    // catches up instead of building a backlog that is then thrown away.
-    const bool everyFrame = display_ || (viewer.bufferMs > 0 && complete.size() <= 2);
+    // Played out at the host's pace, every picture is needed (a batch of
+    // several completing together is the usual thing after a repeat fills a
+    // gap, and the buffer shows them in cadence); shown at once, only the
+    // last of a batch (the others just advance the decoder), since a picture
+    // costs a copy out of the decoder and the older ones would be thrown
+    // away anyway.
+    const bool everyFrame = display_ || viewer.bufferMs > 0;
     QMetaObject::invokeMethod(decoderWorker_, [this, peer, token, generation, complete = std::move(complete), started, everyFrame] {
         auto& decoder = decoders_[peer]; if (!decoder) decoder = std::make_unique<Decoder>();
         QVector<Viewer::Shown> images; bool any = false;
