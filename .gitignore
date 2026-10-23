@@ -2,6 +2,7 @@
 .idea/
 cmake-build-*/
 build/
+build-vcam/
 dist/
 toolchain-tmp.cmake
 

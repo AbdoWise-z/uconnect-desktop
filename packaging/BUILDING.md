@@ -16,6 +16,12 @@ Add `-DriverPackage <folder>` to include the extended display driver: the
 local build's `x64/Release/UConnectVDD` folder. Until the driver has a
 release signature, Windows asks once whether to trust its publisher.
 
+The package also includes the uConnect Camera (a watched camera used as a
+webcam): `scripts/build-vcam.ps1`, which the packaging script runs, builds its
+media source with Visual Studio 2022 (C++ workload) and tests it. Pass
+`-SkipVirtualCamera` to leave it out. For a development build, run the script
+and point `UCONNECT_VCAM_DIR` at its output (`build-vcam/vcam`).
+
 macOS requires Xcode Command Line Tools, CMake 4.3+, Ninja and Qt 6.5+ for macOS.
 With Homebrew installed, dependencies can be installed with `brew install cmake ninja qt`.
 Then run:

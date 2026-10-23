@@ -189,6 +189,17 @@ private slots:
         QVERIFY2(host, qPrintable(safety.errorString()));
     }
 
+    // A camera's viewer window, with the webcam button and its install prompt.
+    void loadsCameraViewerWindow() {
+        QQmlComponent component(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/ServiceWindow.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> window(component.createWithInitialProperties(
+            {{"service", "camera"}, {"devId", QString(32, 'a')}, {"visible", false}}));
+        QVERIFY2(window, qPrintable(component.errorString()));
+        QVERIFY(window->property("vcam").value<QObject*>() != nullptr);
+        QVERIFY(!window->property("vcamOn").toBool());
+    }
+
     void loadsExtendedDisplayQml() {
         const QString devId(32, 'a');
         QQmlComponent setup(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/DisplaySetup.qml"));

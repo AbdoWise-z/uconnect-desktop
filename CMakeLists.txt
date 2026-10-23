@@ -184,6 +184,21 @@ add_library(uconnect_desktop_screen_ui STATIC
     src/core/screen/StopShortcut.cpp src/core/screen/StopShortcut.hpp)
 if (UCD_SCREEN_AVAILABLE)
     target_sources(uconnect_desktop_screen_ui PRIVATE src/app/InputCapture.cpp src/app/InputCapture.hpp)
+    # The virtual camera: a watched camera shown to the system as a webcam.
+    # Windows' system side is the uconnect-vcam.dll media source (vcam/windows,
+    # built with MSVC by scripts/package-windows.ps1).
+    target_sources(uconnect_desktop_screen_ui PRIVATE
+        src/app/VirtualCamera.cpp src/app/VirtualCamera.hpp
+        src/app/vcam/VcamOutput.hpp src/app/vcam/VcamImage.cpp)
+    if (WIN32)
+        target_sources(uconnect_desktop_screen_ui PRIVATE src/app/vcam/VcamWindows.cpp)
+        target_include_directories(uconnect_desktop_screen_ui PRIVATE vcam/include)
+        target_link_libraries(uconnect_desktop_screen_ui PRIVATE mfplat ole32 advapi32 shell32)
+    elseif (UNIX AND NOT APPLE)
+        target_sources(uconnect_desktop_screen_ui PRIVATE src/app/vcam/VcamLinux.cpp)
+    else ()
+        target_sources(uconnect_desktop_screen_ui PRIVATE src/app/vcam/VcamNone.cpp)
+    endif ()
     if (APPLE)
         enable_language(OBJCXX)
         target_sources(uconnect_desktop_screen_ui PRIVATE src/core/screen/NativeCursor_mac.mm)
@@ -445,6 +460,8 @@ if (UCD_BUILD_TESTS)
         target_link_libraries(ScreenInputTest PRIVATE uconnect_desktop_screen_ui)
         ucd_add_test(NativeCursorTest)
         target_link_libraries(NativeCursorTest PRIVATE uconnect_desktop_screen_ui Qt6::Gui)
+        ucd_add_test(VirtualCameraTest)
+        target_link_libraries(VirtualCameraTest PRIVATE uconnect_desktop_screen_ui Qt6::Gui)
         target_link_libraries(ScreenSessionTest PRIVATE uconnect_rendezvous)
         set_tests_properties(ScreenCodecTest ScreenSessionTest ScreenCaptureTest ScreenSpreadTest PROPERTIES
             ENVIRONMENT "UCD_TEST_OPENH264=${UCD_TEST_OPENH264}")

@@ -1,0 +1,6 @@
+LIBRARY uconnect-vcam
+EXPORTS
+    DllCanUnloadNow     PRIVATE
+    DllGetClassObject   PRIVATE
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE

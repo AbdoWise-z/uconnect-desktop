@@ -34,6 +34,57 @@ Window {
     }
     Component.onCompleted: refreshState()
 
+    // Showing this camera to other apps as a webcam ("uConnect Camera").
+    readonly property var vcam: service === "camera" ? App.camera.virtualCamera : null
+    readonly property bool vcamOn: vcam !== null && vcam.peer === devId
+    function toggleWebcam() {
+        if (vcamOn) { vcam.stop(); return }
+        if (!vcam.installed && vcam.canInstall) { installWebcam.open(); return }
+        vcam.start(devId, content.item && content.item.rotationDeg !== undefined ? content.item.rotationDeg : 0)
+    }
+    Connections {
+        target: content.item
+        ignoreUnknownSignals: true
+        function onRotationDegChanged() { if (win.vcamOn) win.vcam.setRotation(content.item.rotationDeg) }
+    }
+    Popup {
+        id: installWebcam
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        padding: 20
+        width: 440
+        background: Rectangle { color: Theme.panel; border.color: Theme.popupBorder; radius: 8 }
+        ColumnLayout {
+            width: parent.width
+            spacing: 10
+            RowLayout {
+                spacing: 10
+                UIcon { name: "webcam"; size: 22; color: Theme.accent }
+                Text {
+                    text: qsTr("Use cameras in other apps")
+                    color: Theme.text
+                    font.pixelSize: 16
+                    font.bold: true
+                }
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: Theme.textSecondary
+                text: qsTr("uConnect can show the camera you are watching to other apps, as “uConnect Camera”. That needs a small system component, installed once with administrator rights.")
+            }
+            RowLayout {
+                Layout.topMargin: 6
+                Item { Layout.fillWidth: true }
+                UButton { text: qsTr("Cancel"); onClicked: installWebcam.close() }
+                UButton {
+                    text: qsTr("Install...")
+                    onClicked: { win.vcam.install(); installWebcam.close() }
+                }
+            }
+        }
+    }
+
     width: 1000
     height: 680
     minimumWidth: 560
@@ -239,6 +290,20 @@ Window {
 
                 Item { Layout.fillWidth: true }
 
+                UIconButton {
+                    visible: win.vcam !== null && win.vcam.supported
+                    glyph: "webcam"
+                    checked: win.vcamOn
+                    enabled: (win.vcamOn || win.mediaState.state === "live") && !win.vcam.installing
+                    tip: win.vcam === null ? ""
+                         : win.vcam.installing ? qsTr("Installing the uConnect Camera…")
+                         : win.vcamOn ? (win.vcam.inUse ? qsTr("An app is using it as “uConnect Camera” — click to stop")
+                                                        : qsTr("Shown to apps as “uConnect Camera” — click to stop"))
+                         : win.vcam.installed ? qsTr("Use as a webcam in other apps")
+                         : win.vcam.canInstall ? qsTr("Use as a webcam in other apps (installs the uConnect Camera)")
+                         : win.vcam.hint
+                    onClicked: win.toggleWebcam()
+                }
                 UIconButton {
                     id: tuneButton
                     visible: win.isVideo

@@ -11,6 +11,7 @@
 #include <QMediaDevices>
 #include <QVideoSink>
 #include "app/InputCapture.hpp"
+#include "app/VirtualCamera.hpp"
 #endif
 
 class QScreen;
@@ -26,6 +27,9 @@ class ScreenController : public QObject {
     Q_PROPERTY(QVariantList hosting READ hosting NOTIFY hostingChanged)
     Q_PROPERTY(QVariantList consents READ consents NOTIFY consentChanged)
     Q_PROPERTY(QString shortcutError READ shortcutError NOTIFY hostingChanged)
+    // The camera controller's VirtualCamera (a watched camera as a webcam);
+    // null for screen sharing.
+    Q_PROPERTY(QObject* virtualCamera READ virtualCamera CONSTANT)
 public:
     ScreenController(Session* session, QObject* parent = nullptr, bool camera = false);
     ~ScreenController() override;
@@ -35,6 +39,7 @@ public:
     QVariantList hosting() const { return hosting_; }
     QVariantList consents() const { return consents_; }
     QString shortcutError() const { return shortcutError_; }
+    QObject* virtualCamera() const;
     void setShortcutError(const QString& error);
     Q_INVOKABLE QVariantMap state(const QString& peer) const { return states_.value(peer); }
     Q_INVOKABLE void configure(const QVariantMap& settings);
@@ -87,6 +92,7 @@ private:
     QTimer cursorTimer_;
     quint64 sourceGeneration_ = 0;
     QVariantList cameras_;  // all cameras on this machine (camera controller only)
+    VirtualCamera* virtualCamera_ = nullptr;  // camera controller only
     void startCamera(int index, quint64 generation);
     quintptr cursorShape_ = 0;
     void input(const QString& peer, const QJsonObject& message);

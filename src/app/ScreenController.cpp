@@ -30,6 +30,10 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
         settings_[it.key()] = store.value((shared ? "screen/" : ns) + it.key(), it.value());
     }
 #ifdef UCD_HAS_SCREEN
+    if (camera_) {
+        virtualCamera_ = new VirtualCamera(this);
+        connect(virtualCamera_, &VirtualCamera::notify, this, &ScreenController::notify);
+    }
     auto* service = this->service();
     moveTimer_.setInterval(9); moveTimer_.setTimerType(Qt::PreciseTimer);
     connect(&moveTimer_, &QTimer::timeout, this, [this] {
@@ -83,10 +87,15 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
             moves_.remove(peer); buttons_.remove(peer);
         }
         if (!update.value("detail").toString().isEmpty()) emit notify(update.value("detail").toString());
+        // The virtual camera lasts while its camera is watched.
+        const QString viewState = update.value("state").toString();
+        if (virtualCamera_ && peer == virtualCamera_->peer() && (viewState == "ended" || viewState == "denied"))
+            virtualCamera_->stop();
         emit stateChanged(peer);
     });
     connect(service, &screen::ScreenService::frameReady, this, [this](const QString& peer, const QVideoFrame& frame) {
         if (const auto sink = sinks_.value(peer)) sink->setVideoFrame(frame);
+        if (virtualCamera_) virtualCamera_->push(peer, frame);
     });
     connect(service, &screen::ScreenService::hostingChanged, this, [this](const QVariantList& hosting) {
         hosting_ = hosting;
@@ -123,6 +132,13 @@ ScreenController::~ScreenController() {
     for (auto* filter : std::as_const(captures_)) delete filter;
     captures_.clear();
     capture_.stop(); captureSession_.setCamera(nullptr); cameraCapture_.reset();
+#endif
+}
+QObject* ScreenController::virtualCamera() const {
+#ifdef UCD_HAS_SCREEN
+    return virtualCamera_;
+#else
+    return nullptr;
 #endif
 }
 bool ScreenController::available() const {

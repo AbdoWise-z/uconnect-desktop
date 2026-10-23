@@ -46,6 +46,11 @@
   device's rules allow it without asking, with a sharing bar and a hotkey to
   stop. Watch a phone's screen or camera, and control an Android phone.
   Hardware encoding (NVENC, VideoToolbox) where available.
+- **Another device's camera as a webcam** *(in progress)*. While you watch a
+  camera, the webcam button in its header shows it to every other app as
+  "uConnect Camera" (video calls, recording). Windows 11 uses a small media
+  source, installed once with administrator rights from that button; Linux
+  uses a [v4l2loopback](https://github.com/umlaeute/v4l2loopback) device.
 - **Extended display.** A Windows or macOS computer gains a real extra monitor,
   shown full screen on another device: pick the resolution and refresh rate,
   or match the other screen. Windows uses the uConnect display driver
@@ -134,6 +139,7 @@ confirmation; on macOS, choose **Open Anyway** under System Settings → Privacy
 | Watch a shared screen    | ✓ | ✓ | ✓ |
 | Gain an extended display | ✓ | ✓ | — |
 | Be an extended display   | ✓ | ✓ | ✓ |
+| A camera as a webcam     | ✓ (Windows 11) | — | ✓ (v4l2loopback) |
 | Tray, start at sign-in   | ✓ | ✓ | ✓ (where the desktop has a tray) |
 
 Phones join the same topics with
@@ -182,6 +188,7 @@ the rest.
 | `src/core/` | Sessions, permissions, storage, sync, screen sharing and extended display (no UI) |
 | `src/app/` | The Qt side: controllers exposed to QML, the tray, sign-in start |
 | `qml/` | The interface |
+| `vcam/` | The uConnect Camera: the Windows media source (MSVC) and the frame channel it shares with the app |
 | `tests/` | Qt Test suites, run by `ctest` |
 | `packaging/`, `scripts/` | Icons, package READMEs and the packaging scripts |
 | `docs/protocol.md` | The app protocol on top of uconnect: messages, permissions, every service |

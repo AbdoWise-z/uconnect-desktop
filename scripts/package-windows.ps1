@@ -4,7 +4,9 @@ param(
     # The uconnect-vdd driver package (UConnectVDD.inf, .dll, .cat): a release
     # or CI artifact of github.com/AbdoWise-z/uconnect-vdd, or a local build's
     # x64\Release\UConnectVDD. Without it the package has no extended display.
-    [string]$DriverPackage = ''
+    [string]$DriverPackage = '',
+    # Leave out the uConnect Camera component (needs Visual Studio 2022 to build).
+    [switch]$SkipVirtualCamera
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,6 +62,13 @@ if ($DriverPackage) {
         Copy-Item -Destination $driverPath
 } else {
     Write-Warning 'No -DriverPackage: extended displays will ask for a driver this package does not have.'
+}
+# The uConnect Camera: its media source and installer, which the app runs
+# elevated the first time a camera is used as a webcam.
+if ($SkipVirtualCamera) {
+    Write-Warning 'No virtual camera: watched cameras cannot be used as webcams with this package.'
+} else {
+    & (Join-Path $PSScriptRoot 'build-vcam.ps1') -Output (Join-Path $packagePath 'vcam') | Out-Null
 }
 @'
 [Paths]
