@@ -468,6 +468,10 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             if (value.isDouble() && std::isfinite(value.toDouble())) host[QLatin1String(key)] = value.toDouble();
         }
         host["pipeline"] = msg.value("pipeline").toString().left(128);
+        if (const auto transport = msg.value("transport").toString(); transport == "udp" || transport == "tcp") {
+            host["transport"] = transport;
+            if (transport == "tcp") viewer->second.receiver.setReliable(true);
+        }
         viewer->second.hostStats = host;
         showViewer(peer, "live", {}, {{"host", host}});
     } else if (forViewer && type == "scr.status") {
@@ -500,8 +504,12 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
                 // on, late rather than lost (not for an extended display, which
                 // must stay direct), starting the bitrate over.
                 auto& h = host->second;
+                // Nothing at all arrived of what was sent: all of it is lost
+                // (the viewer cannot count frames it never saw a piece of).
+                const quint64 lost = report->received + report->lost == 0 ? h.sentSinceReport : report->lost;
+                h.sentSinceReport = 0;
                 if (!display_ && overTcp_ && (h.path == "direct" || h.path == "relayed") &&
-                    h.lossy.report(report->received, report->lost) && overTcp_(peer)) {
+                    h.lossy.report(report->received, lost) && overTcp_(peer)) {
                     emit activity(QStringLiteral("%1 loses too much over UDP: its stream goes over TCP now").arg(authorize_(peer).name));
                     pathChanged(peer, QStringLiteral("tcp")); h.forceKey = true;
                     return true;
@@ -698,6 +706,7 @@ void ScreenService::pathChanged(const Peer& peer, const QString& path) {
     }
     if (auto it = viewers_.find(peer); it != viewers_.end()) {
         it->second.path = path; showViewer(peer, it->second.state);
+        if (path == "tcp") it->second.receiver.setReliable(true);
     }
 }
 
@@ -907,6 +916,7 @@ void ScreenService::publishStats(qint64 now) {
         msg["targetFps"] = host.congestion.fps(); msg["targetKbps"] = host.congestion.bitrate() / 1000;
         msg["width"] = host.congestion.width(); msg["threads"] = converterThreads();
         msg["senderDrops"] = double(host.sender.dropped()); msg["pipeline"] = lastPipeline_;
+        msg["transport"] = host.path == "tcp" ? "tcp" : "udp";
         send_(peer, msg);
     }
     if (statsOn_ && (!hosts_.empty() || !viewers_.empty())) {
@@ -965,7 +975,9 @@ void ScreenService::tick() {
             if (host.controlRequest && now >= host.controlExpires) setControl(peer, false, host.controlRequest, "control request timed out");
             if (host.control && !controlAllowed(peer)) setControl(peer, false, 0, "control permission withdrawn");
             if (now - host.lastReport > 5000 || !allowed(peer)) expired.push_back(peer);
-            else if (!host.sender.pump(now, [&](const QByteArray& packet) { return datagram_(peer, packet); })) host.forceKey = true;
+            else if (!host.sender.pump(now, [&](const QByteArray& packet) {
+                         const bool sent = datagram_(peer, packet); if (sent) ++host.sentSinceReport; return sent;
+                     })) host.forceKey = true;
             if (!host.framesSent && !host.stalledTold && now - host.startedAt > 5000) {
                 host.stalledTold = true;
                 const QString source = camera_ ? QStringLiteral("camera") : QStringLiteral("screen");

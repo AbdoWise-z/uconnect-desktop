@@ -146,6 +146,7 @@ private:
         PacedSender sender;
         CongestionController congestion;
         LossyPath lossy;
+        quint64 sentSinceReport = 0;  // datagrams, for the viewer's next report
     };
     struct Viewer {
         quint32 request = 0;

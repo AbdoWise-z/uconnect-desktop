@@ -176,9 +176,10 @@ ColumnLayout {
                             .arg(n(host.fps, 0)).arg(n(host.encodeMs, 1)).arg(n(host.convertMs, 1)).arg(host.threads || 0)
                             .arg(n(host.queue, 1)).arg(host.queuePeak || 0).arg(n(host.dropped, 1)),
                     host.fps === undefined ? ""
-                        : qsTr("Host target: %1 fps, %2 Mbit/s, %3 px · sending %4 Mbit/s · %5")
+                        : qsTr("Host target: %1 fps, %2 Mbit/s, %3 px · sending %4 Mbit/s%6 · %5")
                             .arg(host.targetFps || 0).arg(n((host.targetKbps || 0) / 1000, 1)).arg(host.width || 0)
                             .arg(n((host.sentKbps || 0) / 1000, 1)).arg(host.pipeline || "")
+                            .arg(host.transport ? qsTr(" over %1").arg(host.transport.toUpperCase()) : "")
                 ].filter(line => line.length > 0).join("\n")
             }
         }

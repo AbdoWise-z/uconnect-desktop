@@ -131,13 +131,13 @@ QVector<EncodedFrame> Reassembler::receive(const QByteArray& packet, qint64 nowM
         (index + 1 < count && packet.size() != 1100)) return {};
     if (haveLast_ && !newer(number, last_)) { ++stats_.late; return {}; }
     if (!frames_.contains(number)) {
-        if (frames_.size() >= (patient_ ? 16u : 8u) || buffered_ + packet.size() > MaxFrameBytes * 2) {
+        if (frames_.size() >= (reliable_ ? 64u : patient_ ? 16u : 8u) || buffered_ + packet.size() > MaxFrameBytes * 2) {
             requestKey_ = true; return {};
         }
         Assembly assembly;
         assembly.frame = {session_, number, read<quint32>(packet, 12), bool(packet[1] & 1), {}};
         assembly.parts.resize(count);
-        assembly.deadline = nowMs + 2 * interval_ + qint64(std::clamp(stats_.jitterMs, 0., 60.));
+        assembly.deadline = nowMs + (reliable_ ? ReliableWaitMs : 2 * interval_ + qint64(std::clamp(stats_.jitterMs, 0., 60.)));
         frames_.emplace(number, std::move(assembly));
     }
     auto it = frames_.find(number);
@@ -154,7 +154,7 @@ QVector<EncodedFrame> Reassembler::receive(const QByteArray& packet, qint64 nowM
     buffered_ += assembly.parts[index].size(); ++assembly.received; ++stats_.received;
     // Still arriving is not late: a sender may spread a big frame (a phone's
     // keyframe, paced for its uplink) over several frame intervals.
-    assembly.deadline = std::max(assembly.deadline, nowMs + 2 * interval_ + qint64(std::clamp(stats_.jitterMs, 0., 60.)));
+    assembly.deadline = std::max(assembly.deadline, nowMs + (reliable_ ? ReliableWaitMs : 2 * interval_ + qint64(std::clamp(stats_.jitterMs, 0., 60.))));
     if (assembly.received == count) {
         assembly.complete = true;
         // Clock offset cancels in differences. Timestamp wrap is handled in
@@ -202,7 +202,7 @@ Recovery Reassembler::expire(qint64 nowMs) {
         if (nowMs < assembly.deadline) { ++it; continue; }
         // Ask once for what is missing, unless it could not be decoded anyway
         // (a delta while waiting for a keyframe).
-        if (!assembly.complete && assembly.nacks < (patient_ ? 3 : 1) && (assembly.frame.keyframe || !waiting_)) {
+        if (!reliable_ && !assembly.complete && assembly.nacks < (patient_ ? 3 : 1) && (assembly.frame.keyframe || !waiting_)) {
             Recovery::Nack nack{it->first, {}};
             for (int i = 0; i < assembly.parts.size(); ++i) if (assembly.parts[i].isEmpty()) nack.indexes.push_back(i);
             recovery.nacks.push_back(std::move(nack));

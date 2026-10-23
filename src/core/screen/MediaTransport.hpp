@@ -91,6 +91,12 @@ public:
     // loss the resent packets can be lost too) and 16 frames may be in
     // flight, before it is dropped and a keyframe asked for.
     void setPatient(bool patient) { patient_ = patient; }
+    // The host sends over TCP: nothing is lost, only late, so a frame gets
+    // much longer to arrive and no repair is asked for (asking for a keyframe
+    // would only put more into a full pipe).
+    void setReliable(bool reliable) { reliable_ = reliable; }
+    static constexpr int ReliableWaitMs = 1500;
+    bool reliable() const { return reliable_; }
     QVector<EncodedFrame> receive(const QByteArray& packet, qint64 nowMs);
     Recovery expire(qint64 nowMs);
     Feedback report(double decodeMs = 0);
@@ -110,7 +116,7 @@ private:
     void erase(std::map<quint32, Assembly>::iterator it);
     quint16 session_ = 0;
     int interval_ = 33;
-    bool waiting_ = true, haveLast_ = false, requestKey_ = false, patient_ = false;
+    bool waiting_ = true, haveLast_ = false, requestKey_ = false, patient_ = false, reliable_ = false;
     quint32 last_ = 0;
     qint64 lastKeyRequest_ = -1000;
     std::map<quint32, Assembly> frames_;
