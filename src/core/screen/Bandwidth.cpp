@@ -7,8 +7,9 @@ namespace ucd::screen {
 namespace {
 constexpr int TrendWindow = 20;        // samples the trend line is fitted through
 constexpr double TrendGain = 4.0;      // the slope, scaled to compare with the threshold
-constexpr double OveruseHoldMs = 10;   // the trend must stay above the threshold this long
-constexpr double ReceiveWindowMs = 500;
+constexpr double OveruseHoldMs = 100;  // the trend must stay above the threshold this long (a cellular
+                                       // link delivers in bursts, which read as a sawtooth of delay)
+constexpr double ReceiveWindowMs = 1000;
 constexpr double MaxTargetOverReceived = 1.5;  // never ask for much more than the path has shown it takes
 }  // namespace
 
@@ -59,11 +60,15 @@ void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64
         deltas_ = std::min(deltas_ + 1, 60);
     }
     if (got + lost > 0) loss_ = 0.8 * loss_ + 0.2 * double(lost) / double(got + lost);
-    // The receive rate over the last half second of arrivals.
+    // The receive rate over the last second of arrivals. A link that
+    // delivers in bursts (cellular) packs a window's packets into a few
+    // milliseconds: the span is never read shorter than a quarter second,
+    // and a window that has filled counts as the whole of it.
     while (!received_.empty() && received_.front().first < lastArrivalMs_ - ReceiveWindowMs) received_.pop_front();
     if (received_.size() >= 2) {
         qint64 total = 0; for (const auto& [at, size] : received_) total += size;
-        const double span = std::max(50., lastArrivalMs_ - received_.front().first);
+        const double covered = lastArrivalMs_ - received_.front().first;
+        const double span = covered > ReceiveWindowMs - 200 ? ReceiveWindowMs : std::max(250., covered);
         receiveBps_ = int(total * 8000. / span);
     }
     // Trend line through the recent samples: its slope is the signal.
