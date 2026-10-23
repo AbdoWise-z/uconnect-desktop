@@ -7,7 +7,7 @@
 #include <cmath>
 
 #include "core/Permissions.hpp"
-#include "core/screen/MediaTransport.hpp"
+#include "core/screen/MediaPacket.hpp"
 
 namespace ucd::display {
 namespace {

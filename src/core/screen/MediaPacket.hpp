@@ -21,6 +21,7 @@ constexpr int MaxFrameBytes = 4 * 1024 * 1024;
 constexpr int MaxFragments = (MaxFrameBytes + MediaPayload - 1) / MediaPayload;
 // Highest frame rate a session may ask for or run at (high refresh displays).
 constexpr int MaxFps = 165;
+constexpr int MinBitrate = 150000, MaxBitrate = 100000000;
 
 struct EncodedFrame {
     quint16 session = 0;

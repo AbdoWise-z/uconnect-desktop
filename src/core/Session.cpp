@@ -79,9 +79,6 @@ Session::Session(QObject* parent)
     display_ = new screen::ScreenService(sendControl, access,
         [this](const auto& peer) { return openMedia(peer, uconnect::DatagramFallback::None); },
         close, sendDatagram, this, {}, {}, screen::Kind::Display);
-    const auto overTcp = [this](const auto& peer) { return media_.overTcp(peer); };
-    screen_->setOverTcp(overTcp);
-    camera_->setOverTcp(overTcp);
     displays_ = new display::DisplayService(sendControl, access, display_, display::create, display::status, this);
     connect(screen_, &screen::ScreenService::activity, this, &Session::logMessage);
     connect(camera_, &screen::ScreenService::activity, this, &Session::logMessage);

@@ -6,7 +6,7 @@
 #include <QDir>
 #include <QBuffer>
 #include <QPermissions>
-#include "core/screen/MediaTransport.hpp"  // MaxFps
+#include "core/screen/MediaPacket.hpp"  // MaxFps, MaxBitrate
 #ifdef Q_OS_WIN
 #include <windows.h>
 #elif defined(Q_OS_MACOS)
@@ -166,13 +166,13 @@ void ScreenController::configure(const QVariantMap& values) {
         if (settings_.contains(it.key()) && !(camera_ && sharedKey(it.key()))) settings_[it.key()] = it.value();
     settings_["maxFps"] = std::clamp(settings_["maxFps"].toInt(), 1, screen::MaxFps);
     settings_["maxWidth"] = std::clamp(settings_["maxWidth"].toInt(), 320, 3840);
-    settings_["maxBitrate"] = std::clamp(settings_["maxBitrate"].toInt(), 150000, screen::CongestionController::MaxBitrate);
+    settings_["maxBitrate"] = std::clamp(settings_["maxBitrate"].toInt(), screen::MinBitrate, screen::MaxBitrate);
     settings_["maxViewers"] = std::clamp(settings_["maxViewers"].toInt(), 1, 8);
     settings_["encoderThreads"] = std::clamp(settings_["encoderThreads"].toInt(), 0, 16);
     settings_["queueFrames"] = std::clamp(settings_["queueFrames"].toInt(), 1, 30);
     settings_["viewFps"] = std::clamp(settings_["viewFps"].toInt(), 1, screen::MaxFps);
     settings_["viewWidth"] = std::clamp(settings_["viewWidth"].toInt(), 320, 3840);
-    settings_["viewBitrate"] = std::clamp(settings_["viewBitrate"].toInt(), 0, screen::CongestionController::MaxBitrate);
+    settings_["viewBitrate"] = std::clamp(settings_["viewBitrate"].toInt(), 0, screen::MaxBitrate);
     settings_["viewBufferMs"] = std::clamp(settings_["viewBufferMs"].toInt(), 0, 2000);
     if (!QList<int>{228, 41, 69}.contains(settings_["releaseUsage"].toInt())) settings_["releaseUsage"] = 228;
     QSettings store;

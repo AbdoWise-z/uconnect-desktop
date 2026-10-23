@@ -8,6 +8,8 @@
 #include <QVariantMap>
 #include <atomic>
 #include "Codec.hpp"
+#include "MediaReceiver.hpp"
+#include "MediaSender.hpp"
 #include "DesktopEncoder.hpp"
 #include "Input.hpp"
 #include "Cursor.hpp"
@@ -61,12 +63,6 @@ public:
     ScreenService(Send send, Authorize authorize, Open open, Close close, Datagram datagram,
         QObject* parent = nullptr, Now now = {}, std::unique_ptr<InputBackend> input = {}, Kind kind = Kind::Screen);
     Kind kind() const { return kind_; }
-    // A viewer this far behind has the host drop its queue and restart from a keyframe.
-    static constexpr int BehindMs = 600;
-    // Moves a peer's media onto TCP (DatagramChannel::overTcp); used when its
-    // UDP path loses too much.
-    using OverTcp = std::function<bool(const Peer&)>;
-    void setOverTcp(OverTcp overTcp) { overTcp_ = std::move(overTcp); }
     // Extended display, sending side: the session `request` was agreed and
     // the virtual monitor is settings.monitors[0]. Streams it at `width`
     // (its pixel width) and `fps`.
@@ -140,19 +136,13 @@ private:
         QString controlRefused;  // control was asked for but cannot be granted: why
         quint64 framesSent = 0;
         int maxBitrate = 0;  // the viewer's cap, within this device's
-        double reportLoss = 0, reportTrendMs = 0;  // the last report, for the stats log
+        // What the viewer asked for; `width` and `fps` step down from them
+        // with the rate the path allows (adaptQuality).
+        int maxWidth = 1920, maxFps = 30;
         bool stalledTold = false;
-        std::optional<quint32> nackedFrame;
-        int nackRepeats = 0;  // repeated requests for nackedFrame answered so far
         QString path = "opening";
-        PacedSender sender;
-        CongestionController congestion;
-        LossyPath lossy;
-        quint64 sentSinceReport = 0;  // datagrams, for the viewer's next report
-        bool delivered = false;       // the viewer has received something: the stream is up
-        quint32 lastSentCaptureMs = 0;  // of the newest frame queued to send
-        double lagMs = 0;               // how far behind the viewer is, from its reports
-        qint64 behindAt = 0;            // when the queue was last dropped for lag
+        MediaSender media;
+        qint64 qualityAt = 0;  // when width and fps were last reconsidered
     };
     struct Viewer {
         quint32 request = 0;
@@ -160,7 +150,7 @@ private:
         qint64 expires = 0, reportAt = 0;
         int width = 1920, fps = 30, maxBitrate = 0, bufferMs = 0;
         QString state = "requesting", path = "opening";
-        Reassembler receiver;
+        MediaReceiver media;
         quint64 bytes = 0;
         int decoded = 0;
         double decodeMs = 0;
@@ -206,6 +196,7 @@ private:
     // its new place in the list, and ends if that monitor is gone.
     void followMonitors(const QVariantList& before);
     void encodeCapture(quint32 captureMs);  // the native path
+    void adaptQuality(Host& host);
     void decodeNext(const Peer& peer);
     void presentNext(const Peer& peer, Viewer& viewer, qint64 now);
     void playout(const Peer& peer, Viewer& viewer, qint64 now);
@@ -246,7 +237,6 @@ private:
     Open open_;
     Close close_;
     Datagram datagram_;
-    OverTcp overTcp_;
     Now now_;
     ScreenSettings settings_;
     Kind kind_ = Kind::Screen;

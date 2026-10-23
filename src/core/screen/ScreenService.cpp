@@ -79,7 +79,7 @@ void ScreenService::configure(const ScreenSettings& settings) {
     settings_.controlOffered = controlOffered;
     settings_.maxFps = std::clamp(settings.maxFps, 1, MaxFps);
     settings_.maxWidth = std::clamp(settings.maxWidth, 320, 3840);
-    settings_.maxBitrate = std::clamp(settings.maxBitrate, 150000, CongestionController::MaxBitrate);
+    settings_.maxBitrate = std::clamp(settings.maxBitrate, MinBitrate, MaxBitrate);
     settings_.maxViewers = std::clamp(settings.maxViewers, 1, 8);
     settings_.encoderThreads = std::clamp(settings.encoderThreads, 0, 16);
     settings_.queueFrames = std::clamp(settings.queueFrames, 1, 30);
@@ -163,7 +163,7 @@ void ScreenService::failMedia(const Peer& peer, const QString& detail) {
 bool ScreenService::startDisplayHost(const Peer& peer, quint32 request, int width, int fps) {
     if (!display_ || !request || hosts_.contains(peer) || settings_.monitors.isEmpty() || !allowed(peer)) return false;
     Host host; host.request = request; host.expires = now_() + 30000;
-    host.width = std::clamp(width, 320, 3840); host.fps = std::clamp(fps, 1, MaxFps);
+    host.maxWidth = host.width = std::clamp(width, 320, 3840); host.maxFps = host.fps = std::clamp(fps, 1, MaxFps);
     hosts_.emplace(peer, std::move(host)); timer_.start();
     startHost(peer);
     return hosts_.contains(peer);
@@ -197,7 +197,7 @@ void ScreenService::request(const Peer& peer, bool control, int maxWidth, int fp
     viewer.wantControl = control && !camera_;
     viewer.request = nextRequest_++; if (!nextRequest_) ++nextRequest_;
     viewer.width = std::clamp(maxWidth, 320, 3840); viewer.fps = std::clamp(fps, 1, MaxFps);
-    viewer.maxBitrate = maxBitrate > 0 ? std::clamp(maxBitrate, CongestionController::MinBitrate, CongestionController::MaxBitrate) : 0;
+    viewer.maxBitrate = maxBitrate > 0 ? std::clamp(maxBitrate, MinBitrate, MaxBitrate) : 0;
     viewer.bufferMs = std::clamp(bufferMs, 0, 2000);
     viewer.expires = now_() + 35000; viewer.reportAt = now_();
     viewers_.emplace(peer, std::move(viewer)); timer_.start();
@@ -240,9 +240,14 @@ void ScreenService::startHost(const Peer& peer) {
     host.live = true; host.lastReport = now_(); host.startedAt = now_();
     host.monitor = settings_.monitor;
     for (const auto& [other, existing] : hosts_) if (other != peer && existing.live) { host.monitor = existing.monitor; break; }
-    host.congestion.setTolerant(display_);
     if (!host.maxBitrate) host.maxBitrate = settings_.maxBitrate;
-    host.congestion.reset(host.path, host.fps, host.width, host.maxBitrate, display_ ? DisplayStartBitrate : 0);
+    MediaSender::Options options;
+    options.kind = 1; options.session = host.token; options.fps = host.fps;
+    options.minBps = MinBitrate; options.maxBps = host.maxBitrate;
+    // An extended display runs between nearby devices with room to spare.
+    options.startBps = std::min(host.maxBitrate, display_ ? DisplayStartBitrate : 1500000);
+    options.reliable = host.path == "tcp";
+    host.media.reset(options);
     if (!open_(peer)) { fail(peer, host.request, "transport"); hosts_.erase(peer); emit hostEnded(hex(peer), "transport"); return; }
     emit consentClosed(hex(peer), host.request);
     host.control = host.wantControl && controlAllowed(peer) && input_.available().isEmpty();
@@ -384,11 +389,11 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         if (wantControl && std::any_of(hosts_.begin(), hosts_.end(), [](const auto& entry) { return entry.second.control || (!entry.second.live && entry.second.wantControl) || entry.second.controlRequest; })) { fail(peer, requestId, "control busy"); return true; }
         Host host; host.request = requestId; host.expires = now_() + 30000;
         host.wantControl = wantControl; host.controlRefused = controlRefused;
-        host.width = std::min(settings_.maxWidth, std::clamp(msg.value("maxWidth").toInt(1920), 320, 3840));
-        host.fps = std::min(settings_.maxFps, std::clamp(msg.value("maxFps").toInt(30), 1, MaxFps));
+        host.maxWidth = host.width = std::min(settings_.maxWidth, std::clamp(msg.value("maxWidth").toInt(1920), 320, 3840));
+        host.maxFps = host.fps = std::min(settings_.maxFps, std::clamp(msg.value("maxFps").toInt(30), 1, MaxFps));
         // The viewer may ask for less than this device allows, never more.
         const int asked = msg.value("maxBitrate").toInt(0);
-        host.maxBitrate = asked > 0 ? std::min(settings_.maxBitrate, std::max(asked, CongestionController::MinBitrate)) : settings_.maxBitrate;
+        host.maxBitrate = asked > 0 ? std::min(settings_.maxBitrate, std::max(asked, MinBitrate)) : settings_.maxBitrate;
         hosts_.emplace(peer, std::move(host)); timer_.start();
         const auto& perms = authorize_(peer).permissions;
         const bool directOk = camera_
@@ -421,8 +426,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             viewer->second.token = quint16(token); viewer->second.expires = now_() + 10000;
             viewer->second.liveAt = now_();
             viewer->second.fps = std::clamp(msg.value("fps").toInt(30), 1, MaxFps);
-            viewer->second.receiver.setPatient(display_);
-            viewer->second.receiver.reset(quint16(token), viewer->second.fps);
+            viewer->second.media.reset(quint16(token), 1, viewer->second.fps);
             viewer->second.control = viewer->second.wantControl && !camera_ && msg.value("control").toBool();
             if (!open_(peer)) { stopViewer(peer, "transport unavailable"); return true; }
             viewer->second.channel = true;
@@ -463,15 +467,14 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         // How the sending side keeps up, for the viewer's statistics.
         QVariantMap host;
         for (const char* key : {"fps", "encodeMs", "convertMs", "queue", "queuePeak", "dropped", "throttled", "sentKbps",
-                                "targetFps", "targetKbps", "width", "threads", "senderDrops", "lagMs"}) {
+                                "targetFps", "targetKbps", "width", "threads", "senderDrops", "lagMs",
+                                "rttMs", "lossPct", "fec", "receiveKbps", "repeats"}) {
             const auto value = msg.value(QLatin1String(key));
             if (value.isDouble() && std::isfinite(value.toDouble())) host[QLatin1String(key)] = value.toDouble();
         }
         host["pipeline"] = msg.value("pipeline").toString().left(128);
-        if (const auto transport = msg.value("transport").toString(); transport == "udp" || transport == "tcp") {
-            host["transport"] = transport;
-            if (transport == "tcp") viewer->second.receiver.setReliable(true);
-        }
+        if (const auto transport = msg.value("transport").toString(); transport == "udp" || transport == "tcp") host["transport"] = transport;
+        host["estimator"] = msg.value("estimator").toString().left(16);
         viewer->second.hostStats = host;
         showViewer(peer, "live", {}, {{"host", host}});
     } else if (forViewer && type == "scr.status") {
@@ -496,54 +499,8 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
         if (type == "scr.control") {
             if (msg.value("on").toBool()) requestHostControl(peer, requestId);
             else setControl(peer, false, requestId);
-        } else if (type == "scr.report") {
-            if (const auto report = Feedback::parse(msg)) {
-                if (now_() - host->second.lastReport < 100) return true;
-                host->second.lastReport = now_();
-                // UDP losing much of the stream for seconds: over TCP from now
-                // on, late rather than lost (not for an extended display, which
-                // must stay direct), starting the bitrate over.
-                auto& h = host->second;
-                // Nothing at all arrived of what was sent: all of it is lost
-                // (the viewer cannot count frames it never saw a piece of).
-                // (Once something has arrived: before that the stream is still
-                // starting, not lost.)
-                if (report->received > 0) h.delivered = true;
-                const quint64 lost = h.delivered && report->received + report->lost == 0 ? h.sentSinceReport : report->lost;
-                h.sentSinceReport = 0;
-                if (!display_ && overTcp_ && (h.path == "direct" || h.path == "relayed") &&
-                    h.lossy.report(report->received, lost) && overTcp_(peer)) {
-                    emit activity(QStringLiteral("%1 loses too much over UDP: its stream goes over TCP now").arg(authorize_(peer).name));
-                    pathChanged(peer, QStringLiteral("tcp")); h.forceKey = true;
-                    return true;
-                }
-                // How far behind the viewer is: the newest frame it has against
-                // the newest sent, on this clock. Well behind (TCP queuing what
-                // the path cannot carry): drop what waits, start again from a
-                // keyframe, and ease the bitrate.
-                if (report->latestMs >= 0) h.lagMs = std::max(0, int(qint32(h.lastSentCaptureMs - quint32(report->latestMs))));
-                if (h.lagMs > BehindMs && now_() - h.behindAt > 1500) {
-                    h.behindAt = now_(); h.sender.dropQueued(); h.forceKey = true;
-                }
-                h.congestion.update(*report, h.lagMs);
-                host->second.reportLoss = double(report->lost) / std::max(1., double(report->received + report->lost));
-                host->second.reportTrendMs = report->owdTrendMs;
-            }
-        } else if (type == "scr.keyframe") host->second.forceKey = true;
-        else if (type == "scr.nack") {
-            const double frameValue = msg.value("frame").toDouble(-1);
-            if (frameValue < 0 || frameValue > 4294967295. || std::floor(frameValue) != frameValue) return true;
-            const auto frame = quint32(frameValue);
-            // An extended display may ask again (up to three times) for a frame
-            // whose resent packets were lost too; otherwise once per frame.
-            if (host->second.nackedFrame == frame && ++host->second.nackRepeats >= (display_ ? 3 : 1)) return true;
-            if (host->second.nackedFrame != frame) host->second.nackRepeats = 0;
-            host->second.nackedFrame = frame;
-            const auto array = msg.value("indexes").toArray();
-            if (array.size() > MaxFragments) return true;
-            QVector<int> indexes; for (const auto& index : array) indexes.push_back(index.toInt(-1));
-            for (const auto& packet : host->second.sender.retransmit(frame, indexes, now_()))
-                if (!datagram_(peer, packet)) break;
+        } else if (type == "scr.keyframe") {
+            host->second.forceKey = true;
         } else if (type == "scr.monitor") {
             const int index = msg.value("index").toInt(-1);
             if (index >= 0 && index < settings_.monitors.size()) {
@@ -554,7 +511,7 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
                 input_.setBounds(QRect(bounds.value("inputX", bounds.value("x")).toInt(), bounds.value("inputY", bounds.value("y")).toInt(),
                     bounds.value("inputWidth", bounds.value("width")).toInt(), bounds.value("inputHeight", bounds.value("height")).toInt()));
                 for (auto& [other, existing] : hosts_) if (existing.live) {
-                    existing.monitor = index; existing.forceKey = true; existing.sender.reset();
+                    existing.monitor = index; existing.forceKey = true; existing.media.dropQueued();
                     auto changed = message("scr.monitorChanged", existing.token); changed["index"] = index; send_(other, changed);
                 }
                 emit captureChanged(true, index);
@@ -572,6 +529,17 @@ void ScreenService::receive(const Peer& peer, const QByteArray& wire) {
     if (camera_) { if (packet[0] != 3) return; packet[0] = 1; }
     else if (display_) { if (packet[0] != 4 && packet[0] != 5) return; packet[0] = char(packet[0] - 3); }
     else if (packet[0] != 1 && packet[0] != 2) return;
+    // A viewer's feedback for this device's sending side.
+    if (packet[0] == 1 && packetType(packet) == PacketType::Feedback) {
+        const auto host = hosts_.find(peer);
+        if (host == hosts_.end() || !host->second.live) return;
+        const auto feedback = Feedback::decode(packet);
+        if (!feedback || feedback->session != host->second.token) return;
+        host->second.lastReport = now_();
+        host->second.media.onFeedback(packet, now_());
+        if (host->second.media.takeKeyframeWanted(now_())) host->second.forceKey = true;
+        return;
+    }
     const auto it = viewers_.find(peer);
     if (it == viewers_.end() || !it->second.token || !viewerAllowed(peer)) return;
     auto& viewer = it->second;
@@ -582,7 +550,7 @@ void ScreenService::receive(const Peer& peer, const QByteArray& wire) {
         showViewer(peer, "live", {}, {{"cursorX", cursor->point.x()}, {"cursorY", cursor->point.y()}, {"cursorVisible", cursor->visible}});
         return;
     }
-    auto complete = viewer.receiver.receive(packet, now_()); viewer.bytes += packet.size();
+    auto complete = viewer.media.receive(packet, now_()); viewer.bytes += packet.size();
     if (complete.isEmpty()) return;
     // Frames that complete while the decoder is busy wait for it: each one is
     // a reference for the next, so none may be skipped. Only a decoder far
@@ -590,8 +558,7 @@ void ScreenService::receive(const Peer& peer, const QByteArray& wire) {
     viewer.toDecode += complete; stats_.completed += complete.size();
     if (viewer.toDecode.size() > std::max(8, viewer.fps)) {
         viewer.toDecode.clear();
-        viewer.receiver.reset(viewer.token, viewer.fps);
-        send_(peer, message("scr.keyframe", viewer.token));
+        viewer.media.restartFromKeyframe();
         return;
     }
     if (!viewer.decoding) decodeNext(peer);
@@ -633,8 +600,7 @@ void ScreenService::decodeNext(const Peer& peer) {
             v.decoding = false; v.decodeMs = elapsed; stats_.decodeMs += elapsed;
             if (!any) {
                 v.toDecode.clear();
-                v.receiver.reset(token, v.fps);
-                send_(peer, message("scr.keyframe", token));
+                v.media.restartFromKeyframe();
             } else if (!images.isEmpty()) {
                 v.decoded += int(images.size());
                 if (!v.pictured) {
@@ -706,8 +672,7 @@ void ScreenService::playout(const Peer& peer, Viewer& viewer, qint64 now) {
 void ScreenService::pathChanged(const Peer& peer, const QString& path) {
     if (auto it = hosts_.find(peer); it != hosts_.end()) {
         it->second.path = path;
-        it->second.congestion.reset(path, it->second.fps, it->second.width,
-                                    it->second.maxBitrate ? it->second.maxBitrate : settings_.maxBitrate, display_ ? DisplayStartBitrate : 0);
+        it->second.media.setReliable(path == "tcp");
         // An extended display needs the devices near each other: through the
         // relay or over TCP it would lag too far behind the mouse.
         if (display_ && it->second.live && path != "direct" && path != "opening") {
@@ -717,7 +682,6 @@ void ScreenService::pathChanged(const Peer& peer, const QString& path) {
     }
     if (auto it = viewers_.find(peer); it != viewers_.end()) {
         it->second.path = path; showViewer(peer, it->second.state);
-        if (path == "tcp") it->second.receiver.setReliable(true);
     }
 }
 
@@ -735,9 +699,10 @@ void ScreenService::submitImage(const QImage& image) {
 }
 
 void ScreenService::queueCapture(const QVideoFrame& video, const QImage& image, quint32 captureMs) {
-    bool watched = false; int fps = settings_.maxFps, width = settings_.maxWidth;
+    bool watched = false, skip = false; int fps = settings_.maxFps, width = settings_.maxWidth;
     for (const auto& [peer, host] : hosts_) if (host.live) {
-        watched = true; fps = std::min(fps, host.congestion.fps()); width = std::min(width, host.congestion.width());
+        watched = true; fps = std::min(fps, host.fps); width = std::min(width, host.width);
+        skip |= host.media.shouldSkipCapture(now_());
     }
     // The native path, while it is tried or used, captures by itself: Qt's
     // frames are not needed then. (Synthetic images always count.)
@@ -747,6 +712,10 @@ void ScreenService::queueCapture(const QVideoFrame& video, const QImage& image, 
     // bunch up to catch up.
     const double now = double(now_());
     if (now < nextCapture_ - .5) { ++stats_.throttled; return; }
+    // A sender with a queue (the path takes less than it sends): a frame
+    // captured now would only wait in it. Skipped before it is encoded, so
+    // no keyframe is needed.
+    if (skip) { ++stats_.dropped; return; }
     if (int(pipeline_.size()) >= std::clamp(settings_.queueFrames, 1, 30)) { ++stats_.dropped; return; }
     nextCapture_ = std::max(nextCapture_ + 1000. / fps, now);
     Job job; job.seq = nextJob_++; job.captureMs = captureMs; job.video = video; job.image = image;
@@ -789,8 +758,8 @@ ScreenService::Targets ScreenService::takeTargets() {
     int width = settings_.maxWidth, fps = settings_.maxFps, bitrate = settings_.maxBitrate;
     for (auto& [peer, host] : hosts_) if (host.live) {
         targets.hosts[peer] = host.token; targets.key |= host.forceKey; host.forceKey = false;
-        width = std::min(width, host.congestion.width()); fps = std::min(fps, host.congestion.fps());
-        bitrate = std::min(bitrate, host.congestion.bitrate());
+        width = std::min(width, host.width); fps = std::min(fps, host.fps);
+        bitrate = std::min(bitrate, host.media.encoderBps());
     }
     targets.options = CodecOptions{width, fps, bitrate, {}, settings_.ciscoLibrary, converterThreads()};
     return targets;
@@ -828,10 +797,13 @@ void ScreenService::pumpEncoder() {
 // The native path (desktop duplication): captures, converts and encodes on
 // the GPU, one frame at a time, polled from tick().
 void ScreenService::encodeCapture(quint32 captureMs) {
-    bool watched = false; int fps = settings_.maxFps;
-    for (const auto& [peer, host] : hosts_) if (host.live) { watched = true; fps = std::min(fps, host.congestion.fps()); }
+    bool watched = false, skip = false; int fps = settings_.maxFps;
+    for (const auto& [peer, host] : hosts_) if (host.live) { watched = true; fps = std::min(fps, host.fps); skip |= host.media.shouldSkipCapture(now_()); }
     const double now = double(now_());
-    if (!watched || now < nextCapture_ - .5) { if (watched) ++stats_.throttled; capturePending_ = false; pumpEncoder(); return; }
+    if (!watched || skip || now < nextCapture_ - .5) {
+        if (skip) ++stats_.dropped; else if (watched) ++stats_.throttled;
+        capturePending_ = false; pumpEncoder(); return;
+    }
     nextCapture_ = std::max(nextCapture_ + 1000. / fps, now); ++stats_.encodes;
     const auto targets = takeTargets();
     const auto number = nextFrame_; const auto generation = generation_;
@@ -879,6 +851,7 @@ void ScreenService::encodeCapture(quint32 captureMs) {
 // no frame means one was lost, so the next must be a keyframe.
 void ScreenService::encoded(const std::map<Peer, quint16>& targets, quint64 generation, const std::optional<EncodedFrame>& result,
                             const QString& error, const QString& name, int fps, double encodeMs, bool lostIfEmpty) {
+    Q_UNUSED(fps);
     stats_.encodeMs += encodeMs; if (result) ++stats_.frames;
     if (generation != generation_) return;
     if (!result && error.isEmpty() && lostIfEmpty)
@@ -889,12 +862,7 @@ void ScreenService::encoded(const std::map<Peer, quint16>& targets, quint64 gene
         if (it == hosts_.end() || it->second.token != token) continue;
         if (result) {
             auto frame = *result; frame.session = token;
-            // Extended displays run on a direct path with room to spare: a
-            // shorter spread costs less latency.
-            const double spread = display_ && it->second.path == "direct" ? 0.25 : 0.5;
-            const int paceBps = display_ ? 3 * it->second.congestion.bitrate() : 0;
-            it->second.lastSentCaptureMs = frame.captureMs;
-            if (!it->second.sender.enqueue(frame, now_(), 1000 / fps, spread, paceBps)) { it->second.forceKey = true; ++stats_.refused; }
+            if (!it->second.media.enqueue(frame, now_())) { it->second.forceKey = true; ++stats_.refused; }
             else { ++it->second.framesSent; ++stats_.queued; stats_.bytesSent += frame.bytes.size(); }
         } else if (!error.isEmpty()) {
             auto failure = message("scr.error", token); failure["detail"] = error;
@@ -925,10 +893,13 @@ void ScreenService::publishStats(qint64 now) {
         msg["queue"] = queue; msg["queuePeak"] = stats_.queuePeak;
         msg["dropped"] = perSecond(stats_.dropped + stats_.busy); msg["throttled"] = perSecond(stats_.throttled);
         msg["sentKbps"] = double(stats_.bytesSent) * 8. / span;
-        msg["targetFps"] = host.congestion.fps(); msg["targetKbps"] = host.congestion.bitrate() / 1000;
-        msg["width"] = host.congestion.width(); msg["threads"] = converterThreads();
-        msg["senderDrops"] = double(host.sender.dropped()); msg["pipeline"] = lastPipeline_;
-        msg["transport"] = host.path == "tcp" ? "tcp" : "udp"; msg["lagMs"] = host.lagMs;
+        msg["targetFps"] = host.fps; msg["targetKbps"] = host.media.targetBps() / 1000;
+        msg["width"] = host.width; msg["threads"] = converterThreads();
+        msg["senderDrops"] = double(host.media.dropped()); msg["pipeline"] = lastPipeline_;
+        msg["transport"] = host.path == "tcp" ? "tcp" : "udp"; msg["lagMs"] = host.media.lagMs();
+        msg["rttMs"] = host.media.rttMs(); msg["lossPct"] = host.media.lossRate() * 100; msg["fec"] = host.media.fecGroup();
+        msg["receiveKbps"] = host.media.receiveBps() / 1000; msg["repeats"] = double(host.media.retransmitted());
+        msg["estimator"] = host.media.estimatorState();
         send_(peer, msg);
     }
     if (statsOn_ && (!hosts_.empty() || !viewers_.empty())) {
@@ -937,12 +908,13 @@ void ScreenService::publishStats(qint64 now) {
         for (const auto& [peer, host] : hosts_) if (host.live) {
             line += QStringLiteral(" host: offered %1/s (busy %2/s), throttled %3/s, dropped %4/s, queue %5 (peak %6),"
                                    " convert %7 ms on %8 threads, encodes %9/s at %10 ms, frames %11/s, refused %12/s, sender drops %13"
-                                   " | target %14 fps %15 kbit/s %16 px | loss %17% trend %18 ms | %19")
+                                   " | target %14 fps %15 kbit/s %16 px | loss %17% lag %18 ms rtt %20 ms recv %21 kbit/s fec %22 %23 | %19")
                 .arg(rate(stats_.offered), rate(stats_.busy), rate(stats_.throttled), rate(stats_.dropped))
                 .arg(queue, 0, 'f', 1).arg(stats_.queuePeak).arg(convertMs, 0, 'f', 1).arg(converterThreads())
                 .arg(rate(stats_.encodes)).arg(encodeMs, 0, 'f', 1).arg(rate(stats_.frames), rate(stats_.refused))
-                .arg(host.sender.dropped()).arg(host.congestion.fps()).arg(host.congestion.bitrate() / 1000).arg(host.congestion.width())
-                .arg(host.reportLoss * 100, 0, 'f', 1).arg(host.reportTrendMs, 0, 'f', 1).arg(lastPipeline_);
+                .arg(host.media.dropped()).arg(host.fps).arg(host.media.targetBps() / 1000).arg(host.width)
+                .arg(host.media.lossRate() * 100, 0, 'f', 1).arg(host.media.lagMs(), 0, 'f', 0).arg(lastPipeline_)
+                .arg(host.media.rttMs(), 0, 'f', 0).arg(host.media.receiveBps() / 1000).arg(host.media.fecGroup()).arg(host.media.estimatorState());
             break;
         }
         if (!viewers_.empty())
@@ -987,9 +959,11 @@ void ScreenService::tick() {
             if (host.controlRequest && now >= host.controlExpires) setControl(peer, false, host.controlRequest, "control request timed out");
             if (host.control && !controlAllowed(peer)) setControl(peer, false, 0, "control permission withdrawn");
             if (now - host.lastReport > 5000 || !allowed(peer)) expired.push_back(peer);
-            else if (!host.sender.pump(now, [&](const QByteArray& packet) {
-                         const bool sent = datagram_(peer, packet); if (sent) ++host.sentSinceReport; return sent;
-                     })) host.forceKey = true;
+            else {
+                host.media.pump(now, [&](const QByteArray& packet) { return datagram_(peer, packet); });
+                if (host.media.takeKeyframeWanted(now)) host.forceKey = true;
+                if (now - host.qualityAt >= 200) { host.qualityAt = now; adaptQuality(host); }
+            }
             if (!host.framesSent && !host.stalledTold && now - host.startedAt > 5000) {
                 host.stalledTold = true;
                 const QString source = camera_ ? QStringLiteral("camera") : QStringLiteral("screen");
@@ -1008,16 +982,15 @@ void ScreenService::tick() {
             viewer.stalledTold = true;
             showViewer(peer, "live", {}, {{"stalled", true}});
         }
-        const auto recovery = viewer.receiver.expire(now);
-        if (recovery.keyframe) send_(peer, message("scr.keyframe", viewer.token));
-        for (const auto& nack : recovery.nacks) {
-            auto msg = message("scr.nack", viewer.token); msg["frame"] = double(nack.frame);
-            QJsonArray indexes; for (int index : nack.indexes) indexes.push_back(index);
-            msg["indexes"] = indexes; send_(peer, msg);
+        viewer.media.expire(now);
+        if (viewer.channel && viewer.media.feedbackDue(now)) {
+            const int playout = viewer.present.empty() ? viewer.bufferMs
+                : int(qint32(viewer.present.front().captureMs + quint32(viewer.baseline + viewer.bufferMs) - quint32(now)));
+            const auto feedback = viewer.media.takeFeedback(now, std::max(0, playout), viewer.decodeMs);
+            if (!feedback.isEmpty()) datagram_(peer, feedback);
         }
         if (now - viewer.reportAt >= 300) {
-            const auto report = viewer.receiver.report(viewer.decodeMs); auto msg = report.json();
-            msg["t"] = "scr.report"; msg["session"] = viewer.token; send_(peer, msg);
+            const auto report = viewer.media.report();
             const double span = double(std::max<qint64>(1, now - viewer.reportAt));
             // How long the next picture waits to be shown: the buffer in use.
             const double waiting = viewer.present.empty() ? 0.
@@ -1027,7 +1000,8 @@ void ScreenService::tick() {
                 {"bufferMs", viewer.bufferMs}, {"waitingMs", waiting}, {"waitingFrames", int(viewer.present.size())},
                 {"bitrate", double(viewer.bytes) * 8000. / span}, {"decodeMs", viewer.decodeMs},
                 {"loss", double(report.lost) / std::max(1., double(report.received + report.lost))},
-                {"jitterMs", report.jitterMs}});
+                {"jitterMs", viewer.media.jitterMs()}, {"recovered", double(report.recovered)}, {"repeats", double(report.repaired)},
+                {"givenUp", double(report.givenUp)}});
             viewer.bytes = 0; viewer.decoded = 0; viewer.shown = viewer.late = viewer.skipped = 0; viewer.reportAt = now;
         }
     }
@@ -1040,6 +1014,29 @@ void ScreenService::monitor(const Peer& peer, int index) {
     if (const auto it = viewers_.find(peer); it != viewers_.end() && it->second.token) {
         auto msg = message("scr.monitor", it->second.token); msg["index"] = index; send_(peer, msg);
     }
+}
+
+// Width and frame rate follow the rate the path allows: enough bits per
+// pixel and frame for a clean picture, down a rung at a time and up again
+// only with room to spare (each change costs the encoder a keyframe).
+void ScreenService::adaptQuality(Host& host) {
+    static constexpr int rungs[] = {3840, 2560, 1920, 1280, 854};
+    static constexpr int needs[] = {8000000, 4000000, 2000000, 800000, 0};  // at 30 fps
+    const int bps = host.media.encoderBps();
+    const double atFps = std::clamp(host.maxFps / 30., 0.5, 4.);
+    // Frame rate first: under about half a megabit even the smallest picture
+    // needs fewer frames to stay clean.
+    int fps = host.maxFps;
+    if (bps < 250000) fps = std::min(fps, 10);
+    else if (bps < 400000 || (host.fps <= 15 && bps < 520000)) fps = std::min(fps, 15);
+    int width = host.width;
+    int rung = 0; while (rung < 4 && rungs[rung] > host.maxWidth) ++rung;
+    int current = 0; while (current < 4 && rungs[current] > width) ++current;
+    const double scale = fps >= 30 ? atFps : 0.6;
+    if (bps < needs[current] * scale * 0.8 && current < 4) width = rungs[current + 1];       // down a rung
+    else if (current > rung && bps > needs[current - 1] * scale * 1.3) width = rungs[current - 1];  // up a rung
+    width = std::min(width, host.maxWidth);
+    if (width != host.width || fps != host.fps) { host.width = width; host.fps = fps; host.media.setFps(fps); }
 }
 
 void ScreenService::setControl(const Peer& peer, bool on, quint32 request, const QString& detail) {

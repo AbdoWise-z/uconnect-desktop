@@ -118,8 +118,6 @@ add_library(uconnect_desktop_core STATIC
     src/core/Session.hpp
     src/core/screen/DatagramChannel.cpp
     src/core/screen/DatagramChannel.hpp
-    src/core/screen/MediaTransport.cpp
-    src/core/screen/MediaTransport.hpp
     src/core/screen/MediaPacket.cpp
     src/core/screen/MediaPacket.hpp
     src/core/screen/Bandwidth.cpp
@@ -480,7 +478,6 @@ if (UCD_BUILD_TESTS)
     ucd_add_test(IdentityTest)
     ucd_add_test(NetworkRulesTest)
     ucd_add_test(ScreenFoundationTest)
-    ucd_add_test(ScreenTransportTest)
     ucd_add_test(MediaTransportTest)
     if (NOT TARGET uconnect_rendezvous)  # uconnect adds it itself when building the server
         add_subdirectory(${uconnect_SOURCE_DIR}/server ${uconnect_BINARY_DIR}/server)

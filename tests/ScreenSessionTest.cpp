@@ -65,13 +65,14 @@ private slots:
         service.handle(peer(1), request());
         const int token = sent.back().value("session").toInt(); QVERIFY(token > 0);
         const auto statuses = [&] { return std::count_if(sent.begin(), sent.end(), [](const auto& m) { return m.value("t") == "scr.status"; }); };
-        const QJsonObject report{{"t", "scr.report"}, {"session", token}, {"received", 0}, {"lost", 0}, {"late", 0},
-                                 {"jitterMs", 0}, {"owdTrendMs", 0}, {"decodeMs", 0}};
-        time = 4000; service.handle(peer(1), report); service.tick(); QCOMPARE(statuses(), 0);
+        // The viewer's feedback keeps the session alive, even with nothing to report.
+        Feedback keepalive; keepalive.session = quint16(token);
+        const auto report = keepalive.encode(1);
+        time = 4000; service.receive(peer(1), report); service.tick(); QCOMPARE(statuses(), 0);
         time = 5001; service.tick(); QCOMPARE(statuses(), 1);
         QVERIFY(sent.back().value("detail").toString().contains("not produced a picture"));
         QVERIFY(std::any_of(activity.begin(), activity.end(), [](const auto& a) { return a[0].toString().contains("not produced a picture"); }));
-        time = 6000; service.handle(peer(1), report); service.tick(); QCOMPARE(statuses(), 1);
+        time = 6000; service.receive(peer(1), report); service.tick(); QCOMPARE(statuses(), 1);
     }
 
     // Unplugging another monitor (ending an extended display, say) moves the

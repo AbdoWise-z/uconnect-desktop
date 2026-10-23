@@ -126,7 +126,7 @@ QVector<EncodedFrame> MediaReceiver::deliver() {
 }
 
 void MediaReceiver::give(std::map<quint32, Assembly>::iterator it) {
-    ++stats_.givenUp; stats_.lost += std::max(0, it->second.count - it->second.got);
+    ++stats_.givenUp;
     const auto& a = it->second;
     if (giveLog.size() < 12) {
         int nacked = 0; for (const auto& [seq, since] : missing_) if (!seqNewer(a.lowSeq, seq) && !seqNewer(seq, a.highSeq)) ++nacked;
@@ -154,15 +154,16 @@ void MediaReceiver::expire(qint64 nowMs) {
 }
 
 bool MediaReceiver::feedbackDue(qint64 nowMs) const {
-    if (!haveSeq_) return false;
-    // Sooner when a keyframe is wanted, but not every packet: the sender
-    // reads its send rate from each feedback's window.
+    // With nothing arriving yet (or a still screen sending nothing), a word
+    // every half second keeps the session alive. Sooner when a keyframe is
+    // wanted, but not every packet: the sender reads its send rate from each
+    // feedback's window.
+    if (!haveSeq_) return nowMs - lastFeedbackMs_ >= KeepAliveMs;
     return nowMs - lastFeedbackMs_ >= FeedbackIntervalMs || qint32(highestSeq_ - feedbackBase_) >= Feedback::MaxArrivals - 20 ||
            (keyWanted_ && nowMs - lastFeedbackMs_ >= FeedbackIntervalMs / 2);
 }
 
 QByteArray MediaReceiver::takeFeedback(qint64 nowMs, int playoutMs, double decodeMs) {
-    if (!haveSeq_) return {};
     Feedback f;
     f.session = session_; f.baseSeq = feedbackBase_;
     // Arrival times are quarter milliseconds after a reference 16 s ago,
@@ -180,10 +181,11 @@ QByteArray MediaReceiver::takeFeedback(qint64 nowMs, int playoutMs, double decod
     // Every sequence from the base to the highest seen: when it arrived, or
     // that it has not (the sender counts those lost, and sends again the ones
     // asked for below).
-    const int span = std::min(int(qint32(highestSeq_ - feedbackBase_)) + 1, Feedback::MaxArrivals);
+    const int span = haveSeq_ ? std::min(int(qint32(highestSeq_ - feedbackBase_)) + 1, Feedback::MaxArrivals) : 0;
     for (int i = 0; i < span; ++i) {
         const quint32 seq = feedbackBase_ + quint32(i);
         const auto at = arrivals_.find(seq);
+        if (at == arrivals_.end()) ++stats_.lost;
         f.arrivals.push_back(at == arrivals_.end() ? Feedback::Missing : quint16(std::clamp<qint64>((at->second - ref) * 4, 0, 65534)));
     }
     feedbackBase_ += quint32(span);

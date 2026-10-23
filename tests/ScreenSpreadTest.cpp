@@ -32,9 +32,9 @@ private slots:
         service.handle(peer(1), request("scr.request", 1, 640));
         service.handle(peer(2), request("scr.request", 2, 320)); QCOMPARE(capture.size(), 1);
         service.handle(peer(3), request("scr.request", 3)); QCOMPARE(messages[peer(3)].back().value("code"), "busy");
-        Reassembler first, second;
-        first.reset(messages[peer(1)].front().value("session").toInt(), 30);
-        second.reset(messages[peer(2)].front().value("session").toInt(), 30);
+        MediaReceiver first, second;
+        first.reset(messages[peer(1)].front().value("session").toInt(), 1, 30);
+        second.reset(messages[peer(2)].front().value("session").toInt(), 1, 30);
         QImage source(800,400,QImage::Format_RGBA8888); source.fill(QColor(45,90,160));
         QVector<EncodedFrame> a, b;
         for (int attempt = 0; attempt < 35 && (a.isEmpty() || b.isEmpty()); ++attempt) {

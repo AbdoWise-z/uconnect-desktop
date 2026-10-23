@@ -17,7 +17,7 @@ namespace ucd::screen {
 
 class MediaReceiver {
 public:
-    static constexpr int FeedbackIntervalMs = 50;
+    static constexpr int FeedbackIntervalMs = 50, KeepAliveMs = 500;
     void reset(quint16 session, quint8 kind, int fps);
     // A media or repair packet; returns the frames now complete and in order.
     QVector<EncodedFrame> receive(const QByteArray& packet, qint64 nowMs);
@@ -28,9 +28,15 @@ public:
     // playout delay in use, `decodeMs` the decode time, for the sender's view.
     QByteArray takeFeedback(qint64 nowMs, int playoutMs, double decodeMs);
     void requestKeyframe() { keyWanted_ = true; }
+    // Drops everything being assembled and waits for a keyframe (the decoder
+    // lost its way, or fell far behind).
+    void restartFromKeyframe() { frames_.clear(); waiting_ = true; keyWanted_ = true; }
     bool waitingForKeyframe() const { return waiting_; }
     size_t pendingFrames() const { return frames_.size(); }
-    // This report period's counters (reset by report()).
+    // This report period's counters (reset by report()): packets received,
+    // reported missing, rebuilt from repair packets, late (of frames already
+    // delivered), received again on request; frames given up on, and packets
+    // discarded while waiting for a keyframe.
     struct Stats { quint64 received = 0, lost = 0, recovered = 0, late = 0, repaired = 0, givenUp = 0, discarded = 0; };
     const Stats& stats() const { return stats_; }
     Stats report();
