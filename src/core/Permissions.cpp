@@ -33,7 +33,7 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::CameraDirect, "camera", tr("Without asking"),
-         tr("View the camera without a consent prompt. Trusted devices only."),
+         tr("View the camera without a consent prompt. Only through special or network rules."),
 #ifdef UCD_HAS_SCREEN
          true,
 #else
@@ -49,7 +49,7 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::ScreenDirect, "screen", tr("Without asking"),
-         tr("View the screen without a consent prompt. Trusted devices only."),
+         tr("View the screen without a consent prompt. Only through special or network rules."),
 #ifdef UCD_HAS_SCREEN
          true,
 #else
@@ -65,7 +65,7 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::ControlDirect, "control", tr("Without asking"),
-         tr("Control mouse and keyboard without a consent prompt. Trusted devices only."),
+         tr("Control mouse and keyboard without a consent prompt. Only through special or network rules."),
 #ifdef UCD_HAS_SCREEN
          true,
 #else
@@ -81,7 +81,7 @@ const std::vector<PermissionInfo>& permissionTable() {
 #endif
          true},
         {perm::DisplayDirect, "display", tr("Without asking"),
-         tr("Use this device's screen as a monitor without a consent prompt. Trusted devices only."),
+         tr("Use this device's screen as a monitor without a consent prompt. Only through special or network rules."),
 #ifdef UCD_HAS_SCREEN
          true,
 #else

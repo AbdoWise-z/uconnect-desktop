@@ -255,7 +255,7 @@ Window {
                     visible: !win.current
                     horizontalAlignment: Text.AlignHCenter
                     font.pixelSize: Theme.fontSize
-                    text: qsTr("A synced folder stays the same on every device it is shared with: a change on any of them reaches the others. Create one, or join one a trusted device offers you.")
+                    text: qsTr("A synced folder stays the same on every device it is shared with: a change on any of them reaches the others. Create one, or join one another of your devices offers you.")
                 }
 
                 ScrollView {
@@ -461,7 +461,7 @@ Window {
                         // Devices
                         Section { text: qsTr("Devices") }
                         Help {
-                            text: qsTr("Send: the device gets this folder and your changes. Accept: you take its changes. A device that only gets sent the folder keeps a copy without changing yours. Only devices you trust can take part.")
+                            text: qsTr("Send: the device gets this folder and your changes. Accept: you take its changes. A device that only gets sent the folder keeps a copy without changing yours. Only devices that proved their identity can take part.")
                         }
                         Repeater {
                             model: win.members
@@ -488,12 +488,6 @@ Window {
                                         StatusDot {
                                             color: member.modelData.online ? Theme.success : Theme.textDisabled
                                         }
-                                        Text {
-                                            visible: !member.modelData.trusted
-                                            text: qsTr("not trusted")
-                                            color: Theme.warning
-                                            font.pixelSize: Theme.smallFontSize
-                                        }
                                     }
                                     Text {
                                         text: member.modelData.fingerprint
@@ -517,7 +511,7 @@ Window {
                         }
                         Help {
                             visible: win.current && win.members.length === 0
-                            text: qsTr("Trust a device first (from its context menu in the device list) to sync with it.")
+                            text: qsTr("Your devices appear here once they connect and prove their identity.")
                         }
 
                         // Events

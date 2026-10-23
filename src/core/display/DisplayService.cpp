@@ -20,7 +20,7 @@ quint32 requestOf(const QJsonObject& message) {
 
 QString describe(const QString& code, const QString& detail) {
     if (!detail.isEmpty()) return detail.left(300);
-    if (code == "forbidden") return QStringLiteral("The other device has to trust this one and allow it to use its screen.");
+    if (code == "forbidden") return QStringLiteral("The other device has to allow this one to use its screen, in its special or network rules.");
     if (code == "busy") return QStringLiteral("The other device is already showing a display.");
     if (code == "denied") return QStringLiteral("The other device declined.");
     if (code == "codec") return QStringLiteral("The other device cannot decode this video.");
@@ -86,7 +86,7 @@ int DisplayService::monitorCount() const {
 void DisplayService::offer(const Peer& peer, const Request& request) {
     const auto access = authorize_(peer);
     if (!access.trusted) {
-        emit hostStateChanged(hex(peer), {{"state", "ended"}, {"detail", tr("Trust the other device before using it as a display.")}});
+        emit hostStateChanged(hex(peer), {{"state", "ended"}, {"detail", tr("Give the other device special rules before using it as a display.")}});
         return;
     }
     if (const auto status = availability_(); status.availability != Availability::Ready) {
@@ -145,7 +145,7 @@ void DisplayService::accepted(const Peer& peer, quint32 request, const LocalScre
     const auto access = authorize_(peer);
     if (!access.trusted) {
         send_(peer, {{"t", "dsp.err"}, {"request", double(request)}, {"code", "forbidden"}});
-        end(peer, "ended", tr("This device no longer trusts the other one."), false);
+        end(peer, "ended", tr("The other device's rules here no longer allow it."), false);
         return;
     }
 #ifdef Q_OS_MACOS
@@ -381,7 +381,7 @@ void DisplayService::policyChanged() {
         const auto access = authorize_(peer);
         if (!access.trusted || !access.permissions.contains(perm::DisplayShow)) withdrawn.push_back(peer);
     }
-    for (const auto& peer : untrusted) end(peer, "ended", tr("The other device is no longer trusted."), true);
+    for (const auto& peer : untrusted) end(peer, "ended", tr("The other device's rules here no longer allow it."), true);
     for (const auto& peer : withdrawn) stop(peer, "permission withdrawn");
 }
 

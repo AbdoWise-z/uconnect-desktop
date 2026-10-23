@@ -16,9 +16,14 @@ Flickable {
     readonly property string name: gone ? qsTr("Device %1").arg(devId.substring(0, 8)) : peer.displayName
     readonly property string identityState: gone ? "pending" : peer.identityState
     readonly property bool verified: identityState === "verified"
-    readonly property bool trusted: !gone && peer.trusted
-    // What this device remembers about it, if trusted (its name at the time).
-    readonly property var trustEntry: verified ? App.trustedDevices.find(t => t.key === peer.identityKey) : undefined
+    // It has special rules here (its own permissions, by its key).
+    readonly property bool special: !gone && peer.special === true
+    // The network rule its address matched, if any.
+    readonly property var matchedRule: (peer.networkRule !== undefined && peer.networkRule >= 0
+                                        && peer.networkRule < App.networkRules.length)
+                                       ? App.networkRules[peer.networkRule] : null
+    // Its special rules entry (with its name when they were added), if any.
+    readonly property var specialEntry: verified ? App.specialDevices.find(t => t.key === peer.identityKey) : undefined
 
     function permissionLabel(id) {
         const d = App.permissionDefinitions.find(p => p.id === id)
@@ -26,7 +31,7 @@ Flickable {
     }
 
     signal serviceRequested(string service, string devId)
-    signal trustRequested(string devId)
+    signal specialRulesRequested(string devId)
     signal settingsRequested(string pageId)
 
     // Synced folders, rebuilt only when folders come, go or are renamed:
@@ -133,7 +138,7 @@ Flickable {
                 color: view.peer.relayed ? Theme.warning : Theme.text
                 text: view.peer.relayed
                       ? qsTr("Relayed through the rendezvous server. Still end-to-end encrypted, but the server sees traffic volume.")
-                      : qsTr("Direct")
+                      : view.peer.address ? qsTr("Direct, from %1").arg(view.peer.address) : qsTr("Direct")
             }
 
             Field { text: qsTr("Traffic"); visible: view.connected }
@@ -161,7 +166,7 @@ Flickable {
         }
 
         TitledSeparator {
-            text: qsTr("Identity & Trust")
+            text: qsTr("Identity & Rules")
         }
 
         GridLayout {
@@ -190,37 +195,41 @@ Flickable {
                     wrapMode: Text.WordWrap
                     color: view.identityState === "invalid" ? Theme.error : Theme.textSecondary
                     text: view.identityState === "invalid"
-                          ? qsTr("Its identity proof did not verify. Do not trust this device.")
+                          ? qsTr("Its identity proof did not verify: something may be impersonating it. Give it nothing.")
                           : view.connected ? qsTr("Waiting for it to prove its identity...")
                                            : qsTr("Connect to this device to see its identity.")
                 }
             }
 
-            Field { text: qsTr("Trust") }
+            Field { text: qsTr("Rules") }
             RowLayout {
                 spacing: 10
                 StatusDot {
-                    color: view.trusted ? Theme.success : Theme.textSecondary
+                    color: view.special ? Theme.success
+                         : view.peer.permissionSource === "rule" ? Theme.accent : Theme.textSecondary
                 }
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     textFormat: Text.PlainText
                     color: Theme.text
-                    text: !view.trusted ? qsTr("Not trusted")
-                          : view.trustEntry && view.trustEntry.name !== view.name
-                            ? qsTr("Trusted (as “%1”)").arg(view.trustEntry.name)
-                            : qsTr("Trusted")
+                    text: view.special
+                          ? (view.specialEntry && view.specialEntry.name !== view.name
+                             ? qsTr("Special rules (added as “%1”)").arg(view.specialEntry.name)
+                             : qsTr("Special rules"))
+                          : view.peer.permissionSource === "rule"
+                            ? qsTr("Network rule %1").arg(view.matchedRule ? (view.matchedRule.label || view.matchedRule.pattern) : "")
+                            : qsTr("Default permissions")
                 }
                 UButton {
-                    visible: view.verified && !view.trusted
-                    text: qsTr("Trust...")
-                    onClicked: view.trustRequested(view.devId)
+                    visible: view.verified && !view.special
+                    text: qsTr("Add Special Rules...")
+                    onClicked: view.specialRulesRequested(view.devId)
                 }
                 UButton {
-                    visible: view.trusted
-                    text: qsTr("Untrust")
-                    onClicked: App.untrustDevice(view.peer.identityKey)
+                    visible: view.special
+                    text: qsTr("Remove Special Rules")
+                    onClicked: App.removeSpecialRules(view.peer.identityKey)
                 }
             }
         }
@@ -228,24 +237,38 @@ Flickable {
         TitledSeparator {
             text: qsTr("What It May Do Here")
         }
+        // Where its permissions come from: its own set, a network rule, or the
+        // defaults (first that applies, see AccessPolicy).
         Text {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: Theme.textSecondary
-            text: view.trusted
-                  ? qsTr("Permissions you give this device. Changes apply immediately.")
-                  : qsTr("Untrusted devices get your default permissions. Trust this device to give it its own.")
+            text: view.peer.permissionSource === "device"
+                  ? qsTr("Its special rules. Changes apply immediately.")
+                  : view.peer.permissionSource === "rule"
+                    ? qsTr("From the network rule %1, because it connects from %2. Add special rules to give it its own.")
+                          .arg(view.matchedRule ? (view.matchedRule.label || view.matchedRule.pattern) : "")
+                          .arg(view.peer.address)
+                    : qsTr("Your default permissions, which any device with the invite link gets. Add special rules to give it its own.")
         }
         PermissionEditor {
             Layout.fillWidth: true
             granted: view.gone ? [] : view.peer.permissions
-            editable: view.trusted
+            editable: view.special
             onToggled: (permission, granted) => App.setDevicePermission(view.peer.identityKey, permission, granted)
         }
-        ULink {
-            visible: !view.trusted
-            text: qsTr("Edit default permissions...")
-            onClicked: view.settingsRequested("permissions")
+        RowLayout {
+            spacing: 14
+            ULink {
+                visible: view.verified && !view.special
+                text: qsTr("Add special rules...")
+                onClicked: view.specialRulesRequested(view.devId)
+            }
+            ULink {
+                visible: view.peer.permissionSource !== "device"
+                text: view.peer.permissionSource === "rule" ? qsTr("Edit network rules...") : qsTr("Edit default permissions...")
+                onClicked: view.settingsRequested(view.peer.permissionSource === "rule" ? "network" : "permissions")
+            }
         }
 
         TitledSeparator {
@@ -255,14 +278,14 @@ Flickable {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: Theme.textSecondary
-            text: !view.trusted
-                  ? qsTr("Only trusted devices take part in folder sync.")
+            text: !view.verified
+                  ? qsTr("A device takes part in folder sync once it has proved its identity.")
                   : view.syncFolderList.length === 0
                   ? qsTr("You have no synced folders yet.")
                   : qsTr("Send: it gets the folder and your changes. Accept: you take its changes.")
         }
         Repeater {
-            model: view.trusted ? view.syncFolderList : []
+            model: view.verified ? view.syncFolderList : []
             delegate: RowLayout {
                 id: syncRow
                 required property var modelData

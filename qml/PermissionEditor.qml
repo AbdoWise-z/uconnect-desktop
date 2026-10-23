@@ -10,7 +10,9 @@ ColumnLayout {
 
     property var granted: []      // permission ids
     property bool editable: true
-    property bool trustedDevice: true
+    // Sensitive permissions (camera, screen...) can be set: not for the
+    // defaults, which any device with the invite link gets.
+    property bool allowSensitive: true
 
     signal toggled(string permission, bool granted)
 
@@ -44,7 +46,7 @@ ColumnLayout {
                     UCheckBox {
                         Layout.preferredWidth: 130
                         text: entry.modelData.label
-                        enabled: editor.editable && (editor.trustedDevice || !entry.modelData.trustedOnly)
+                        enabled: editor.editable && (editor.allowSensitive || !entry.modelData.trustedOnly)
                         checked: editor.granted.indexOf(entry.modelData.id) >= 0
                         onToggled: editor.toggled(entry.modelData.id, checked)
                     }

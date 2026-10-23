@@ -5,7 +5,7 @@ repository and the separately maintained Flutter mobile app. An app that
 follows this document can talk to any other, whatever language it is
 written in.
 
-Revision: **storage 1.3, sync 1.0, screen/camera 1.0, display 1.0** (2026-10). Changes are listed at the end.
+Revision: **storage 1.3, sync 1.1, screen/camera 1.1, display 1.1, rules 1.0** (2026-10). Changes are listed at the end.
 
 The words MUST, SHOULD and MAY are used as in RFC 2119.
 
@@ -101,10 +101,38 @@ is sent again whenever that changes, for example after the peer's identity
 is verified. It is informative only: every request is checked again when
 it arrives.
 
+### rules.get / rules.list / rules.err: copying network rules
+
+```json
+{"t":"rules.get"}
+{"t":"rules.list", "rules":[{"pattern":"m.m.m.x", "label":"Home", "perms":["storage.observe"]}]}
+{"t":"rules.err", "code":"forbidden"}
+```
+
+A device may ask another for its network rules on the topic they share (4.2),
+for example to set itself up quickly on a network the other already uses.
+The asked device answers `rules.list` only if the asker has proven its
+identity and is covered by its special rules or one of its network rules (not
+just the defaults); otherwise `rules.err` with `forbidden`. The asking device
+MUST show the rules to its user and change nothing until they accept. A
+receiver drops invalid patterns and unknown permission ids, and keeps at most
+64 rules.
+
 ## 4. Permissions
 
-Each device decides what every peer may do, by the peer's verified key. A
-peer without a verified key gets the default set.
+Each device decides what every peer may do. The first of these that applies
+gives a peer its permissions:
+
+1. **Special rules**: permissions this device set for the peer's verified
+   key. Adding them is the moment a user compares fingerprints.
+2. **Network rules** (4.2): the first rule of this topic whose pattern
+   matches the address the peer's direct connection comes from, once its
+   identity is verified.
+3. **Defaults**: for everyone else, including peers without a verified key.
+
+Camera, screen, control and display ids are **sensitive**: special and network
+rules may grant them; the defaults never do, since any holder of the invite
+link gets the defaults.
 
 | id | allows |
 |----|--------|
@@ -116,6 +144,17 @@ peer without a verified key gets the default set.
 | `display.show`, `display.direct` | extended display requests, and accepting them without asking (7.6) |
 
 A saved grant of `storage.download`, from an earlier version, means `storage.read`.
+
+### 4.2 Network rules
+
+A device keeps an ordered list of network rules per topic. Each has a
+pattern, an optional label and a permission set. A pattern has four
+dot-separated parts, one per IPv4 byte: `x` (any value), `m` (the same as one
+of this device's own addresses, all `m` parts against the same address) or a
+number 0-255. `m.m.m.x` is this device's /24, `100.x.x.x` anything starting
+100, `x.x.x.x` any address (IPv6 too). Patterns are matched against where the
+peer's direct connection arrives from, never against addresses a peer reports
+about itself; a peer reached through the relay matches no rule.
 
 Folder sync does not use these ids. It has its own grants, **send** and
 **accept**, per folder and per peer (6.1). They are not listed in
@@ -370,8 +409,8 @@ member through any chain of members that are online.
 - **Folder id.** A folder has a random 128-bit id (32 hex digits), the same
   on every member, and a label.
 - **Who takes part.** Only a peer that has proven its identity (`id`,
-  section 3) **and** that this device trusts. Any other peer gets no sync
-  messages, and its sync messages are ignored.
+  section 3), and only in folders whose grants name its key. Any other peer
+  gets no sync messages, and its sync messages are ignored.
 - **Grants.** Each device decides two things, per folder and per peer key:
   - **send:** give the peer this folder's index and blocks.
   - **accept:** take the peer's changes into this device's copy.
@@ -604,9 +643,10 @@ These are MUSTs for any implementation:
 Media uses uConnect's encrypted datagram channel (maximum 1100 bytes),
 separate from reliable message kinds. A channel is delivered to the screen
 service only while a consented session is active. A media channel needs a
-proven identity; sharing additionally needs the host's trust (7.3).
-`screen.view`, `screen.direct`, `control.input`, `control.direct`, and
-`camera.view`, `display.show` and `display.direct` are trusted-device grants, never default permissions. Datagram kinds are separate from the reliable envelope in section
+proven identity; sharing additionally needs the host's special or network
+rules to allow it (4, 7.3). `screen.view`, `screen.direct`, `control.input`,
+`control.direct`, `camera.view`, `display.show` and `display.direct` are
+sensitive: never default permissions. Datagram kinds are separate from the reliable envelope in section
 2: 1 = screen video, 2 = screen cursor, 3 = camera video, 4 = extended display video, 5 = extended display cursor.
 
 ### 7.1 Video fragments
@@ -700,12 +740,12 @@ and live controls. A late approval/response cannot start a cancelled request.
 Tokens are scoped to an authenticated peer connection. Reliable operations
 must match that connection and its current token.
 
-Screen hosting must be offered, the requester must prove a trusted identity,
-and it must hold `screen.view`. A free viewer slot is reserved during consent.
+Screen hosting must be offered, the requester must prove its identity, and
+it must hold `screen.view` through special or network rules. A free viewer slot is reserved during consent.
 Without `screen.direct`, the host asks each time; the prompt expires in 30 s.
-Remembering approval grants the trusted identity `screen.direct`. A viewer
-requires only that the host has proven its identity: trust is the sharing
-device's decision, not the watching one's. Revocation, disconnect, stop and
+Remembering approval adds `screen.direct` to the requester's special rules.
+A viewer requires only that the host has proven its identity: what is allowed
+is the sharing device's decision, not the watching one's. Revocation, disconnect, stop and
 absence of valid feedback for 5 s end hosting. Pending viewer requests expire
 in 35 s. A viewer with no decoded picture 8 s after `scr.started` tells its
 user, along with any `scr.status` detail.
@@ -728,7 +768,7 @@ controlled, only that controlling viewer may switch it.
 
 Camera hosting uses `cam.*` counterparts of the `scr.*` view messages, and
 video fragment kind 3 with the same header as 7.1. It needs offered `camera`
-and a trusted `camera.view` grant. Every request needs host consent; screen
+and a `camera.view` grant from special or network rules. Every request needs host consent; screen
 and control direct grants do not bypass camera consent. There is no camera
 input or cursor channel. `monitors` lists cameras and `cam.monitor` selects
 one. Screen and camera streams may coexist; stopping either must preserve
@@ -751,7 +791,7 @@ consent, unless both direct grants exist. During a view session,
 `scr.control {session,request,on}` requests or drops control;
 `scr.controlled {session,request,on,detail}` answers it. A request of zero in
 the answer denotes host revocation. Control-only consent expires in 30 s.
-Control never permits input after trust or its grant is withdrawn.
+Control never permits input after its grant is withdrawn.
 
 Reliable input messages all carry `session`: `in.key {usage,down}` uses USB
 HID keyboard-page positions; `in.text {text}` carries at most 256 UTF-16
@@ -782,9 +822,10 @@ creates a virtual monitor of the agreed mode, captures it like any screen
 and sends it; the display device shows it, normally full screen. The
 handshake runs the other way round from 7.3: the sending side asks.
 
-**Who may ask.** The host asks only devices it trusts. The display device
-offers `display` in `hello`, and answers `forbidden` unless the host has
-proven a trusted identity holding `display.show`. Without `display.direct` it
+**Who may ask.** The host asks only devices its own rules cover. The display
+device offers `display` in `hello`, and answers `forbidden` unless the host
+has proven its identity and holds `display.show` through special or network
+rules. Without `display.direct` it
 asks its user each time; remembering approval grants `display.direct`.
 
 | type | direction | fields / meaning |
@@ -831,7 +872,7 @@ host that captures nothing for 15 s stops with `dsp.error`. Other timeouts
 are those of 7.2 and 7.3.
 
 **The monitor never outlives the session.** Every end (either side's stop,
-disconnect, the 5 s report timeout, the path, withdrawn trust, the app
+disconnect, the 5 s report timeout, the path, a withdrawn grant, the app
 quitting) removes the virtual monitor. Hosts must also guarantee this when
 the app crashes or hangs, through the platform: on Windows the uConnect
 virtual display driver removes a monitor when its owner's handle closes or
@@ -848,9 +889,10 @@ request gets `busy`.
 | storage 1.1 | uploads (`fs.write`…, kind 3); `fs.rename`, `fs.delete`, `fs.mkdir`; `replace`; `storage.download` folded into `storage.read` |
 | storage 1.2 | `fs.mkdir` `existing`; `fs.move`, `fs.copy`, `fs.progress`; `fs.watch`, `fs.unwatch`, `fs.changed` |
 | storage 1.3 | `sha256` on `fs.read.end` and `fs.write.end`; `fs.read` `offset`; codes `corrupt`, `too_large`, `no_space`, `read_only`; `readOnly` in listings |
-| screen/camera 1.0 | consented screen/camera sessions, H.264 datagrams, feedback/recovery, trusted control, cursor, shared sources (section 7) |
+| screen/camera 1.0 | consented screen/camera sessions, H.264 datagrams, feedback/recovery, control, cursor, shared sources (section 7) |
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
 | display 1.0 | extended display (7.6): `display` service, `display.show` / `display.direct`, `dsp.request`, `dsp.wait`, `dsp.err`, `dsp.accept`, the screen session under `dsp.*`, datagram kinds 4 and 5 |
+| rules 1.0 | trust replaced by special rules; network rules per topic (4.2); `rules.get`, `rules.list`, `rules.err`. Sync membership needs a proven identity and the folder's grants (sync 1.1); sharing needs special or network rules (screen/camera 1.1, display 1.1). Only local policy changed: no message changed shape |
 | identity | the proof context string (3) was `"uconnect-desktop identity v1"` before this revision; it is now the implementation-neutral `"uconnect identity v1"`. The `id` message keeps `"v":1`; peers from before and after do not verify each other's identity, so both ends update together. Connections and storage with default permissions are unaffected |
 
 Almost every change only adds messages, fields and codes, so an older peer

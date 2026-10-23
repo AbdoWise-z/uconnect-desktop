@@ -13,7 +13,7 @@ Rectangle {
     readonly property string currentDevId: currentTab >= 0 && currentTab < tabs.count ? tabs.get(currentTab).devId : ""
 
     signal serviceRequested(string service, string devId)
-    signal trustRequested(string devId)
+    signal specialRulesRequested(string devId)
     signal settingsRequested(string pageId)
 
     color: Theme.canvas
@@ -146,7 +146,7 @@ Rectangle {
             currentDevId: ws.currentDevId
             onOpenRequested: devId => ws.openDevice(devId)
             onServiceRequested: (service, devId) => ws.serviceRequested(service, devId)
-            onTrustRequested: devId => ws.trustRequested(devId)
+            onSpecialRulesRequested: devId => ws.specialRulesRequested(devId)
         }
 
         ColumnLayout {
@@ -190,7 +190,7 @@ Rectangle {
                     model: tabs
                     delegate: DeviceView {
                         onServiceRequested: (service, devId) => ws.serviceRequested(service, devId)
-                        onTrustRequested: devId => ws.trustRequested(devId)
+                        onSpecialRulesRequested: devId => ws.specialRulesRequested(devId)
                         onSettingsRequested: pageId => ws.settingsRequested(pageId)
                     }
                 }

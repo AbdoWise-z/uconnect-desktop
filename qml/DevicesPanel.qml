@@ -11,7 +11,7 @@ Rectangle {
 
     signal openRequested(string devId)
     signal serviceRequested(string service, string devId)
-    signal trustRequested(string devId)
+    signal specialRulesRequested(string devId)
 
     color: Theme.panel
 
@@ -29,7 +29,7 @@ Rectangle {
         required property bool relayed
         required property string identityState
         required property string identityKey
-        required property bool trusted
+        required property bool special
         required property var permissions
 
         width: ListView.view ? ListView.view.width : 0
@@ -66,9 +66,9 @@ Rectangle {
                 font.pixelSize: Theme.smallFontSize
             }
             Text {
-                visible: row.trusted || row.identityState === "invalid"
-                text: row.trusted ? qsTr("trusted") : qsTr("invalid ID")
-                color: row.trusted ? Theme.success : Theme.error
+                visible: row.special || row.identityState === "invalid"
+                text: row.special ? qsTr("special rules") : qsTr("invalid ID")
+                color: row.special ? Theme.success : Theme.error
                 font.pixelSize: Theme.smallFontSize
             }
             Text {
@@ -95,7 +95,8 @@ Rectangle {
                     contextMenu.services = row.services
                     contextMenu.identityState = row.identityState
                     contextMenu.identityKey = row.identityKey
-                    contextMenu.trusted = row.trusted
+                    contextMenu.special = row.special
+                    contextMenu.verified = row.identityState === "verified"
                     contextMenu.permissions = row.permissions
                     contextMenu.popup()
                 } else {
@@ -181,7 +182,8 @@ Rectangle {
         property var services: []
         property string identityState: ""
         property string identityKey: ""
-        property bool trusted: false
+        property bool special: false
+        property bool verified: false
         property var permissions: []
         readonly property bool linked: stateCode === Theme.stateConnected
                                        || stateCode === Theme.stateProbing
@@ -213,20 +215,20 @@ Rectangle {
             visible: contextMenu.services.length > 0
         }
         UMenuItem {
-            text: qsTr("Trust...")
-            visible: !contextMenu.trusted
+            text: qsTr("Add Special Rules...")
+            visible: contextMenu.verified && !contextMenu.special
             enabled: contextMenu.identityState === "verified"
-            onTriggered: panel.trustRequested(contextMenu.devId)
+            onTriggered: panel.specialRulesRequested(contextMenu.devId)
         }
         UMenuItem {
-            text: qsTr("Untrust")
-            visible: contextMenu.trusted
-            onTriggered: App.untrustDevice(contextMenu.identityKey)
+            text: qsTr("Remove Special Rules")
+            visible: contextMenu.special
+            onTriggered: App.removeSpecialRules(contextMenu.identityKey)
         }
         UMenu {
             id: permissionsMenu
             title: qsTr("Permissions")
-            enabled: contextMenu.trusted
+            enabled: contextMenu.special  // editing them needs special rules (added with the fingerprint check)
 
             Instantiator {
                 model: App.permissionDefinitions
@@ -250,7 +252,7 @@ Rectangle {
         UMenu {
             id: syncMenu
             title: qsTr("Synced Folders")
-            enabled: contextMenu.trusted && panel.syncFolderList.length > 0
+            enabled: contextMenu.verified && panel.syncFolderList.length > 0
 
             Instantiator {
                 model: panel.syncFolderList.reduce((all, f) => all.concat([{ id: f.id, label: f.label, send: true },

@@ -143,7 +143,7 @@ QtObject {
         case "camera": return qsTr("View a live feed from the device's camera.")
         case "screen": return qsTr("Watch the device's screen.")
         case "control": return qsTr("See the device's screen and control its mouse and keyboard.")
-        case "display": return qsTr("Let a trusted nearby device use this screen as an extra monitor.")
+        case "display": return qsTr("Let a nearby device you allow use this screen as an extra monitor.")
         }
         return ""
     }

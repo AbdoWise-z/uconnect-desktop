@@ -42,7 +42,7 @@ Item {
                 wrapMode: Text.WrapAnywhere
             }
             Text { text: qsTr("This request expires after 30 seconds."); color: Theme.textSecondary }
-            UCheckBox { id: remember; text: qsTr("Don't ask again for this trusted device") }
+            UCheckBox { id: remember; text: qsTr("Don't ask again for this device") }
             Item { Layout.fillHeight: true }
             RowLayout {
                 Layout.alignment: Qt.AlignRight

@@ -151,7 +151,7 @@ private slots:
         const auto ih = Identity::generate(), iv = Identity::generate();
         host.setIdentity(ih); viewer.setIdentity(iv);
         AccessPolicy hp, vp;
-        hp.trusted.insert(keyToHex(iv.publicKey()), {perm::ScreenView, perm::CameraView});
+        hp.special.insert(keyToHex(iv.publicKey()), {perm::ScreenView, perm::CameraView});
         // Only the host trusts: the viewer watching it needs no trust of its own.
         host.setAccessPolicy(hp); viewer.setAccessPolicy(vp);
         host.setLocalHello({"Host", "test", ServiceScreen | ServiceCamera}); viewer.setLocalHello({"Viewer", "test", 0});
@@ -213,8 +213,8 @@ private slots:
         const auto ia = Identity::generate(), ib = Identity::generate();
         a.setIdentity(ia); b.setIdentity(ib);
         AccessPolicy pa, pb;
-        pa.trusted.insert(keyToHex(ib.publicKey()), {perm::ScreenView, perm::ScreenDirect});
-        pb.trusted.insert(keyToHex(ia.publicKey()), {perm::ScreenView, perm::ScreenDirect});
+        pa.special.insert(keyToHex(ib.publicKey()), {perm::ScreenView, perm::ScreenDirect});
+        pb.special.insert(keyToHex(ia.publicKey()), {perm::ScreenView, perm::ScreenDirect});
         a.setAccessPolicy(pa); b.setAccessPolicy(pb);
         a.setLocalHello({"A", "test", ServiceScreen}); b.setLocalHello({"B", "test", ServiceScreen});
         ScreenSettings settings; settings.ciscoLibrary = qEnvironmentVariable("UCD_TEST_OPENH264"); settings.gpuCapture = false;
@@ -281,8 +281,8 @@ private slots:
         const auto ih = Identity::generate(), is = Identity::generate();
         host.setIdentity(ih); shower.setIdentity(is);
         AccessPolicy hp, sp;
-        hp.trusted.insert(keyToHex(is.publicKey()), {});  // the host asks only devices it trusts
-        sp.trusted.insert(keyToHex(ih.publicKey()), {perm::DisplayShow, perm::DisplayDirect});
+        hp.special.insert(keyToHex(is.publicKey()), {});  // the host asks only devices its rules cover
+        sp.special.insert(keyToHex(ih.publicKey()), {perm::DisplayShow, perm::DisplayDirect});
         host.setAccessPolicy(hp); shower.setAccessPolicy(sp);
         host.setLocalHello({"Host", "test", 0}); shower.setLocalHello({"Tablet", "test", ServiceDisplay});
         host.displays()->setBackend([] { return std::make_unique<Fake>(); }, [] { return display::Status{display::Availability::Ready, {}}; });

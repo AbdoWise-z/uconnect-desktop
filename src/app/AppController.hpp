@@ -14,6 +14,7 @@
 #include <QMap>
 #include <QSet>
 #include <QThread>
+#include <QTimer>
 #include <QUrl>
 #include <QVariantMap>
 
@@ -91,8 +92,13 @@ class AppController : public QObject {
     // --- identity and permissions ---
     Q_PROPERTY(QString myFingerprint READ myFingerprint CONSTANT)
     Q_PROPERTY(QVariantList permissionDefinitions READ permissionDefinitions CONSTANT)
-    Q_PROPERTY(QStringList defaultPermissions READ defaultPermissions NOTIFY trustChanged)
-    Q_PROPERTY(QVariantList trustedDevices READ trustedDevices NOTIFY trustChanged)
+    Q_PROPERTY(QStringList defaultPermissions READ defaultPermissions NOTIFY specialRulesChanged)
+    // Devices with special rules: [{key, fingerprint, name, permissions, since}].
+    Q_PROPERTY(QVariantList specialDevices READ specialDevices NOTIFY specialRulesChanged)
+    // This topic's network rules, [{pattern,label,perms}], first
+    // match wins; and this device's IPv4 addresses (for the "m" parts).
+    Q_PROPERTY(QVariantList networkRules READ networkRules NOTIFY networkRulesChanged)
+    Q_PROPERTY(QStringList localAddresses READ localAddresses NOTIFY networkRulesChanged)
     // What other devices did in this device's shared folders, newest first:
     // [{time, devId, device, fingerprint, action, path, detail}].
     Q_PROPERTY(QVariantList storageActivity READ storageActivity NOTIFY storageActivityChanged)
@@ -153,7 +159,9 @@ public:
     QVariantList permissionDefinitions() const;
     QStringList  defaultPermissions() const { return defaultPermissions_; }
     // [{key, fingerprint, name, permissions, since}], by name.
-    QVariantList trustedDevices() const;
+    QVariantList specialDevices() const;
+    QVariantList networkRules() const;
+    QStringList  localAddresses() const;
     QVariantList storageActivity() const { return activity_; }
     QVariantList syncFolders() const;
     QVariantList syncOffers() const;
@@ -188,7 +196,8 @@ public:
     // verboseLogging, debugOnStartup, closeToTray, launchAtLogin, startHidden,
     // sharedFolders, readOnlyFolders,
     // downloadFolder, maxUploadMB,
-    // defaultPermissions, and untrust (public keys to stop trusting).
+    // defaultPermissions, networkRules, and removeSpecial (public keys whose
+    // special rules to drop).
     // Absent keys are left unchanged.
     Q_INVOKABLE void applySettings(const QVariantMap& values);
 
@@ -248,12 +257,21 @@ public:
     Q_INVOKABLE void    showInFolder(const QString& localPath) const;
     Q_INVOKABLE QString localPath(const QUrl& url) const;
 
-    // Trust is per public key (hex), which a device proves in each session.
-    // `name` is remembered as what the device was called when trusted. A newly
-    // trusted device starts with the default permissions.
-    Q_INVOKABLE void trustDevice(const QString& key, const QString& name);
-    Q_INVOKABLE void untrustDevice(const QString& key);
+    // Special rules: permissions for one device, by the public key (hex) it
+    // proves in each session; they come before network rules and defaults.
+    // Adding them starts from what the device has now. `name` is remembered as
+    // what it was called then.
+    Q_INVOKABLE void addSpecialRules(const QString& key, const QString& name);
+    Q_INVOKABLE void removeSpecialRules(const QString& key);
+    // Sets one permission in a device's special rules (adding them if needed).
     Q_INVOKABLE void setDevicePermission(const QString& key, const QString& permission, bool granted);
+
+    // Network rules (per topic). Saved through applySettings({networkRules}).
+    Q_INVOKABLE QString networkPatternProblem(const QString& pattern) const;
+    // Asks a connected device for its rules on this topic; the answer comes as
+    // networkRulesOffered, for the user to import (importNetworkRules).
+    Q_INVOKABLE void requestNetworkRules(const QString& devId);
+    Q_INVOKABLE void importNetworkRules(const QVariantList& rules, bool replace);
 
     // Used by the debug window.
     const NodeSnapshot&        snapshot() const { return snapshot_; }
@@ -282,7 +300,12 @@ signals:
     // `urls`: file URLs of the top-level items, as downloaded.
     void storageBatchFinished(quint32 batchId, int failed, bool canceled, const QStringList& urls);
     void storagePreviewReady(quint32 batchId, const QString& url, const QString& error);
-    void trustChanged();
+    void specialRulesChanged();
+    void networkRulesChanged();
+    // A device's rules (or the reason it would not share them), to offer for
+    // import.
+    void networkRulesOffered(const QString& devId, const QString& deviceName, const QVariantList& rules,
+                             const QString& error);
     void storageActivityChanged();
     void syncChanged();
 
@@ -309,8 +332,13 @@ private:
     bool registerLogin(bool enabled);
     void pushUploadLimit();
     void pushAccessPolicy();
-    void loadTrust();
-    void saveTrusted(const QString& key);
+    QString      currentTopicKey() const;
+    void         loadNetworkRules();
+    void         saveNetworkRules();
+    void         refreshLocalAddresses();
+    QStringList  currentPermissionsOf(const QString& key) const;
+    void loadSpecialRules();
+    void saveSpecialRules(const QString& key);
     void appendLog(const QString& line);
     void addActivity(const QVariantMap& entry);
     void loadSync();
@@ -350,7 +378,7 @@ private:
     NodeSnapshot    snapshot_;
     PeerListModel   peers_;
 
-    struct TrustedDevice {
+    struct SpecialRules {
         QString     name;
         QStringList permissions;
         QDateTime   since;
@@ -358,13 +386,17 @@ private:
     std::optional<Identity>      identity_;
     QString                      myFingerprint_;
     QStringList                  defaultPermissions_;
-    QMap<QString, TrustedDevice> trusted_;  // by public key (hex)
+    QMap<QString, SpecialRules>  special_;  // by public key (hex)
 
     TransferListModel transfers_;
     quint32           nextRequestId_ = 1;
     QSet<quint32>     canceled_;
     QHash<quint32, QString> operationDevices_;  // request id -> device
     QHash<QString, QString> identityOf_;        // device id -> its public key, once verified
+    QVector<NetworkRule>    networkRules_;      // the current topic's
+    QString                 rulesTopic_;        // the topic id they belong to
+    QList<QHostAddress>     localAddresses_;
+    QTimer                  addressTimer_;
 
     // A multi-item or folder download: lists folders as it goes and downloads
     // every file found, keeping the folder structure.

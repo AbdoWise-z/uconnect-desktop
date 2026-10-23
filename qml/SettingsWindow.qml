@@ -23,7 +23,8 @@ Window {
         { id: "screen", title: Theme.serviceLabel("screen"), depth: 1, parent: "services", keywords: "display" },
         { id: "control", title: Theme.serviceLabel("control"), depth: 1, parent: "services", keywords: "mouse keyboard" },
         { id: "display", title: Theme.serviceLabel("display"), depth: 1, parent: "services", keywords: "monitor second screen extend driver tablet" },
-        { id: "permissions", title: qsTr("Permissions"), depth: 0, keywords: "trust trusted untrust identity fingerprint default access" },
+        { id: "permissions", title: qsTr("Permissions"), depth: 0, keywords: "special rules identity fingerprint default access device" },
+        { id: "network", title: qsTr("Network Rules"), depth: 1, parent: "permissions", keywords: "lan local network subnet ip address pattern rules copy" },
         { id: "security", title: qsTr("Security"), depth: 0, keywords: "invite link key remember store qr code scan phone" },
         { id: "advanced", title: qsTr("Advanced"), depth: 0, keywords: "debug verbose logging diagnostics" }
     ]
@@ -55,7 +56,8 @@ Window {
         property string downloadFolder
         property int maxUploadMB: 0
         property var defaultPermissions: []
-        property var untrust: []  // public keys
+        property var removeSpecial: []  // public keys whose special rules to drop
+        property var networkRules: []   // this topic's, [{pattern,label,perms}]
         property var screen: ({})
         property var camera: ({})
         property var display: ({})
@@ -66,6 +68,113 @@ Window {
     }
 
     readonly property bool valid: App.isValidServer(draft.server) && draft.deviceName.trim().length > 0
+                                  && draft.networkRules.every(r => App.networkPatternProblem(r.pattern) === "")
+
+    // --- network rules (draft) ---
+    function withRules(change) {
+        const next = JSON.parse(JSON.stringify(draft.networkRules))
+        change(next)
+        draft.networkRules = next
+    }
+    function setRule(i, key, value) { withRules(r => { r[i][key] = value }) }
+    function setRulePermission(i, permission, on) {
+        withRules(r => {
+            const perms = (r[i].perms || []).filter(p => p !== permission)
+            if (on) perms.push(permission)
+            r[i].perms = perms.sort()
+        })
+    }
+    function moveRule(i, delta) {
+        withRules(r => { const [rule] = r.splice(i, 1); r.splice(i + delta, 0, rule) })
+    }
+    function removeRule(i) { withRules(r => r.splice(i, 1)) }
+    function addRule() { withRules(r => r.push({ pattern: "m.m.m.x", label: "", perms: [] })) }
+
+    // Copying another device's rules (rules.get / rules.list).
+    readonly property var connectedDevices: { App.peers.revision; return App.peers.connectedDevices() }
+    property string copyStatus: ""
+    property var offeredRules: []
+    property string offeredFrom: ""
+    Connections {
+        target: App
+        function onNetworkRulesOffered(devId, deviceName, rules, error) {
+            if (error) {
+                dlg.copyStatus = error === "forbidden"
+                    ? qsTr("%1 would not share its rules: it has no special or network rules for this device.").arg(deviceName)
+                    : qsTr("%1 could not share its rules (%2).").arg(deviceName).arg(error)
+                return
+            }
+            dlg.offeredRules = rules
+            dlg.offeredFrom = deviceName
+            dlg.copyStatus = ""
+            importRules.open()
+        }
+    }
+    Popup {
+        id: importRules
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        padding: 20
+        width: 520
+        background: Rectangle { color: Theme.panel; border.color: Theme.popupBorder; radius: 8 }
+        ColumnLayout {
+            width: parent.width
+            spacing: 10
+            Text {
+                text: qsTr("Rules from %1").arg(dlg.offeredFrom)
+                textFormat: Text.PlainText
+                color: Theme.text
+                font.pixelSize: 16
+                font.bold: true
+            }
+            Help {
+                text: dlg.offeredRules.length === 0
+                      ? qsTr("It has no network rules on this topic.")
+                      : qsTr("Its network rules on this topic, first match first:")
+            }
+            Repeater {
+                model: dlg.offeredRules
+                delegate: Text {
+                    required property var modelData
+                    required property int index
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
+                    color: Theme.text
+                    text: (index + 1) + ".  " + modelData.pattern + (modelData.label ? "  —  " + modelData.label : "")
+                          + "  ·  " + (modelData.perms.length === 0 ? qsTr("no permissions")
+                                       : modelData.perms.map(id => dlg.permissionLabel(id)).join(", "))
+                }
+            }
+            RowLayout {
+                Layout.topMargin: 6
+                Item { Layout.fillWidth: true }
+                UButton { text: qsTr("Cancel"); onClicked: importRules.close() }
+                UButton {
+                    text: qsTr("Add to Mine")
+                    enabled: dlg.offeredRules.length > 0
+                    onClicked: {
+                        dlg.withRules(r => { for (const rule of dlg.offeredRules) r.push(rule) })
+                        dlg.copyStatus = qsTr("Added %1 rule(s). Click OK or Apply to save.").arg(dlg.offeredRules.length)
+                        importRules.close()
+                    }
+                }
+                UButton {
+                    text: qsTr("Replace Mine")
+                    primary: true
+                    onClicked: {
+                        draft.networkRules = JSON.parse(JSON.stringify(dlg.offeredRules))
+                        dlg.copyStatus = qsTr("Replaced with %1 rule(s). Click OK or Apply to save.").arg(dlg.offeredRules.length)
+                        importRules.close()
+                    }
+                }
+            }
+        }
+    }
+    function permissionLabel(id) {
+        const d = App.permissionDefinitions.find(p => p.id === id)
+        return d ? Theme.serviceLabel(d.service) + " › " + d.label : id
+    }
     readonly property bool modified: draft.server.trim() !== App.serverAddress
                                      || draft.deviceName.trim() !== App.deviceName
                                      || !sameServices(draft.services, App.offeredServices)
@@ -85,7 +194,8 @@ Window {
                                      || draft.downloadFolder !== App.downloadFolder
                                      || draft.maxUploadMB !== App.maxUploadMB
                                      || !sameServices(draft.defaultPermissions, App.defaultPermissions)
-                                     || draft.untrust.length > 0
+                                     || draft.removeSpecial.length > 0
+                                     || JSON.stringify(draft.networkRules) !== JSON.stringify(App.networkRules)
                                      || JSON.stringify(draft.screen) !== JSON.stringify(App.screen.settings)
                                      || JSON.stringify(draft.camera) !== JSON.stringify(App.camera.settings)
                                      || JSON.stringify(draft.display) !== JSON.stringify(App.display.settings)
@@ -108,7 +218,8 @@ Window {
         draft.downloadFolder = App.downloadFolder
         draft.maxUploadMB = App.maxUploadMB
         draft.defaultPermissions = App.defaultPermissions.slice()
-        draft.untrust = []
+        draft.removeSpecial = []
+        draft.networkRules = JSON.parse(JSON.stringify(App.networkRules))
         draft.screen = Object.assign({}, App.screen.settings)
         draft.camera = Object.assign({}, App.camera.settings)
         draft.display = Object.assign({}, App.display.settings)
@@ -133,7 +244,8 @@ Window {
             downloadFolder: draft.downloadFolder,
             maxUploadMB: draft.maxUploadMB,
             defaultPermissions: draft.defaultPermissions,
-            untrust: draft.untrust,
+            removeSpecial: draft.removeSpecial,
+            networkRules: draft.networkRules,
             screen: draft.screen,
             camera: draft.camera,
             display: draft.display
@@ -161,9 +273,9 @@ Window {
         next[key] = value
         draft.display = next
     }
-    function toggleUntrust(key) {
-        draft.untrust = draft.untrust.indexOf(key) >= 0 ? draft.untrust.filter(k => k !== key)
-                                                        : draft.untrust.concat([key])
+    function toggleRemoveSpecial(key) {
+        draft.removeSpecial = draft.removeSpecial.indexOf(key) >= 0 ? draft.removeSpecial.filter(k => k !== key)
+                                                                    : draft.removeSpecial.concat([key])
     }
 
     function setReadOnly(folder, on) {
@@ -411,7 +523,7 @@ Window {
             Indented {
                 Layout.leftMargin: 148
                 Help {
-                    text: qsTr("This device's identity. Before another device trusts this one, its user should check that it shows exactly this fingerprint.")
+                    text: qsTr("This device's identity. Before another device gives this one special rules, its user should check that it shows exactly this fingerprint.")
                 }
             }
         }
@@ -422,55 +534,64 @@ Window {
         ColumnLayout {
             spacing: 8
 
+            TitledSeparator { text: qsTr("How Permissions Are Decided") }
+            Help {
+                text: qsTr("For each device, the first of these applies: its special rules, then this topic's network rules, then the defaults below.")
+            }
+            ULink {
+                text: qsTr("Network rules for this topic...")
+                onClicked: dlg.currentPage = "network"
+            }
+
             TitledSeparator { text: qsTr("Default Permissions") }
             Help {
-                text: qsTr("What every device you have not trusted may do here, including devices whose identity is unknown. A device you trust starts with these, and then has its own.")
+                text: qsTr("What a device may do here when no special or network rule covers it, including devices whose identity is unknown. Sensitive permissions (camera, screen, control, display) cannot be defaults.")
             }
             PermissionEditor {
                 Layout.fillWidth: true
                 Layout.topMargin: 4
                 granted: draft.defaultPermissions
-                trustedDevice: false
+                allowSensitive: false
                 onToggled: (permission, on) => dlg.setDefaultPermission(permission, on)
             }
             Banner {
                 Layout.fillWidth: true
                 visible: draft.defaultPermissions.length > 0
                 kind: "error"
-                text: qsTr("Any device with this topic's invite link gets these permissions without being trusted.")
+                text: qsTr("Any device with this topic's invite link gets these permissions.")
             }
 
-            TitledSeparator { text: qsTr("Trusted Devices") }
+            TitledSeparator { text: qsTr("Devices With Special Rules") }
             Help {
-                visible: App.trustedDevices.length === 0
-                text: qsTr("No trusted devices yet. Trust a device from its tab, or by right-clicking it in Devices.")
+                visible: App.specialDevices.length === 0
+                text: qsTr("None yet. Give a device special rules from its tab, or by right-clicking it in Devices.")
             }
             Repeater {
-                model: App.trustedDevices
+                model: App.specialDevices
                 delegate: RowLayout {
-                    id: trustedRow
+                    id: specialRow
                     required property var modelData
-                    readonly property bool removing: draft.untrust.indexOf(modelData.key) >= 0
+                    readonly property bool removing: draft.removeSpecial.indexOf(modelData.key) >= 0
 
                     Layout.fillWidth: true
                     spacing: 12
                     opacity: removing ? 0.5 : 1
 
                     Avatar {
-                        name: trustedRow.modelData.name
-                        seed: trustedRow.modelData.key
+                        name: specialRow.modelData.name
+                        seed: specialRow.modelData.key
                         size: 28
                     }
                     ColumnLayout {
                         spacing: 1
                         Text {
-                            text: trustedRow.modelData.name
+                            text: specialRow.modelData.name
                             textFormat: Text.PlainText
                             color: Theme.text
-                            font.strikeout: trustedRow.removing
+                            font.strikeout: specialRow.removing
                         }
                         Text {
-                            text: trustedRow.modelData.fingerprint
+                            text: specialRow.modelData.fingerprint
                             color: Theme.textSecondary
                             font.family: "Consolas, monospace"
                             font.pixelSize: Theme.smallFontSize
@@ -481,19 +602,156 @@ Window {
                         color: Theme.textSecondary
                         font.pixelSize: Theme.smallFontSize
                         text: {
-                            const n = trustedRow.modelData.permissions.length
+                            const n = specialRow.modelData.permissions.length
                             return n === 0 ? qsTr("No permissions") : n === 1 ? qsTr("1 permission") : qsTr("%1 permissions").arg(n)
                         }
                     }
                     UButton {
-                        text: trustedRow.removing ? qsTr("Keep") : qsTr("Untrust")
-                        onClicked: dlg.toggleUntrust(trustedRow.modelData.key)
+                        text: specialRow.removing ? qsTr("Keep") : qsTr("Remove")
+                        onClicked: dlg.toggleRemoveSpecial(specialRow.modelData.key)
                     }
                 }
             }
             Help {
-                visible: App.trustedDevices.length > 0
-                text: qsTr("Change a trusted device's own permissions from its tab, or with Permissions in its right-click menu.")
+                visible: App.specialDevices.length > 0
+                text: qsTr("Change a device's special rules from its tab. Removing them leaves it to the network rules and defaults.")
+            }
+        }
+    }
+
+    Component {
+        id: networkPage
+        ColumnLayout {
+            spacing: 8
+
+            TitledSeparator { text: qsTr("Network Rules for This Topic") }
+            Help {
+                text: qsTr("Choose what devices may do here by where they connect from. The first rule a device matches applies, unless it has special rules. A device matches only once it has proved its identity, over a direct connection: through the relay its address is unknown.")
+            }
+            Help {
+                text: qsTr("Patterns have four parts: x for any value, m for the same as this device's address, or a number. m.m.m.x is this device's /24 network, 100.x.x.x anything starting with 100, x.x.x.x any address.")
+            }
+            Help {
+                color: Theme.text
+                text: App.localAddresses.length > 0 ? qsTr("This device: %1").arg(App.localAddresses.join(",  "))
+                                                    : qsTr("This device has no IPv4 address right now.")
+            }
+            Help {
+                visible: !App.topicLinkValid
+                color: Theme.warning
+                text: qsTr("Join a topic to set its rules: they are kept per topic.")
+            }
+
+            // By count, so editing a field does not rebuild (and unfocus) it.
+            Repeater {
+                model: draft.networkRules.length
+                delegate: Rectangle {
+                    id: ruleCard
+                    required property int index
+                    readonly property var rule: draft.networkRules[index] || ({ pattern: "", label: "", perms: [] })
+                    readonly property string problem: App.networkPatternProblem(rule.pattern)
+
+                    Layout.fillWidth: true
+                    Layout.topMargin: 4
+                    implicitHeight: ruleColumn.implicitHeight + 24
+                    radius: 6
+                    color: Theme.canvas
+                    border.color: problem !== "" ? Theme.error : Theme.border
+
+                    ColumnLayout {
+                        id: ruleColumn
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 8
+                        RowLayout {
+                            spacing: 8
+                            Text {
+                                text: (ruleCard.index + 1) + "."
+                                color: Theme.textSecondary
+                                font.bold: true
+                            }
+                            UTextField {
+                                Layout.preferredWidth: 150
+                                text: ruleCard.rule.pattern
+                                placeholderText: "m.m.m.x"
+                                font.family: "Consolas, monospace"
+                                invalid: ruleCard.problem !== ""
+                                onTextEdited: dlg.setRule(ruleCard.index, "pattern", text)
+                            }
+                            UTextField {
+                                Layout.fillWidth: true
+                                text: ruleCard.rule.label
+                                placeholderText: qsTr("Name (optional), e.g. Home")
+                                maximumLength: 64
+                                onTextEdited: dlg.setRule(ruleCard.index, "label", text)
+                            }
+                            UToolButton {
+                                text: "↑"
+                                tip: qsTr("Check this rule earlier")
+                                enabled: ruleCard.index > 0
+                                onClicked: dlg.moveRule(ruleCard.index, -1)
+                            }
+                            UToolButton {
+                                text: "↓"
+                                tip: qsTr("Check this rule later")
+                                enabled: ruleCard.index < draft.networkRules.length - 1
+                                onClicked: dlg.moveRule(ruleCard.index, 1)
+                            }
+                            UButton {
+                                text: qsTr("Remove")
+                                onClicked: dlg.removeRule(ruleCard.index)
+                            }
+                        }
+                        Help {
+                            visible: ruleCard.problem !== ""
+                            color: Theme.error
+                            text: ruleCard.problem
+                        }
+                        PermissionEditor {
+                            Layout.fillWidth: true
+                            granted: ruleCard.rule.perms || []
+                            allowSensitive: true
+                            onToggled: (permission, on) => dlg.setRulePermission(ruleCard.index, permission, on)
+                        }
+                    }
+                }
+            }
+            UButton {
+                Layout.topMargin: 4
+                text: qsTr("Add Rule")
+                enabled: App.topicLinkValid && draft.networkRules.length < 64
+                onClicked: dlg.addRule()
+            }
+
+            TitledSeparator { text: qsTr("Copy From Another Device") }
+            Help {
+                text: qsTr("Take the rules another of your devices uses on this topic, to set up quickly on a network you already use. It shares them only if it has special or network rules for this device. You review them before anything changes.")
+            }
+            RowLayout {
+                spacing: 8
+                UComboBox {
+                    id: copyFrom
+                    Layout.preferredWidth: 260
+                    model: dlg.connectedDevices.map(d => d.displayName)
+                    enabled: dlg.connectedDevices.length > 0
+                }
+                UButton {
+                    text: qsTr("Request Rules")
+                    enabled: dlg.connectedDevices.length > 0 && copyFrom.currentIndex >= 0
+                    onClicked: {
+                        dlg.copyStatus = qsTr("Asking %1...").arg(dlg.connectedDevices[copyFrom.currentIndex].displayName)
+                        App.requestNetworkRules(dlg.connectedDevices[copyFrom.currentIndex].devId)
+                    }
+                }
+            }
+            Help {
+                visible: dlg.connectedDevices.length === 0
+                text: qsTr("No device is connected right now.")
+            }
+            Help {
+                visible: dlg.copyStatus !== ""
+                color: Theme.text
+                text: dlg.copyStatus
             }
         }
     }
@@ -521,7 +779,7 @@ Window {
             Banner {
                 Layout.fillWidth: true
                 Layout.topMargin: 12
-                text: qsTr("Screen and camera requests need a trusted device and host consent. Remote control also requires a control grant.")
+                text: qsTr("Screen and camera requests need special or network rules that allow them, and host consent. Remote control also requires a control grant.")
             }
         }
     }
@@ -710,7 +968,7 @@ Window {
                 spacing: 8
                 Help {
                     text: App.camera.available
-                          ? qsTr("Only trusted devices may request your camera, and each request asks first. The viewer picks a camera and a quality up to the caps below.")
+                          ? qsTr("Only devices your special or network rules allow may request your camera, and each request asks first. The viewer picks a camera and a quality up to the caps below.")
                           : qsTr("This build needs Qt Multimedia and a shared LGPL FFmpeg SDK for camera sharing.")
                 }
                 FieldLabel { text: qsTr("Cameras to offer") }
@@ -775,7 +1033,7 @@ Window {
                 visible: svcPage.service === "display"
                 Layout.fillWidth: true
                 spacing: 8
-                Help { text: qsTr("Offering it lets trusted devices ask to use this screen as a monitor; each request asks first unless you allow it without asking. To use another device as a monitor for this one, pick it under Services > Extended Display.") }
+                Help { text: qsTr("Offering it lets devices your rules allow ask to use this screen as a monitor; each request asks first unless you allow it without asking. To use another device as a monitor for this one, pick it under Services > Extended Display.") }
                 GridLayout {
                     columns: 2
                     columnSpacing: 12
@@ -821,7 +1079,7 @@ Window {
                 visible: svcPage.service === "screen"
                 Layout.fillWidth: true
                 spacing: 8
-                Help { text: App.screen.available ? qsTr("Only trusted devices may request your screen. Each request asks for consent unless you grant view without asking.") : qsTr("This build needs Qt Multimedia and a shared LGPL FFmpeg SDK for screen sharing.") }
+                Help { text: App.screen.available ? qsTr("Only devices your special or network rules allow may request your screen. Each request asks for consent unless you grant view without asking.") : qsTr("This build needs Qt Multimedia and a shared LGPL FFmpeg SDK for screen sharing.") }
                 GridLayout {
                     columns: 2
                     columnSpacing: 12
@@ -953,6 +1211,7 @@ Window {
         case "control":
         case "display": return servicePage
         case "permissions": return permissionsPage
+        case "network": return networkPage
         case "security": return securityPage
         case "advanced": return advancedPage
         }

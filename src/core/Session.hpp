@@ -17,6 +17,9 @@
 #include <vector>
 
 #include <QHash>
+#include <QSet>
+#include <QHostAddress>
+#include <QJsonArray>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -24,6 +27,7 @@
 
 #include "core/Hello.hpp"
 #include "core/Identity.hpp"
+#include "core/NetworkRules.hpp"
 #include "core/Permissions.hpp"
 #include "core/StorageService.hpp"
 #include "core/sync/SyncService.hpp"
@@ -61,9 +65,17 @@ struct PeerRecord {
     QString     identityState;  // "pending" | "verified" | "invalid"
     QString     identityKey;    // hex public key, once verified
     QString     fingerprint;
-    bool        trusted = false;
+    bool        special = false;  // this device set special rules for it
     QStringList permissions;  // what this device grants it
     QStringList grantedToMe;  // what it says it grants this device
+
+    // Where its direct connection comes from (empty when relayed or unknown),
+    // and the network rule that address matched (index into the policy's
+    // rules, -1 for none). See NetworkRules.hpp.
+    QString address;
+    int     networkRule = -1;
+    // Where `permissions` come from: "device", "rule" or "default".
+    QString permissionSource;
 
     bool operator==(const PeerRecord&) const = default;
 };
@@ -84,9 +96,20 @@ struct NodeSnapshot {
 
 // What this device lets others do. Owned by the GUI side, which pushes a copy
 // to the Session whenever it changes.
+//
+// What a device may do here, the first that applies:
+//   1. its special rules: permissions set for that device (by public key);
+//   2. the first of this topic's network rules its address matches;
+//   3. the defaults, which never include sensitive permissions (camera,
+//      screen, control, display...), as any holder of the invite link gets them.
+// 1 and 2 need the device to have proven its identity.
 struct AccessPolicy {
-    PermissionSet                 defaults;  // every device that is not trusted
-    QHash<QString, PermissionSet> trusted;   // public key (hex) -> its own permissions
+    PermissionSet                 defaults;  // when nothing more specific applies
+    QHash<QString, PermissionSet> special;   // public key (hex) -> its special rules
+    // This topic's network rules (first match wins for proven devices without special rules
+    // devices) and this device's own addresses, for their "m" parts.
+    QVector<NetworkRule> rules;
+    QList<QHostAddress>  localAddresses;
 };
 
 class Session : public QObject {
@@ -116,6 +139,9 @@ public:
     void setLocalHello(const Hello& hello);
     void setIdentity(const Identity& identity);
     void setAccessPolicy(const AccessPolicy& policy);
+    // Asks a device for its network rules on this topic (rules.get). The
+    // answer arrives as networkRulesReceived.
+    void requestNetworkRules(const QString& devId);
     void connectPeer(const QString& devId);
     void disconnectPeer(const QString& devId);
     void refreshNow();
@@ -158,6 +184,8 @@ signals:
     void mediaPathChanged(const QString& devId, const QString& path);
     void statusChanged(ucd::Session::Status status, const QString& detail);
     void peersChanged(const QVector<ucd::PeerRecord>& peers);
+    // A device's answer to requestNetworkRules: its rules, or why not.
+    void networkRulesReceived(const QString& devId, const QJsonArray& rules, const QString& error);
     void snapshotChanged(const ucd::NodeSnapshot& snapshot);
     void logMessage(const QString& line);
     void serverReport(const QString& text);
@@ -195,6 +223,11 @@ private:
     void onData(const uconnect::DevId& dev, const std::vector<uint8_t>& data);
 
     bool isSelf(const uconnect::DevId& dev) const;
+    // The peer's direct-connection address, null when relayed or unknown.
+    QHostAddress peerAddress(const uconnect::DevId& dev) const;
+    int          networkRuleFor(const uconnect::DevId& dev) const;
+    // permissionsFor() and where the answer came from (see AccessPolicy).
+    std::pair<PermissionSet, QString> resolvePermissions(const uconnect::DevId& dev) const;
 
     void          sendIdentity(const uconnect::DevId& dev);
     void          sendGrants(const uconnect::DevId& dev);

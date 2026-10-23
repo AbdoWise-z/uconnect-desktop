@@ -41,7 +41,7 @@ endif ()
 FetchContent_Declare(
     uconnect
     GIT_REPOSITORY https://github.com/AbdoWise-z/uconnect.git
-    GIT_TAG 7fc35921de5ba67acb860defb246e65be68e3fa3
+    GIT_TAG 04319a67b78a628882fa422dc4818ae042d73fef
 )
 FetchContent_MakeAvailable(uconnect)
 # uconnect's targets use ${CMAKE_SOURCE_DIR}/include, which only points at its
@@ -106,6 +106,8 @@ add_library(uconnect_desktop_core STATIC
     src/core/Identity.cpp
     src/core/Identity.hpp
     src/core/OffThread.hpp
+    src/core/NetworkRules.cpp
+    src/core/NetworkRules.hpp
     src/core/Permissions.cpp
     src/core/Permissions.hpp
     src/core/Session.cpp
@@ -260,7 +262,7 @@ qt_add_qml_module(uconnect_desktop
         qml/ServiceWindow.qml
         qml/StorageView.qml
         qml/PermissionEditor.qml
-        qml/TrustDialog.qml
+        qml/SpecialRulesDialog.qml
         qml/PromptDialog.qml
         qml/StorageActivityWindow.qml
         qml/PreviewPopup.qml
@@ -418,6 +420,7 @@ if (UCD_BUILD_TESTS)
     endfunction()
 
     ucd_add_test(IdentityTest)
+    ucd_add_test(NetworkRulesTest)
     ucd_add_test(ScreenFoundationTest)
     ucd_add_test(ScreenTransportTest)
     if (NOT TARGET uconnect_rendezvous)  # uconnect adds it itself when building the server
@@ -473,7 +476,9 @@ if (UCD_BUILD_TESTS)
         src/app/PeerListModel.cpp src/app/PeerListModel.hpp
         src/app/TransferListModel.cpp src/app/TransferListModel.hpp
         src/app/TrayIcon.cpp src/app/TrayIcon.hpp
-        src/app/LoginItem.cpp src/app/LoginItem.hpp)
+        src/app/LoginItem.cpp src/app/LoginItem.hpp
+        src/app/QrImage.cpp src/app/QrImage.hpp
+        src/third_party/qrcodegen/qrcodegen.cpp src/third_party/qrcodegen/qrcodegen.hpp)
     if (APPLE)
         target_sources(SettingsTest PRIVATE src/app/DockReopen_mac.mm)
         target_link_libraries(SettingsTest PRIVATE "-framework AppKit")

@@ -287,7 +287,7 @@ ApplicationWindow {
         WorkspacePage {
             devicesPanelVisible: devicesPanelAction.checked
             onServiceRequested: (service, devId) => root.openService(service, devId)
-            onTrustRequested: devId => trustDialog.openFor(devId)
+            onSpecialRulesRequested: devId => specialRulesDialog.openFor(devId)
             onSettingsRequested: pageId => root.openSettings(pageId)
         }
     }
@@ -301,8 +301,8 @@ ApplicationWindow {
         id: settingsWindow
     }
 
-    TrustDialog {
-        id: trustDialog
+    SpecialRulesDialog {
+        id: specialRulesDialog
     }
 
     StorageActivityWindow {

@@ -160,21 +160,21 @@ private slots:
         QCOMPARE(creates.load(), 0);
     }
 
-    void refusedWithoutTrustOrPermission() {
+    void refusedWithoutRulesOrPermission() {
         {   // the display device does not grant display.show
             Pair pair; pair.displaySeesHost.permissions.clear();
             QSignalSpy hostState(&pair.host, &DisplayService::hostStateChanged), prompt(&pair.display, &DisplayService::consentRequested);
             pair.host.offer(peer(1), {}); pair.pump();
             QCOMPARE(prompt.size(), 0); QCOMPARE(lastState(hostState), QString("ended"));
-            QVERIFY(lastDetail(hostState).contains("trust"));
+            QVERIFY(lastDetail(hostState).contains("rules"));
         }
-        {   // the display device does not trust the host
+        {   // the display device has no special or network rules for the host
             Pair pair; pair.displaySeesHost.trusted = false;
             QSignalSpy prompt(&pair.display, &DisplayService::consentRequested);
             pair.host.offer(peer(1), {}); pair.pump();
             QCOMPARE(prompt.size(), 0);
         }
-        {   // the host only asks devices it trusts
+        {   // the host only asks devices its rules cover
             Pair pair; pair.hostSeesDisplay.trusted = false;
             pair.host.offer(peer(1), {});
             QVERIFY(pair.wire.empty());

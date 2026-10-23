@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "app/AppController.hpp"
+#include "app/QrImage.hpp"
 #include "app/LoginItem.hpp"
 
 #ifdef Q_OS_WIN
@@ -77,6 +78,7 @@ private slots:
                 QQmlEngine::setObjectOwnership(controller_.get(), QQmlEngine::CppOwnership);
                 return controller_.get();
             });
+        qmlRegisterType<ucd::QrImage>("UConnect", 1, 0, "QrCode");  // as main.cpp does
         engine_ = std::make_unique<QQmlEngine>();
         QQmlComponent component(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/SettingsWindow.qml"));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
@@ -152,9 +154,9 @@ private slots:
             "screen.view", "screen.direct", "control.input", "control.direct", "storage.observe"}}});
         QCOMPARE(controller_->defaultPermissions(), QStringList{"storage.observe"});
         const QString key(64, QLatin1Char('b'));
-        controller_->trustDevice(key, "Screen peer");
+        controller_->addSpecialRules(key, "Screen peer");
         controller_->setDevicePermission(key, "screen.direct", true);
-        const auto devices = controller_->trustedDevices();
+        const auto devices = controller_->specialDevices();
         QCOMPARE(devices.size(), 1);
         QVERIFY(devices.first().toMap().value("permissions").toStringList().contains("screen.direct"));
         controller_->applySettings({{"defaultPermissions", QStringList{"control.direct"}}});
@@ -167,7 +169,8 @@ private slots:
         QTRY_VERIFY(dialog_->property("modified").toBool());
         QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "apply"));
         QCOMPARE(controller_->screen()->property("settings").toMap().value("maxViewers").toInt(), 3);
-        QCOMPARE(controller_->camera()->property("settings").toMap().value("maxViewers").toInt(), 3);
+        // The camera has its own source settings (camera/...): screen changes leave it alone.
+        QCOMPARE(controller_->camera()->property("settings").toMap().value("maxViewers").toInt(), 1);
         QCOMPARE(controller_->screen()->property("settings").toMap().value("maxFps").toInt(), 24);
         QVERIFY(!dialog_->property("modified").toBool());
         QSettings().sync();
@@ -231,6 +234,7 @@ private slots:
     }
 
     // Download was folded into Read; grants saved before that keep their effect.
+    // Saved as a trusted device (before special rules), they become its special rules.
     void migratesSavedDownloadPermissionToRead() {
         const QString key = QString(64, QLatin1Char('a'));
         {
@@ -242,9 +246,30 @@ private slots:
         }
         ucd::AppController restarted(ucd::LaunchOptions{});
         QCOMPARE(restarted.defaultPermissions(), (QStringList{"storage.observe", "storage.read"}));
-        const QVariantList trusted = restarted.trustedDevices();
-        QCOMPARE(trusted.size(), 1);
-        QCOMPARE(trusted.first().toMap().value("permissions").toStringList(), QStringList{"storage.read"});
+        const QVariantList special = restarted.specialDevices();
+        QCOMPARE(special.size(), 1);
+        QCOMPARE(special.first().toMap().value("permissions").toStringList(), QStringList{"storage.read"});
+        QVERIFY(!QSettings().childGroups().contains("trust"));  // moved, not copied
+    }
+
+    // Network rules belong to the topic they were set on.
+    void networkRulesArePerTopic() {
+        const QString a = "uconn://" + QString(32, QLatin1Char('a')) + "#" + QString(64, QLatin1Char('1'));
+        const QString b = "uconn://" + QString(32, QLatin1Char('b')) + "#" + QString(64, QLatin1Char('2'));
+        controller_->setTopicLink(a);
+        controller_->applySettings({{"networkRules", QVariantList{QVariantMap{
+            {"pattern", "m.m.m.x"}, {"label", "Home"}, {"perms", QStringList{"camera.view", "no.such"}}},
+            QVariantMap{{"pattern", "not a pattern"}}}}});
+        QCOMPARE(controller_->networkRules().size(), 1);  // the invalid one is dropped
+        QCOMPARE(controller_->networkRules().first().toMap().value("perms").toStringList(), QStringList{"camera.view"});
+        controller_->setTopicLink(b);
+        QVERIFY(controller_->networkRules().isEmpty());
+        controller_->setTopicLink(a);
+        QCOMPARE(controller_->networkRules().size(), 1);
+        QSettings().sync();
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        restarted.setTopicLink(a);
+        QCOMPARE(restarted.networkRules().first().toMap().value("label").toString(), QStringLiteral("Home"));
     }
 
     void closeToTraySurvivesApplyAndRestart() {

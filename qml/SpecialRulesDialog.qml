@@ -3,8 +3,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import UConnect
 
-// Asks the user to compare fingerprints before trusting a device. Trust pins
-// the device's public key, so this is the one moment a person checks it.
+// Asks the user to compare fingerprints before giving a device special rules.
+// They pin the device's public key, so this is the one moment a person checks it.
 Popup {
     id: dialog
 
@@ -43,7 +43,7 @@ Popup {
             ColumnLayout {
                 spacing: 2
                 Text {
-                    text: qsTr("Trust %1?").arg(dialog.peer.displayName !== undefined ? dialog.peer.displayName : qsTr("this device"))
+                    text: qsTr("Give %1 special rules?").arg(dialog.peer.displayName !== undefined ? dialog.peer.displayName : qsTr("this device"))
                     textFormat: Text.PlainText
                     color: Theme.text
                     font.pixelSize: 16
@@ -85,7 +85,7 @@ Popup {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: Theme.textSecondary
-            text: qsTr("If it differs, do not trust it: something is impersonating that device. This device's own fingerprint, for them to check, is %1.")
+            text: qsTr("If it differs, stop: something is impersonating that device. This device's own fingerprint, for them to check, is %1.")
                       .arg(App.myFingerprint)
         }
 
@@ -93,7 +93,7 @@ Popup {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: Theme.textSecondary
-            text: qsTr("Once trusted, it starts with your default permissions, which you can change afterwards.")
+            text: qsTr("Its special rules start from what it may do now, and come before network rules and defaults. Change them on its page; they may include sensitive permissions such as camera and screen.")
         }
 
         RowLayout {
@@ -104,11 +104,11 @@ Popup {
                 onClicked: dialog.close()
             }
             UButton {
-                text: qsTr("Fingerprints Match — Trust")
+                text: qsTr("Fingerprints Match — Add Rules")
                 primary: true
                 enabled: dialog.verified
                 onClicked: {
-                    App.trustDevice(dialog.peer.identityKey, dialog.peer.displayName)
+                    App.addSpecialRules(dialog.peer.identityKey, dialog.peer.displayName)
                     dialog.close()
                 }
             }

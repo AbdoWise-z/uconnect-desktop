@@ -27,13 +27,16 @@ QVariant PeerListModel::roleValue(const PeerRecord& p, int role) const {
     case CloseReasonRole: return p.closeReason;
     case StaleRole: return p.stale;
     case RelayedRole: return p.relayed;
+    case AddressRole: return p.address;
+    case NetworkRuleRole: return p.networkRule;
+    case PermissionSourceRole: return p.permissionSource;
     case HasHelloRole: return p.hasHello;
     case BytesSentRole: return QVariant::fromValue(p.bytesSent);
     case BytesReceivedRole: return QVariant::fromValue(p.bytesReceived);
     case IdentityStateRole: return p.identityState;
     case IdentityKeyRole: return p.identityKey;
     case FingerprintRole: return p.fingerprint;
-    case TrustedRole: return p.trusted;
+    case SpecialRole: return p.special;
     case PermissionsRole: return p.permissions;
     case GrantedToMeRole: return p.grantedToMe;
     default: return {};
@@ -52,13 +55,16 @@ QHash<int, QByteArray> PeerListModel::roleNames() const {
         {CloseReasonRole, "closeReason"},
         {StaleRole, "stale"},
         {RelayedRole, "relayed"},
+        {AddressRole, "address"},
+        {NetworkRuleRole, "networkRule"},
+        {PermissionSourceRole, "permissionSource"},
         {HasHelloRole, "hasHello"},
         {BytesSentRole, "bytesSent"},
         {BytesReceivedRole, "bytesReceived"},
         {IdentityStateRole, "identityState"},
         {IdentityKeyRole, "identityKey"},
         {FingerprintRole, "fingerprint"},
-        {TrustedRole, "trusted"},
+        {SpecialRole, "special"},
         {PermissionsRole, "permissions"},
         {GrantedToMeRole, "grantedToMe"},
     };
@@ -127,6 +133,13 @@ QVariantList PeerListModel::devicesOffering(const QString& service) const {
             continue;
         out.push_back(get(p.devId));
     }
+    return out;
+}
+
+QVariantList PeerListModel::connectedDevices() const {
+    QVariantList out;
+    for (const PeerRecord& p : rows_)
+        if (p.stateCode == static_cast<int>(uconnect::PeerState::Connected)) out.push_back(get(p.devId));
     return out;
 }
 

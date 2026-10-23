@@ -106,7 +106,8 @@ Session::Session(QObject* parent)
                 const QString key  = have && it->second.identity ? keyToHex(*it->second.identity) : QString();
                 emit storageActivity(hex(dev), name, key, action, path, detail);
             });
-    // Sync is only for peers that proved who they are and that this device trusts.
+    // Sync is only for peers that proved who they are; each folder then names
+    // its members (by key) and what they may send and receive.
     sync_ = new SyncService(
         [this](const uconnect::DevId& dev, std::span<const uint8_t> bytes) {
             return topic_ && topic_->send(dev, bytes);
@@ -114,8 +115,7 @@ Session::Session(QObject* parent)
         [this](const uconnect::DevId& dev) {
             const auto it = peers_.find(dev);
             if (it == peers_.end() || !it->second.identity) return QString();
-            const QString key = keyToHex(*it->second.identity);
-            return policy_.trusted.contains(key) ? key : QString();
+            return keyToHex(*it->second.identity);
         },
         [this](const uconnect::DevId& dev) {
             const auto it = peers_.find(dev);
@@ -258,7 +258,7 @@ void Session::setIdentity(const Identity& identity) {
 
 bool Session::openMedia(const uconnect::DevId& peer, uconnect::DatagramFallback fallback) {
     // A proven identity is enough here: whether this device may share with
-    // the peer (which needs trust) is the screen service's decision.
+    // the peer (which needs special or network rules) is the screen service's decision.
     const auto it = peers_.find(peer);
     if (it == peers_.end() || !it->second.identity) return false;
     if (!mediaUsers_.contains(peer) && !media_.open(peer, fallback)) return false;
@@ -289,7 +289,7 @@ void Session::setAccessPolicy(const AccessPolicy& policy) {
     if (topic_)
         for (const uconnect::DevId& dev : topic_->connected()) {
             sendGrants(dev);
-            sync_->peerUp(dev);  // trust may have changed
+            sync_->peerUp(dev);  // its rules may have changed
         }
     emitPeers();
 }
@@ -538,11 +538,15 @@ void Session::emitPeers() {
                 r.identityState = QStringLiteral("verified");
                 r.identityKey   = keyToHex(*p.identity);
                 r.fingerprint   = fingerprint(*p.identity);
-                r.trusted       = policy_.trusted.contains(r.identityKey);
+                r.special       = policy_.special.contains(r.identityKey);
             } else {
                 r.identityState = p.identityInvalid ? QStringLiteral("invalid") : QStringLiteral("pending");
             }
-            r.permissions = permissionsFor(dev).values();
+            if (const QHostAddress a = peerAddress(dev); !a.isNull()) r.address = a.toString();
+            r.networkRule = networkRuleFor(dev);
+            const auto [perms, source] = resolvePermissions(dev);
+            r.permissions      = perms.values();
+            r.permissionSource = source;
             r.permissions.sort();
             r.grantedToMe = p.grantedToMe;
             out.push_back(std::move(r));
@@ -627,6 +631,25 @@ void Session::onData(const uconnect::DevId& dev, const std::vector<uint8_t>& dat
         const QString t = msg->value("t").toString();
         if (t == QLatin1String("id")) return onIdentity(dev, *msg);
         if (t == QLatin1String("perm.granted")) return onGrants(dev, *msg);
+        if (t == QLatin1String("rules.get")) {
+            // Only a proven device with special rules here, or one a network
+            // rule covers, may copy them -- not one on the defaults alone.
+            const bool allowed = resolvePermissions(dev).second != QLatin1String("default");
+            topic_->send(dev, encodeControl(allowed
+                ? QJsonObject{{"t", "rules.list"}, {"rules", networkRulesToJson(policy_.rules)}}
+                : QJsonObject{{"t", "rules.err"}, {"code", "forbidden"}}));
+            log(tr("Peer %1 asked for the network rules: %2")
+                    .arg(shortId(hex(dev)), allowed ? tr("sent") : tr("refused: it has no rules here")));
+            return;
+        }
+        if (t == QLatin1String("rules.list")) {
+            emit networkRulesReceived(hex(dev), msg->value("rules").toArray(), {});
+            return;
+        }
+        if (t == QLatin1String("rules.err")) {
+            emit networkRulesReceived(hex(dev), {}, msg->value("code").toString());
+            return;
+        }
 #ifdef UCD_HAS_SCREEN
         // The display handshake before the media sessions' messages.
         if (displays_->handle(dev, *msg) || screen_->handle(dev, *msg) || camera_->handle(dev, *msg) ||
@@ -685,13 +708,43 @@ void Session::onGrants(const uconnect::DevId& dev, const QJsonObject& message) {
     emitPeers();
 }
 
-PermissionSet Session::permissionsFor(const uconnect::DevId& dev) const {
+PermissionSet Session::permissionsFor(const uconnect::DevId& dev) const { return resolvePermissions(dev).first; }
+
+std::pair<PermissionSet, QString> Session::resolvePermissions(const uconnect::DevId& dev) const {
     const auto it = peers_.find(dev);
     if (it != peers_.end() && it->second.identity) {
-        const auto trusted = policy_.trusted.constFind(keyToHex(*it->second.identity));
-        if (trusted != policy_.trusted.constEnd()) return trusted.value();
+        const auto special = policy_.special.constFind(keyToHex(*it->second.identity));
+        if (special != policy_.special.constEnd()) return {special.value(), QStringLiteral("device")};
+        if (const int rule = networkRuleFor(dev); rule >= 0) {
+            const QStringList& list = policy_.rules[rule].permissions;
+            return {PermissionSet(list.begin(), list.end()), QStringLiteral("rule")};
+        }
     }
-    return permissionsForUntrusted(policy_.defaults);
+    return {permissionsForUntrusted(policy_.defaults), QStringLiteral("default")};
+}
+
+QHostAddress Session::peerAddress(const uconnect::DevId& dev) const {
+    if (!topic_) return {};
+    const auto ep = topic_->peer_address(dev);
+    if (!ep) return {};
+    if (ep->ip.family == uconnect::IpAddr::Family::V4)
+        return QHostAddress(quint32(ep->ip.bytes[0]) << 24 | quint32(ep->ip.bytes[1]) << 16 |
+                            quint32(ep->ip.bytes[2]) << 8 | quint32(ep->ip.bytes[3]));
+    Q_IPV6ADDR v6;
+    std::copy(ep->ip.bytes.begin(), ep->ip.bytes.end(), v6.c);
+    return QHostAddress(v6);
+}
+
+int Session::networkRuleFor(const uconnect::DevId& dev) const {
+    if (policy_.rules.isEmpty()) return -1;
+    const QHostAddress a = peerAddress(dev);
+    return a.isNull() ? -1 : firstMatchingRule(policy_.rules, a, policy_.localAddresses);
+}
+
+void Session::requestNetworkRules(const QString& devId) {
+    const auto dev = uconnect::from_hex<uconnect::kDevIdLen>(devId.toStdString());
+    if (!dev || !topic_) return;
+    topic_->send(*dev, encodeControl({{"t", "rules.get"}}));
 }
 
 #ifdef UCD_HAS_SCREEN
@@ -703,8 +756,10 @@ screen::PeerAccess Session::accessFor(const uconnect::DevId& peer) const {
         access.fingerprint = fingerprint(*it->second.identity);
         access.name = it->second.hello ? it->second.hello->name : shortId(hex(peer));
         access.verified = true;
-        access.trusted = policy_.trusted.contains(access.key);
-        access.permissions = permissionsFor(peer);
+        const auto [perms, source] = resolvePermissions(peer);
+        // Sharing needs more than the defaults: special or network rules.
+        access.trusted = source != QLatin1String("default");
+        access.permissions = perms;
     }
     return access;
 }

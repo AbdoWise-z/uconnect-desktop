@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
+#include <QNetworkInterface>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStringDecoder>
@@ -57,7 +58,8 @@ constexpr auto ReadOnly       = "storage/readOnlyFolders";
 constexpr auto DownloadFolder = "storage/downloadFolder";
 constexpr auto MaxUploadMB    = "storage/maxUploadMB";
 constexpr auto DefaultPerms   = "permissions/defaults";
-constexpr auto Trust          = "trust";  // a group per trusted public key
+constexpr auto Special        = "special";  // a group per public key with special rules
+constexpr auto LegacyTrust    = "trust";    // before special rules: trusted devices
 }  // namespace Key
 
 constexpr int kMaxBatchFiles = 10000;
@@ -102,12 +104,13 @@ QString joinRemote(const QString& folder, const QString& name) {
     return folder.endsWith(QLatin1Char('/')) ? folder + name : folder + QLatin1Char('/') + name;
 }
 
-QStringList knownOnly(const QStringList& permissions, bool trusted = true) {
+// `sensitive` keeps permissions the defaults may not hold (camera, screen...).
+QStringList knownOnly(const QStringList& permissions, bool sensitive = true) {
     QStringList out;
     for (QString p : permissions) {
         // "storage.download" was folded into "storage.read"; saved grants keep working.
         if (p == QLatin1String("storage.download")) p = perm::StorageRead;
-        if (isKnownPermission(p) && (trusted || !isTrustedOnlyPermission(p)) && !out.contains(p)) out << p;
+        if (isKnownPermission(p) && (sensitive || !isTrustedOnlyPermission(p)) && !out.contains(p)) out << p;
     }
     out.sort();
     return out;
@@ -166,7 +169,8 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/identity.json"),
         &identityWarning);
     myFingerprint_ = fingerprint(identity_->publicKey());
-    loadTrust();
+    loadSpecialRules();
+    loadNetworkRules();
     loadActivity();
     loadSync();
 
@@ -219,6 +223,19 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
             if (!peer.identityKey.isEmpty()) identityOf_.insert(peer.devId, peer.identityKey);
         peers_.setPeers(p);
     });
+    connect(session_, &Session::networkRulesReceived, this,
+            [this](const QString& devId, const QJsonArray& rules, const QString& error) {
+        QString name = devId.left(8);
+        for (const PeerRecord& peer : peers_.peers())
+            if (peer.devId == devId && !peer.name.isEmpty()) name = peer.name;
+        emit networkRulesOffered(devId, name, networkRulesToJson(networkRulesFromJson(rules)).toVariantList(), error);
+    });
+    // This device's addresses, for the rules' "m" parts; they change with the
+    // network, so look again now and then.
+    refreshLocalAddresses();
+    addressTimer_.setInterval(15000);
+    connect(&addressTimer_, &QTimer::timeout, this, &AppController::refreshLocalAddresses);
+    addressTimer_.start();
     connect(session_, &Session::logMessage, this, &AppController::appendLog);
     SyncService* sync = session_->sync();
     connect(sync, &SyncService::offersChanged, this, [this](const QString& key, const QVariantList& offers) {
@@ -232,7 +249,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     });
     connect(sync, &SyncService::event, this, &AppController::addSyncEvent);
     connect(&peers_, &PeerListModel::changed, this, &AppController::syncChanged);  // who is online
-    connect(this, &AppController::trustChanged, this, &AppController::syncChanged);
+    connect(this, &AppController::specialRulesChanged, this, &AppController::syncChanged);
     connect(session_, &Session::storageActivity, this,
             [this](const QString& devId, const QString& device, const QString& key, const QString& action,
                    const QString& path, const QString& detail) {
@@ -444,23 +461,33 @@ void AppController::applySettings(const QVariantMap& values) {
         }
     }
 
-    bool trustTouched = false;
+    bool rulesTouched = false;
     if (values.contains(QStringLiteral("defaultPermissions"))) {
         const QStringList perms = knownOnly(values.value(QStringLiteral("defaultPermissions")).toStringList(), false);
         if (perms != defaultPermissions_) {
             defaultPermissions_ = perms;
             settings.setValue(Key::DefaultPerms, perms);
-            trustTouched = true;
+            rulesTouched = true;
         }
     }
-    for (const QString& key : values.value(QStringLiteral("untrust")).toStringList()) {
-        if (trusted_.remove(key) > 0) {
-            settings.remove(QStringLiteral("%1/%2").arg(Key::Trust, key));
-            trustTouched = true;
+    if (values.contains(QStringLiteral("networkRules"))) {
+        const auto rules =
+            networkRulesFromJson(QJsonArray::fromVariantList(values.value(QStringLiteral("networkRules")).toList()));
+        if (rules != networkRules_) {
+            networkRules_ = rules;
+            saveNetworkRules();
+            emit networkRulesChanged();
+            rulesTouched = true;  // pushes the policy below
         }
     }
-    if (trustTouched) {
-        emit trustChanged();
+    for (const QString& key : values.value(QStringLiteral("removeSpecial")).toStringList()) {
+        if (special_.remove(key) > 0) {
+            settings.remove(QStringLiteral("%1/%2").arg(Key::Special, key));
+            rulesTouched = true;
+        }
+    }
+    if (rulesTouched) {
+        emit specialRulesChanged();
         pushAccessPolicy();
     }
 
@@ -536,6 +563,7 @@ void AppController::setTopicLink(const QString& value) {
     topicLink_ = trimmed;
     if (rememberTopic_) QSettings().setValue(Key::TopicLink, trimmed);
     emit topicLinkChanged();
+    loadNetworkRules();
 }
 
 bool AppController::topicLinkValid() const {
@@ -1070,9 +1098,9 @@ QVariantList AppController::permissionDefinitions() const {
     return permissionsForQml();
 }
 
-QVariantList AppController::trustedDevices() const {
+QVariantList AppController::specialDevices() const {
     QVariantList out;
-    for (auto it = trusted_.begin(); it != trusted_.end(); ++it) {
+    for (auto it = special_.begin(); it != special_.end(); ++it) {
         out.push_back(QVariantMap{
             {"key", it.key()},
             {"fingerprint", fingerprintOfHex(it.key())},
@@ -1087,59 +1115,88 @@ QVariantList AppController::trustedDevices() const {
     return out;
 }
 
-void AppController::trustDevice(const QString& key, const QString& name) {
-    if (!keyFromHex(key) || trusted_.contains(key)) return;
-    trusted_.insert(key, {name.left(64), defaultPermissions_, QDateTime::currentDateTimeUtc()});
-    saveTrusted(key);
-    emit trustChanged();
-    pushAccessPolicy();
-    emit notify(tr("%1 is now trusted.").arg(name));
+// What a device with this key may do here right now (its network rule's or
+// the defaults), as shown for it: where special rules start from.
+QStringList AppController::currentPermissionsOf(const QString& key) const {
+    for (const PeerRecord& p : peers_.peers())
+        if (p.identityKey == key) return p.permissions;
+    return defaultPermissions_;
 }
 
-void AppController::untrustDevice(const QString& key) {
-    const auto it = trusted_.find(key);
-    if (it == trusted_.end()) return;
-    const QString name = it->name;
-    trusted_.erase(it);
-    QSettings().remove(QStringLiteral("%1/%2").arg(Key::Trust, key));
-    emit trustChanged();
+void AppController::addSpecialRules(const QString& key, const QString& name) {
+    if (!keyFromHex(key) || special_.contains(key)) return;
+    special_.insert(key, {name.left(64), knownOnly(currentPermissionsOf(key)), QDateTime::currentDateTimeUtc()});
+    saveSpecialRules(key);
+    emit specialRulesChanged();
     pushAccessPolicy();
-    emit notify(tr("%1 is no longer trusted.").arg(name));
+    emit notify(tr("%1 now has special rules.").arg(name));
+}
+
+void AppController::removeSpecialRules(const QString& key) {
+    const auto it = special_.find(key);
+    if (it == special_.end()) return;
+    const QString name = it->name;
+    special_.erase(it);
+    QSettings().remove(QStringLiteral("%1/%2").arg(Key::Special, key));
+    emit specialRulesChanged();
+    pushAccessPolicy();
+    emit notify(tr("%1's special rules were removed; network rules and defaults apply.").arg(name));
 }
 
 void AppController::setDevicePermission(const QString& key, const QString& permission, bool granted) {
-    const auto it = trusted_.find(key);
-    if (it == trusted_.end() || !isKnownPermission(permission)) return;
+    if (!keyFromHex(key) || !isKnownPermission(permission)) return;
+    if (!special_.contains(key)) {
+        QString name = deviceName(key);
+        special_.insert(key, {name.left(64), knownOnly(currentPermissionsOf(key)), QDateTime::currentDateTimeUtc()});
+    }
+    const auto it = special_.find(key);
     QStringList perms = it->permissions;
     perms.removeAll(permission);
     if (granted) perms << permission;
     perms.sort();
-    if (perms == it->permissions) return;
     it->permissions = perms;
-    saveTrusted(key);
-    emit trustChanged();
+    saveSpecialRules(key);
+    emit specialRulesChanged();
     pushAccessPolicy();
 }
 
-void AppController::loadTrust() {
+void AppController::loadSpecialRules() {
     QSettings settings;
     defaultPermissions_ = knownOnly(settings.value(Key::DefaultPerms).toStringList(), false);
-    settings.beginGroup(Key::Trust);
+    settings.beginGroup(Key::Special);
     for (const QString& key : settings.childGroups()) {
         if (!keyFromHex(key)) continue;
         settings.beginGroup(key);
-        trusted_.insert(key, {settings.value("name").toString(),
-                              knownOnly(settings.value("permissions").toStringList()),
+        special_.insert(key, {settings.value("name").toString(), knownOnly(settings.value("permissions").toStringList()),
                               settings.value("since").toDateTime()});
         settings.endGroup();
     }
+    settings.endGroup();
+    // Before special rules there was trust: a trusted device had its own
+    // permissions, which are exactly special rules. Move them over once.
+    settings.beginGroup(Key::LegacyTrust);
+    const QStringList legacy = settings.childGroups();
+    for (const QString& key : legacy) {
+        settings.beginGroup(key);
+        const bool own = settings.value("custom", true).toBool();
+        if (own && keyFromHex(key) && !special_.contains(key))
+            special_.insert(key, {settings.value("name").toString(),
+                                  knownOnly(settings.value("permissions").toStringList()),
+                                  settings.value("since").toDateTime()});
+        settings.endGroup();
+    }
+    settings.endGroup();
+    if (!legacy.isEmpty()) {
+        settings.remove(Key::LegacyTrust);
+        for (const QString& key : special_.keys()) saveSpecialRules(key);
+    }
 }
 
-void AppController::saveTrusted(const QString& key) {
-    const auto it = trusted_.constFind(key);
-    if (it == trusted_.constEnd()) return;
+void AppController::saveSpecialRules(const QString& key) {
+    const auto it = special_.constFind(key);
+    if (it == special_.constEnd()) return;
     QSettings settings;
-    settings.beginGroup(QStringLiteral("%1/%2").arg(Key::Trust, key));
+    settings.beginGroup(QStringLiteral("%1/%2").arg(Key::Special, key));
     settings.setValue("name", it->name);
     settings.setValue("permissions", it->permissions);
     settings.setValue("since", it->since);
@@ -1148,10 +1205,80 @@ void AppController::saveTrusted(const QString& key) {
 void AppController::pushAccessPolicy() {
     AccessPolicy policy;
     policy.defaults = PermissionSet(defaultPermissions_.begin(), defaultPermissions_.end());
-    for (auto it = trusted_.begin(); it != trusted_.end(); ++it)
-        policy.trusted.insert(it.key(), PermissionSet(it->permissions.begin(), it->permissions.end()));
+    for (auto it = special_.begin(); it != special_.end(); ++it)
+        policy.special.insert(it.key(), PermissionSet(it->permissions.begin(), it->permissions.end()));
+    policy.rules          = networkRules_;
+    policy.localAddresses = localAddresses_;
     onSession([s = session_, policy] { s->setAccessPolicy(policy); });
 }
+
+// --- network rules ------------------------------------------------------------
+
+QString AppController::currentTopicKey() const {
+    const auto creds = uconnect::TopicCreds::parse(topicLink_.toStdString());
+    if (!creds) return {};
+    return topicLink_.mid(8, 32).toLower();  // "uconn://" + 32 hex topic id
+}
+
+void AppController::loadNetworkRules() {
+    const QString topic = currentTopicKey();
+    if (topic == rulesTopic_) return;
+    rulesTopic_ = topic;
+    networkRules_.clear();
+    if (!topic.isEmpty()) {
+        QSettings settings;
+        settings.beginGroup(QStringLiteral("network/%1").arg(topic));
+        networkRules_ = networkRulesFromJson(QJsonDocument::fromJson(settings.value("rules").toByteArray()).array());
+    }
+    emit networkRulesChanged();
+    if (session_) pushAccessPolicy();
+}
+
+void AppController::saveNetworkRules() {
+    if (rulesTopic_.isEmpty()) return;
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("network/%1").arg(rulesTopic_));
+    settings.setValue("rules", QJsonDocument(networkRulesToJson(networkRules_)).toJson(QJsonDocument::Compact));
+}
+
+QVariantList AppController::networkRules() const { return networkRulesToJson(networkRules_).toVariantList(); }
+
+QStringList AppController::localAddresses() const {
+    QStringList out;
+    for (const QHostAddress& a : localAddresses_) out << a.toString();
+    return out;
+}
+
+void AppController::refreshLocalAddresses() {
+    QList<QHostAddress> now;
+    for (const QHostAddress& a : QNetworkInterface::allAddresses())
+        if (a.protocol() == QAbstractSocket::IPv4Protocol && !a.isLoopback() && !now.contains(a)) now << a;
+    if (now == localAddresses_) return;
+    localAddresses_ = now;
+    emit networkRulesChanged();
+    pushAccessPolicy();
+}
+
+QString AppController::networkPatternProblem(const QString& pattern) const {
+    return ucd::networkPatternProblem(pattern);
+}
+
+void AppController::requestNetworkRules(const QString& devId) {
+    onSession([s = session_, devId] { s->requestNetworkRules(devId); });
+}
+
+void AppController::importNetworkRules(const QVariantList& rules, bool replace) {
+    QVector<NetworkRule> next = replace ? QVector<NetworkRule>{} : networkRules_;
+    for (const NetworkRule& r : networkRulesFromJson(QJsonArray::fromVariantList(rules)))
+        if (next.size() < kMaxNetworkRules && !next.contains(r)) next << r;
+    if (next == networkRules_) return;
+    networkRules_ = next;
+    saveNetworkRules();
+    emit networkRulesChanged();
+    pushAccessPolicy();
+    emit notify(tr("Network rules updated."));
+}
+
 
 void AppController::pushSharedFolders() {
     onSession([s = session_, folders = sharedFolders_, readOnly = readOnlyFolders_] {
@@ -1250,7 +1377,7 @@ void AppController::pushSync() {
 }
 
 QString AppController::deviceName(const QString& key) const {
-    if (const auto t = trusted_.constFind(key); t != trusted_.cend() && !t->name.isEmpty()) return t->name;
+    if (const auto t = special_.constFind(key); t != special_.cend() && !t->name.isEmpty()) return t->name;
     for (const PeerRecord& p : peers_.peers())
         if (p.identityKey == key && !p.name.isEmpty()) return p.name;
     return tr("Unknown device");
@@ -1269,9 +1396,11 @@ QVariantList AppController::syncFolders() const {
         folder.insert("path", QDir::toNativeSeparators(c.path));
         folder.insert("paused", c.paused);
         if (!folder.contains("state")) folder.insert("state", c.paused ? "paused" : "scanning");
-        // Every trusted device can be made a member; members no longer
-        // trusted are listed too, as they still hold grants here.
-        QStringList keys = trusted_.keys();
+        // Devices with special rules, and proven devices seen in this topic,
+        // can be made members; members are listed anyway, as they hold grants.
+        QStringList keys = special_.keys();
+        for (const QString& key : identityOf_)
+            if (!keys.contains(key)) keys << key;
         for (auto it = c.peers.begin(); it != c.peers.end(); ++it)
             if (!keys.contains(it.key())) keys << it.key();
         QVariantList members;
@@ -1279,7 +1408,7 @@ QVariantList AppController::syncFolders() const {
             const sync::Grant g = c.peers.value(key);
             members << QVariantMap{{"key", key}, {"name", deviceName(key)}, {"fingerprint", fingerprintOfHex(key)},
                                    {"receive", g.receive}, {"contribute", g.contribute},
-                                   {"trusted", trusted_.contains(key)}, {"online", online.contains(key)}};
+                                   {"special", special_.contains(key)}, {"online", online.contains(key)}};
         }
         folder.insert("members", members);
         // Conflicts with device names for the keys.
@@ -1340,7 +1469,9 @@ QString AppController::createSyncFolder(const QUrl& folder, const QString& label
 
 bool AppController::joinSyncFolder(const QString& key, const QString& id, const QString& label, const QUrl& folder) {
     const QString path = folder.toLocalFile();
-    if (path.isEmpty() || !QFileInfo(path).isDir() || !trusted_.contains(key)) return false;
+    // Offers come only from devices that proved their key this session.
+    const bool known = special_.contains(key) || std::find(identityOf_.begin(), identityOf_.end(), key) != identityOf_.end();
+    if (path.isEmpty() || !QFileInfo(path).isDir() || !known) return false;
     if (std::any_of(syncFolders_.begin(), syncFolders_.end(), [&](const sync::FolderConfig& c) { return c.id == id; }))
         return false;
     sync::FolderConfig c;

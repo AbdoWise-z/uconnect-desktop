@@ -28,13 +28,16 @@ public:
         CloseReasonRole,
         StaleRole,
         RelayedRole,
+        AddressRole,
+        NetworkRuleRole,
+        PermissionSourceRole,
         HasHelloRole,
         BytesSentRole,
         BytesReceivedRole,
         IdentityStateRole,
         IdentityKeyRole,
         FingerprintRole,
-        TrustedRole,
+        SpecialRole,
         PermissionsRole,
         GrantedToMeRole,
     };
@@ -58,6 +61,8 @@ public:
     Q_INVOKABLE QVariantMap get(const QString& devId) const;
     // Connected devices that advertise `service`, as role maps.
     Q_INVOKABLE QVariantList devicesOffering(const QString& service) const;
+    // Every connected device, as role maps.
+    Q_INVOKABLE QVariantList connectedDevices() const;
 
 signals:
     void changed();

@@ -391,8 +391,8 @@ bool ScreenService::handle(const Peer& peer, const QJsonObject& wire) {
             const auto code = msg.value("code").toString();
             viewers_.erase(viewer);
             const QString detail = code == "forbidden"
-                ? (camera_ ? QStringLiteral("The other device has to trust this one and allow it to view its camera.")
-                           : QStringLiteral("The other device has to trust this one and allow it to view its screen."))
+                ? (camera_ ? QStringLiteral("The other device has to allow this one to view its camera, in its special or network rules.")
+                           : QStringLiteral("The other device has to allow this one to view its screen, in its special or network rules."))
                 : code;
             showViewer(peer, code == "busy" ? "busy" : "denied", detail);
         } else {

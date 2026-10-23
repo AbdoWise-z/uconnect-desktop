@@ -70,7 +70,7 @@ Item {
                 }
             }
             Text { text: qsTr("It opens full screen; hold Esc to stop. This request expires after 30 seconds."); color: Theme.textSecondary; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-            UCheckBox { id: remember; text: qsTr("Don't ask again for this trusted device") }
+            UCheckBox { id: remember; text: qsTr("Don't ask again for this device") }
             Item { Layout.fillHeight: true }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
