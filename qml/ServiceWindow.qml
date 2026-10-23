@@ -181,22 +181,54 @@ Window {
             onTriggered: if (viewMenu.v) viewMenu.v.fit = false
         }
         UMenuSeparator {}
+        // What to ask the other device for; it caps each by its own settings.
         UMenu {
-            title: qsTr("Quality")
+            id: resolutionMenu
+            title: qsTr("Resolution")
             Instantiator {
-                model: viewMenu.v ? viewMenu.v.qualities : []
+                model: viewMenu.v ? viewMenu.v.resolutions : []
                 delegate: UMenuItem {
                     required property var modelData
-                    required property int index
                     text: modelData.label
                     checkable: true
-                    checked: viewMenu.v && viewMenu.v.qualityIndex === index
-                    onTriggered: if (viewMenu.v) viewMenu.v.setQuality(index)
+                    checked: viewMenu.v && viewMenu.v.askWidth === modelData.w
+                    onTriggered: if (viewMenu.v) viewMenu.v.ask(modelData.w, viewMenu.v.askFps, viewMenu.v.askBitrate)
                 }
-                onObjectAdded: (i, obj) => qualityMenu.insertItem(i, obj)
-                onObjectRemoved: (i, obj) => qualityMenu.removeItem(obj)
+                onObjectAdded: (i, obj) => resolutionMenu.insertItem(i, obj)
+                onObjectRemoved: (i, obj) => resolutionMenu.removeItem(obj)
             }
-            id: qualityMenu
+        }
+        UMenu {
+            id: frameRateMenu
+            title: qsTr("Frame Rate")
+            Instantiator {
+                model: viewMenu.v ? viewMenu.v.frameRates : []
+                delegate: UMenuItem {
+                    required property var modelData
+                    text: qsTr("%1 fps").arg(modelData)
+                    checkable: true
+                    checked: viewMenu.v && viewMenu.v.askFps === modelData
+                    onTriggered: if (viewMenu.v) viewMenu.v.ask(viewMenu.v.askWidth, modelData, viewMenu.v.askBitrate)
+                }
+                onObjectAdded: (i, obj) => frameRateMenu.insertItem(i, obj)
+                onObjectRemoved: (i, obj) => frameRateMenu.removeItem(obj)
+            }
+        }
+        UMenu {
+            id: bitrateMenu
+            title: qsTr("Bitrate")
+            Instantiator {
+                model: viewMenu.v ? viewMenu.v.bitrates : []
+                delegate: UMenuItem {
+                    required property var modelData
+                    text: viewMenu.v ? viewMenu.v.bitrateLabel(modelData) : ""
+                    checkable: true
+                    checked: viewMenu.v && viewMenu.v.askBitrate === modelData
+                    onTriggered: if (viewMenu.v) viewMenu.v.ask(viewMenu.v.askWidth, viewMenu.v.askFps, modelData)
+                }
+                onObjectAdded: (i, obj) => bitrateMenu.insertItem(i, obj)
+                onObjectRemoved: (i, obj) => bitrateMenu.removeItem(obj)
+            }
         }
         UMenu {
             title: qsTr("Rotation")

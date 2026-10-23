@@ -197,31 +197,32 @@ private slots:
         }
         QVERIFY2(delivered > 100, qPrintable(QString::number(delivered)));
         QVERIFY(recoveredKeys > 5);
-        QVERIFY(controller.bitrate() >= CongestionController::MinBitrate); QVERIFY(controller.bitrate() <= 8000000);
+        QVERIFY(controller.bitrate() >= CongestionController::MinBitrate); QVERIFY(controller.bitrate() <= 16000000);
         qInfo() << "5% loss:" << delivered << "frames," << recoveredKeys << "keyframe recoveries,"
                 << controller.bitrate() << "bit/s";
     }
 
     void congestionAndReportValidation() {
-        CongestionController controller; controller.reset("relayed", 30, 1920, 2000000);
-        QCOMPARE(controller.bitrate(), 1500000);
+        // Relayed starts at 3 Mbit/s (within the 4 Mbit/s cap here).
+        CongestionController controller; controller.reset("relayed", 30, 1920, 4000000);
+        QCOMPARE(controller.bitrate(), 3000000);
         // Sustained loss: the bitrate falls (not more than once per few
         // reports) to its floor, then the frame rate gives.
         controller.update({100, 10, 0, 5, 10, 2});
-        QCOMPARE(controller.bitrate(), 1200000);
+        QCOMPARE(controller.bitrate(), 2400000);
         controller.update({100, 10, 0, 5, 10, 2});
-        QCOMPARE(controller.bitrate(), 1200000);  // same bad patch: no second cut yet
+        QCOMPARE(controller.bitrate(), 2400000);  // same bad patch: no second cut yet
         for (int i = 0; i < 40; ++i) controller.update({100, 10, 0, 5, 10, 2});
         QCOMPARE(controller.bitrate(), CongestionController::MinBitrate); QVERIFY(controller.fps() < 30);
         for (int i = 0; i < 200; ++i) controller.update({100, 0, 0, 0, 0, 2});
-        QCOMPARE(controller.bitrate(), 2000000); QCOMPARE(controller.fps(), 30); QCOMPARE(controller.width(), 1920);
+        QCOMPARE(controller.bitrate(), 4000000); QCOMPARE(controller.fps(), 30); QCOMPARE(controller.width(), 1920);
         // A viewer that decodes slowly gets fewer frames, not a worse picture.
         for (int i = 0; i < 6; ++i) controller.update({100, 0, 0, 0, 0, 80});
-        QVERIFY(controller.fps() < 30); QCOMPARE(controller.bitrate(), 2000000);
+        QVERIFY(controller.fps() < 30); QCOMPARE(controller.bitrate(), 4000000);
         QVERIFY(Feedback::parse(Feedback{100, 2, 0, 4, -3, 5}.json()));
         auto bad = Feedback{}.json(); bad["lost"] = -1; QVERIFY(!Feedback::parse(bad));
         bad["lost"] = "100"; QVERIFY(!Feedback::parse(bad));
-        controller.reset("tcp"); QCOMPARE(controller.bitrate(), 1000000);
+        controller.reset("tcp"); QCOMPARE(controller.bitrate(), 2000000);
     }
 
     // A big keyframe is paced by its size: at 24 Mbit/s, 150 KB takes 50 ms,

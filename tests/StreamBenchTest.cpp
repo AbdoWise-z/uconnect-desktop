@@ -11,6 +11,9 @@
 //   UCD_BENCH_SECONDS  how long to measure (default 30)
 //   UCD_BENCH_FPS, UCD_BENCH_WIDTH, UCD_BENCH_BITRATE   what to ask for / allow
 //                      (defaults 60, 1920, 8000000)
+//   UCD_BENCH_BUFFER   the viewer's playout buffer in ms (default 100; 0 shows at once)
+//   UCD_BENCH_ASK_BITRATE  the bitrate the viewer asks for (default 0: the host's limit)
+//   UCD_BENCH_SNAPSHOTS    a folder: every 60th picture the viewer shows is saved there
 //   UCD_TEST_OPENH264  Cisco's library, for a system without a hardware encoder
 //
 // Per-second [stats] lines from the services (UCD_SCREEN_STATS) show each
@@ -133,7 +136,9 @@ private slots:
             for (int i = 0; i < 30; ++i) frameAt(i);
             qInfo().noquote() << QStringLiteral("[bench] a source frame costs %1 ms").arg(cost.elapsed() / 30., 0, 'f', 2);
             source.setTimerType(Qt::PreciseTimer);
-            source.setInterval(std::max(1, 1000 / fps));
+            // Offered a bit faster than asked, as a capture source does: the
+            // service paces them to the target itself.
+            source.setInterval(std::max(1, 1000 / (fps + fps / 2)));
             connect(&source, &QTimer::timeout, this, [&, frameAt] { host->screen()->submitImage(frameAt(frameNumber++)); });
             source.start();
         }
@@ -161,11 +166,18 @@ private slots:
         QElapsedTimer clock; clock.start();
         QVector<qint64> shown;
         QVariantMap lastState;
-        connect(viewer.screen(), &ScreenService::frameReady, this, [&](const QString&, const QVideoFrame&) { shown.push_back(clock.elapsed()); });
+        // UCD_BENCH_SNAPSHOTS=<folder>: every 60th picture shown, as a PNG.
+        const QString snapshots = qEnvironmentVariable("UCD_BENCH_SNAPSHOTS");
+        connect(viewer.screen(), &ScreenService::frameReady, this, [&, snapshots](const QString&, const QVideoFrame& frame) {
+            shown.push_back(clock.elapsed());
+            if (!snapshots.isEmpty() && shown.size() % 60 == 0)
+                QVideoFrame(frame).toImage().save(QStringLiteral("%1/frame-%2.png").arg(snapshots).arg(shown.size()));
+        });
         connect(viewer.screen(), &ScreenService::viewerChanged, this, [&](const QString&, const QVariantMap& update) {
             for (auto it = update.begin(); it != update.end(); ++it) lastState[it.key()] = it.value();
         });
-        viewer.screen()->request(*uconnect::from_hex<uconnect::kDevIdLen>(hostId.toStdString()), false, width, fps);
+        viewer.screen()->request(*uconnect::from_hex<uconnect::kDevIdLen>(hostId.toStdString()), false, width, fps,
+                                 envInt("UCD_BENCH_ASK_BITRATE", 0), envInt("UCD_BENCH_BUFFER", 100));
         QTRY_VERIFY_WITH_TIMEOUT(!shown.isEmpty(), 20000);
 
         // Measure after a few seconds of ramp-up, a line per second.

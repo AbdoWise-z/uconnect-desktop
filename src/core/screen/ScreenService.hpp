@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVideoFrame>
 #include <QVariantMap>
@@ -26,7 +27,11 @@ struct ScreenSettings {
     bool gpuCapture = true;
     bool cursorEmbedded = true;
     bool controlOffered = false;
-    int monitor = 0, maxFps = 30, maxWidth = 1920, maxBitrate = 8000000, maxViewers = 1;
+    int monitor = 0, maxFps = 60, maxWidth = 1920, maxBitrate = 16000000, maxViewers = 1;
+    // The sending pipeline: threads converting captured frames for the
+    // encoder (0 = as many as suit this machine), and how many frames may wait
+    // in it before new ones are dropped.
+    int encoderThreads = 0, queueFrames = 6;
     QString ciscoLibrary;
     QVariantList monitors;
 };
@@ -73,7 +78,10 @@ public:
     void stopControl();
     void sendInput(const Peer& peer, QJsonObject message);
     void submitCursor(const QPoint& position, bool visible, const QByteArray& shape, const QPoint& hotspot);
-    void request(const Peer& peer, bool control = false, int maxWidth = 1920, int fps = 30);
+    // `maxBitrate` (0 = the host's own limit) caps what the host sends;
+    // `bufferMs` is the playout buffer: pictures are shown at the host's pace,
+    // this long after the quickest frames arrive (0 = show each at once).
+    void request(const Peer& peer, bool control = false, int maxWidth = 1920, int fps = 60, int maxBitrate = 0, int bufferMs = 0);
     void consent(const QString& peerId, quint32 request, bool allow, bool remember);
     // Ends both roles with `peer` (a disconnect); the others end one: this
     // device sharing with it, or this device watching it.
@@ -125,6 +133,7 @@ private:
         qint64 startedAt = 0;
         QString controlRefused;  // control was asked for but cannot be granted: why
         quint64 framesSent = 0;
+        int maxBitrate = 0;  // the viewer's cap, within this device's
         double reportLoss = 0, reportTrendMs = 0;  // the last report, for the stats log
         bool stalledTold = false;
         std::optional<quint32> nackedFrame;
@@ -137,7 +146,7 @@ private:
         quint32 request = 0;
         quint16 token = 0;
         qint64 expires = 0, reportAt = 0;
-        int width = 1920, fps = 30;
+        int width = 1920, fps = 30, maxBitrate = 0, bufferMs = 0;
         QString state = "requesting", path = "opening";
         Reassembler receiver;
         quint64 bytes = 0;
@@ -152,11 +161,21 @@ private:
         quint32 controlRequest = 0;
         quint32 cursorSequence = 0;
         bool haveCursor = false;
-        // Extended displays: decoded pictures wait here to be shown one per
-        // frame interval, so frames the network delivers in bursts are not
-        // shown in bursts (or skipped).
-        std::deque<QVideoFrame> present;
+        // Decoded pictures wait here to be shown at the host's pace: an
+        // extended display one per frame interval, a screen or camera at its
+        // capture time plus the playout buffer (playout()).
+        struct Shown { QVideoFrame picture; quint32 captureMs = 0; };
+        std::deque<Shown> present;
         qint64 presentAt = 0;
+        // The quickest recent transit (arrival minus capture time, host and
+        // local clocks mixed): the playout clock follows it.
+        std::deque<std::pair<qint64, qint32>> transits;
+        qint32 baseline = 0;
+        bool haveBaseline = false;
+        // This report period: pictures shown, shown after their time, skipped
+        // to catch up.
+        int shown = 0, late = 0, skipped = 0;
+        QVariantMap hostStats;  // the host's last scr.stats
     };
     void startHost(const Peer& peer);
     void endRoles(const Peer& peer, const QString& reason, bool asHost, bool asViewer);
@@ -174,9 +193,42 @@ private:
     // Monitors came or went (configure()): each share follows its monitor to
     // its new place in the list, and ends if that monitor is gone.
     void followMonitors(const QVariantList& before);
-    void encodeCapture(const QVideoFrame& frame, const QImage& image, quint32 captureMs);
+    void encodeCapture(quint32 captureMs);  // the native path
     void decodeNext(const Peer& peer);
     void presentNext(const Peer& peer, Viewer& viewer, qint64 now);
+    void playout(const Peer& peer, Viewer& viewer, qint64 now);
+    // The sending pipeline for captured frames (Qt capture, cameras, tests):
+    // frames that are due join a queue, are converted for the encoder on a
+    // pool of threads (several at once), then encoded strictly in capture
+    // order, so the stream keeps their pace. A frame is dropped only when the
+    // queue is full, before it is encoded: no keyframe is needed for it. (The
+    // native path captures and converts on the GPU: encodeCapture().)
+    struct Job {
+        quint32 seq = 0, captureMs = 0;
+        QVideoFrame video;
+        QImage image;
+        bool converted = false;
+        double convertMs = 0;
+        std::optional<PreparedFrame> prepared;
+    };
+    void queueCapture(const QVideoFrame& video, const QImage& image, quint32 captureMs);
+    void pumpEncoder();
+    int converterThreads() const;
+    // The frames to encode next go to these hosts, at these options.
+    struct Targets {
+        std::map<Peer, quint16> hosts;
+        CodecOptions options;
+        bool key = false;
+    };
+    Targets takeTargets();
+    void encoded(const std::map<Peer, quint16>& targets, quint64 generation, const std::optional<EncodedFrame>& result,
+                 const QString& error, const QString& name, int fps, double encodeMs, bool lostIfEmpty);
+    std::deque<Job> pipeline_;
+    quint32 nextJob_ = 0;
+    bool encoding_ = false;
+    EncoderInput encoderInput_;
+    QThreadPool convertPool_;
+    std::atomic_int postedCaptures_{0};  // Qt capture frames on their way to this thread
     Send send_;
     Authorize authorize_;
     Open open_;
@@ -194,16 +246,19 @@ private:
     // changing) must not orphan another session's decodes in flight.
     quint64 decoderGeneration_ = 0;
     double nextCapture_ = 0;  // when the next frame is due, in fractional ms
-    // Diagnostics: per-second counters, logged when UCD_SCREEN_STATS is set.
+    // Per-second counters: sent to the viewers (scr.stats) and logged when
+    // UCD_SCREEN_STATS is set.
     struct Stats {
-        std::atomic_int offered{0}, busy{0};  // Qt capture frames (its own thread), and those skipped while encoding
-        int throttled = 0, encodes = 0, frames = 0, queued = 0, refused = 0;
+        std::atomic_int offered{0}, busy{0};  // Qt capture frames (its own thread), and those skipped on the way
+        int throttled = 0, dropped = 0, encodes = 0, frames = 0, queued = 0, refused = 0;
+        int converts = 0, queueSamples = 0, queueSum = 0, queuePeak = 0;
         int completed = 0, decodes = 0, shown = 0;
-        double encodeMs = 0, decodeMs = 0;
+        double encodeMs = 0, convertMs = 0, decodeMs = 0;
+        qint64 bytesSent = 0;
         qint64 at = 0;
     } stats_;
     const bool statsOn_ = qEnvironmentVariableIsSet("UCD_SCREEN_STATS");
-    void logStats(qint64 now);
+    void publishStats(qint64 now);
     qint64 lastReleaseRetry_ = -1000;
     QTimer timer_;
     QThread encoderThread_, decoderThread_;

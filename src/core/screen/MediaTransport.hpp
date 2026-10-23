@@ -130,7 +130,9 @@ class CongestionController {
 public:
     // `startBitrate` replaces the default start on a direct path (extended
     // displays start high: they only run between nearby devices).
-    void reset(const QString& path, int maxFps = 30, int maxWidth = 1920, int maxBitrate = 8000000, int startBitrate = 0);
+    // Starts at 8 Mbit/s on a direct path, 3 relayed, 2 while still opening,
+    // within `maxBitrate`; clean reports raise it about 8% each.
+    void reset(const QString& path, int maxFps = 60, int maxWidth = 1920, int maxBitrate = 16000000, int startBitrate = 0);
     void update(const Feedback& report);
     // Ride out short bursts of loss and delay (kept across resets).
     void setTolerant(bool tolerant) { tolerant_ = tolerant; }

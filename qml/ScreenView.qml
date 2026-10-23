@@ -15,23 +15,27 @@ ColumnLayout {
     property int rotationDeg: 0  // camera preview rotation, 0/90/180/270
     property bool showStats: false
 
-    // Quality the viewer asks the host to encode at; the host caps it by its
-    // own settings. Picking one re-requests the stream at that size.
-    readonly property var qualities: [
-        { label: qsTr("Full — 1080p 60fps"), w: 1920, f: 60 },
-        { label: qsTr("High — 1080p"), w: 1920, f: 30 },
-        { label: qsTr("Medium — 720p"), w: 1280, f: 30 },
-        { label: qsTr("Low — 480p"), w: 854, f: 30 }
+    // What this viewer asks the host for: a resolution, a frame rate and a
+    // bitrate (0 = as much as the host allows). They start from Settings >
+    // Watching; the view menu changes them, re-requesting the stream. The host
+    // caps each by its own settings.
+    readonly property var resolutions: [
+        { label: qsTr("Original (up to 4K)"), w: 3840 }, { label: qsTr("1440p"), w: 2560 },
+        { label: qsTr("1080p"), w: 1920 }, { label: qsTr("720p"), w: 1280 }, { label: qsTr("480p"), w: 854 }
     ]
-    property int qualityIndex: 1
+    readonly property var frameRates: [15, 24, 30, 60, 90, 120, 144]
+    readonly property var bitrates: [0, 2000000, 4000000, 8000000, 16000000, 32000000, 50000000]
+    property int askWidth: view.controller.settings.viewWidth || 1920
+    property int askFps: view.controller.settings.viewFps || 60
+    property int askBitrate: view.controller.settings.viewBitrate || 0
+    function bitrateLabel(bps) { return bps > 0 ? qsTr("%1 Mbit/s").arg(bps / 1000000) : qsTr("Automatic") }
 
     function requestView() {
-        const q = view.qualities[view.qualityIndex]
-        view.controller.request(view.devId, view.wantControl, q.w, q.f)
+        view.controller.request(view.devId, view.wantControl, view.askWidth, view.askFps, view.askBitrate)
     }
-    function setQuality(i) {
-        if (i === view.qualityIndex) return
-        view.qualityIndex = i
+    function ask(width, fps, bitrate) {
+        if (width === view.askWidth && fps === view.askFps && bitrate === view.askBitrate) return
+        view.askWidth = width; view.askFps = fps; view.askBitrate = bitrate
         if (view.active) view.requestView()
     }
     readonly property string phase: view.session.state || ""
@@ -148,15 +152,34 @@ ColumnLayout {
             width: stats.implicitWidth + 20
             height: stats.implicitHeight + 12
             radius: Theme.radius
+            // Everything about how the stream keeps up: what this viewer shows
+            // and decodes, its playout buffer, and how the host is doing.
             Text {
                 id: stats
                 anchors.centerIn: parent
                 color: Theme.text
                 font.pixelSize: Theme.smallFontSize
-                text: qsTr("%1 fps · %2 Mbit/s · decode %3 ms · loss %4% · %5")
-                    .arg(Number(view.session.fps || 0).toFixed(0)).arg(Number((view.session.bitrate || 0) / 1000000).toFixed(1))
-                    .arg(Number(view.session.decodeMs || 0).toFixed(0)).arg(Number((view.session.loss || 0) * 100).toFixed(1))
-                    .arg(view.session.path || qsTr("opening"))
+                font.family: "Consolas"
+                readonly property var host: view.session.host || ({})
+                function n(value, digits) { return Number(value || 0).toFixed(digits) }
+                text: [
+                    qsTr("Asked %1 px, %2 fps, %3").arg(view.askWidth).arg(view.askFps).arg(view.bitrateLabel(view.askBitrate)),
+                    qsTr("Shown %1 fps (decoded %2) · %3 Mbit/s · loss %4% · jitter %5 ms · %6")
+                        .arg(n(view.session.shownFps, 0)).arg(n(view.session.fps, 0))
+                        .arg(n((view.session.bitrate || 0) / 1000000, 1)).arg(n((view.session.loss || 0) * 100, 1))
+                        .arg(n(view.session.jitterMs, 1)).arg(view.session.path || qsTr("opening")),
+                    qsTr("Buffer %1 ms (next in %2 ms, %3 waiting) · late %4 · skipped %5 · decode %6 ms")
+                        .arg(view.session.bufferMs || 0).arg(n(view.session.waitingMs, 0)).arg(view.session.waitingFrames || 0)
+                        .arg(view.session.late || 0).arg(view.session.skipped || 0).arg(n(view.session.decodeMs, 1)),
+                    host.fps === undefined ? qsTr("Host: no statistics (an older version)")
+                        : qsTr("Host: %1 fps, encode %2 ms, convert %3 ms on %4 threads · queue %5 (peak %6) · dropped %7/s")
+                            .arg(n(host.fps, 0)).arg(n(host.encodeMs, 1)).arg(n(host.convertMs, 1)).arg(host.threads || 0)
+                            .arg(n(host.queue, 1)).arg(host.queuePeak || 0).arg(n(host.dropped, 1)),
+                    host.fps === undefined ? ""
+                        : qsTr("Host target: %1 fps, %2 Mbit/s, %3 px · sending %4 Mbit/s · %5")
+                            .arg(host.targetFps || 0).arg(n((host.targetKbps || 0) / 1000, 1)).arg(host.width || 0)
+                            .arg(n((host.sentKbps || 0) / 1000, 1)).arg(host.pipeline || "")
+                ].filter(line => line.length > 0).join("\n")
             }
         }
     }

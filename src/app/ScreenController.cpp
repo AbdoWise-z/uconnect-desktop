@@ -16,19 +16,28 @@
 namespace ucd {
 ScreenController::ScreenController(Session* session, QObject* parent, bool camera)
     : QObject(parent), session_(session), camera_(camera) {
-    const QVariantMap defaults{{"monitor", 0}, {"maxFps", 30}, {"maxWidth", 1920}, {"maxBitrate", 8000000},
+    const QVariantMap defaults{{"monitor", 0}, {"maxFps", 60}, {"maxWidth", camera_ ? 1920 : 3840}, {"maxBitrate", 16000000},
         {"maxViewers", 1}, {"gpuCapture", true}, {"releaseUsage", 228}, {"stopShortcut", "Ctrl+Alt+Shift+S"}, {"softwareCodec", false}, {"codecLibrary", ""},
+        {"encoderThreads", 0}, {"queueFrames", 6},
+        // What this device asks for when it watches another (Settings > Watching).
+        {"viewFps", 60}, {"viewWidth", 1920}, {"viewBitrate", 0}, {"viewBufferMs", 100},
         {"offered", QStringList{}}};  // camera ids the user offers; empty = all
     QSettings store;
-    // The camera keeps its own device-specific settings (device, resolution,
-    // fps) separate from screen sharing. The software H.264 codec, however, is
-    // the same OpenH264 build for both, so the camera shares the one the user
-    // enables and locates once under Screen Sharing.
+    // Defaults before 0.2.0 beta 3 were 30 fps and 8 Mbit/s, and applying
+    // settings saved them: lift those to the new defaults once.
     const QString ns = camera_ ? "camera/" : "screen/";
-    for (auto it = defaults.begin(); it != defaults.end(); ++it) {
-        const bool shared = camera_ && (it.key() == "softwareCodec" || it.key() == "codecLibrary");
-        settings_[it.key()] = store.value((shared ? "screen/" : ns) + it.key(), it.value());
+    if (store.value(ns + "defaultsVersion", 1).toInt() < 2) {
+        if (store.value(ns + "maxFps").toInt() == 30) store.setValue(ns + "maxFps", 60);
+        if (store.value(ns + "maxBitrate").toInt() == 8000000) store.setValue(ns + "maxBitrate", 16000000);
+        if (!camera_ && store.value(ns + "maxWidth").toInt() == 1920) store.setValue(ns + "maxWidth", 3840);
+        store.setValue(ns + "defaultsVersion", 2);
     }
+    // The camera keeps its own device-specific settings (device, resolution,
+    // fps) separate from screen sharing. The software H.264 codec, the
+    // sending pipeline and how this device watches others are the same for
+    // both: the camera shares what is set under Sharing and Watching.
+    for (auto it = defaults.begin(); it != defaults.end(); ++it)
+        settings_[it.key()] = store.value((camera_ && sharedKey(it.key()) ? "screen/" : ns) + it.key(), it.value());
 #ifdef UCD_HAS_SCREEN
     if (camera_) {
         virtualCamera_ = new VirtualCamera(this);
@@ -152,17 +161,25 @@ void ScreenController::setShortcutError(const QString& error) {
     if (shortcutError_ == error) return; shortcutError_ = error; emit hostingChanged();
 }
 void ScreenController::configure(const QVariantMap& values) {
-    for (auto it = values.begin(); it != values.end(); ++it) if (settings_.contains(it.key())) settings_[it.key()] = it.value();
+    // What the camera shares with Screen Sharing comes from there (reloadSharedCodec).
+    for (auto it = values.begin(); it != values.end(); ++it)
+        if (settings_.contains(it.key()) && !(camera_ && sharedKey(it.key()))) settings_[it.key()] = it.value();
     settings_["maxFps"] = std::clamp(settings_["maxFps"].toInt(), 1, screen::MaxFps);
     settings_["maxWidth"] = std::clamp(settings_["maxWidth"].toInt(), 320, 3840);
-    settings_["maxBitrate"] = std::clamp(settings_["maxBitrate"].toInt(), 150000, 20000000);
+    settings_["maxBitrate"] = std::clamp(settings_["maxBitrate"].toInt(), 150000, screen::CongestionController::MaxBitrate);
     settings_["maxViewers"] = std::clamp(settings_["maxViewers"].toInt(), 1, 8);
+    settings_["encoderThreads"] = std::clamp(settings_["encoderThreads"].toInt(), 0, 16);
+    settings_["queueFrames"] = std::clamp(settings_["queueFrames"].toInt(), 1, 30);
+    settings_["viewFps"] = std::clamp(settings_["viewFps"].toInt(), 1, screen::MaxFps);
+    settings_["viewWidth"] = std::clamp(settings_["viewWidth"].toInt(), 320, 3840);
+    settings_["viewBitrate"] = std::clamp(settings_["viewBitrate"].toInt(), 0, screen::CongestionController::MaxBitrate);
+    settings_["viewBufferMs"] = std::clamp(settings_["viewBufferMs"].toInt(), 0, 2000);
     if (!QList<int>{228, 41, 69}.contains(settings_["releaseUsage"].toInt())) settings_["releaseUsage"] = 228;
     QSettings store;
     const QString ns = camera_ ? "camera/" : "screen/";
     for (auto it = settings_.begin(); it != settings_.end(); ++it) {
-        // The shared codec keys belong to Screen Sharing; the camera never owns them.
-        if (camera_ && (it.key() == "softwareCodec" || it.key() == "codecLibrary")) continue;
+        // The shared keys belong to Screen Sharing; the camera never owns them.
+        if (camera_ && sharedKey(it.key())) continue;
         store.setValue(ns + it.key(), it.value());
     }
     pushSettings(); emit settingsChanged();
@@ -170,9 +187,10 @@ void ScreenController::configure(const QVariantMap& values) {
 void ScreenController::reloadSharedCodec() {
     if (!camera_) return;
     QSettings store;
-    settings_["softwareCodec"] = store.value("screen/softwareCodec", false);
-    settings_["codecLibrary"] = store.value("screen/codecLibrary", QString());
+    for (auto it = settings_.begin(); it != settings_.end(); ++it)
+        if (sharedKey(it.key())) it.value() = store.value("screen/" + it.key(), it.value());
     pushSettings();
+    emit settingsChanged();
 }
 void ScreenController::pushSettings(const QScreen* removed) {
 #ifdef UCD_HAS_SCREEN
@@ -181,6 +199,7 @@ void ScreenController::pushSettings(const QScreen* removed) {
     settings.maxWidth = settings_.value("maxWidth").toInt(); settings.maxBitrate = settings_.value("maxBitrate").toInt();
     settings.maxViewers = settings_.value("maxViewers").toInt();
     settings.gpuCapture = settings_.value("gpuCapture").toBool();
+    settings.encoderThreads = settings_.value("encoderThreads").toInt(); settings.queueFrames = settings_.value("queueFrames").toInt();
 #ifndef Q_OS_MACOS
     settings.cursorEmbedded = camera_ || QGuiApplication::platformName().startsWith("wayland");
 #endif
@@ -230,17 +249,28 @@ void ScreenController::pushSettings(const QScreen* removed) {
     QMetaObject::invokeMethod(service, [service, settings] { service->configure(settings); });
 #endif
 }
-void ScreenController::request(const QString& id, bool control, int maxWidth, int maxFps) {
+bool ScreenController::sharedKey(const QString& key) {
+    static const QStringList keys{"softwareCodec", "codecLibrary", "encoderThreads", "queueFrames",
+                                  "viewFps", "viewWidth", "viewBitrate", "viewBufferMs", "releaseUsage"};
+    return keys.contains(key);
+}
+
+void ScreenController::request(const QString& id, bool control, int maxWidth, int maxFps, int maxBitrate) {
 #ifdef UCD_HAS_SCREEN
     const auto peer = uconnect::from_hex<uconnect::kDevIdLen>(id.toStdString()); if (!peer) return;
     auto* service = this->service();
-    // Ask for the quality the viewer chose, or this device's configured caps
-    // when it did not. Either way the host caps it by its own settings.
-    const int width = maxWidth > 0 ? maxWidth : settings_.value("maxWidth").toInt();
-    const int fps = maxFps > 0 ? maxFps : settings_.value("maxFps").toInt();
-    QMetaObject::invokeMethod(service, [service, peer, control, width, fps] { service->request(*peer, control, width, fps); });
+    // Ask for the quality the viewer chose, or this device's defaults for
+    // watching (Settings > Watching) when it did not. The host caps it by its
+    // own settings.
+    const int width = maxWidth > 0 ? maxWidth : settings_.value("viewWidth").toInt();
+    const int fps = maxFps > 0 ? maxFps : settings_.value("viewFps").toInt();
+    const int bitrate = maxBitrate >= 0 ? maxBitrate : settings_.value("viewBitrate").toInt();
+    const int buffer = settings_.value("viewBufferMs").toInt();
+    QMetaObject::invokeMethod(service, [service, peer, control, width, fps, bitrate, buffer] {
+        service->request(*peer, control, width, fps, bitrate, buffer);
+    });
 #else
-    Q_UNUSED(id); Q_UNUSED(control); Q_UNUSED(maxWidth); Q_UNUSED(maxFps);
+    Q_UNUSED(id); Q_UNUSED(control); Q_UNUSED(maxWidth); Q_UNUSED(maxFps); Q_UNUSED(maxBitrate);
 #endif
 }
 void ScreenController::stop(const QString& id) {

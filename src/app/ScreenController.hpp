@@ -43,13 +43,13 @@ public:
     void setShortcutError(const QString& error);
     Q_INVOKABLE QVariantMap state(const QString& peer) const { return states_.value(peer); }
     Q_INVOKABLE void configure(const QVariantMap& settings);
-    // Re-read the OpenH264 codec library the user configured under Screen
-    // Sharing, which the camera shares, so a change applies without a restart.
+    // Re-read what the camera shares with Screen Sharing (the codec, the
+    // sending pipeline, watching), so a change applies without a restart.
     void reloadSharedCodec();
-    // maxWidth/maxFps < 0 fall back to this device's configured caps; a viewer
-    // can pass its own to watch at a different quality than the host's default.
+    // maxWidth/maxFps <= 0 and maxBitrate < 0 fall back to this device's
+    // defaults for watching; maxBitrate 0 leaves it to the host's limit.
     Q_INVOKABLE void request(const QString& peer, bool control = false,
-                             int maxWidth = -1, int maxFps = -1);
+                             int maxWidth = -1, int maxFps = -1, int maxBitrate = -1);
     Q_INVOKABLE void stop(const QString& peer);
     Q_INVOKABLE void stopHosting();
     Q_INVOKABLE void consent(const QString& peer, quint32 request, bool allow, bool remember);
@@ -70,6 +70,8 @@ signals:
     void notify(const QString& text);
 private:
     void pushSettings(const QScreen* removed = nullptr);
+    // Kept under Screen Sharing for both: the codec, the sending pipeline, watching.
+    static bool sharedKey(const QString& key);
     Session* session_;
     bool camera_ = false;
     QVariantMap settings_;

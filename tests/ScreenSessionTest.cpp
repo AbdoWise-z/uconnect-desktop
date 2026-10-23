@@ -1,6 +1,8 @@
 #include <QtTest>
 #include <QSignalSpy>
+#include <QElapsedTimer>
 #include <QJsonArray>
+#include <QVideoFrame>
 #include <atomic>
 #include <thread>
 #include "core/Session.hpp"
@@ -199,6 +201,92 @@ private slots:
         QVERIFY2(images.size() > before, "Stopping camera closed the screen's shared datagram connection");
         viewer.screen()->stop(remote);
         QTRY_VERIFY_WITH_TIMEOUT(hostState.back()[0].toList().isEmpty(), 3000);
+        host.stop(); viewer.stop();
+    }
+
+    // The sending pipeline and the viewer's playout: frames offered faster
+    // than asked are paced to the viewer's rate, converted on several threads
+    // and encoded in order; the viewer shows them in order at their capture
+    // pace (its playout buffer), hears how the host keeps up (scr.stats), and
+    // the host keeps under the bitrate the viewer asked for.
+    void pipelineKeepsOrderPaceAndReports() {
+        if (qEnvironmentVariableIsEmpty("UCD_TEST_OPENH264")) QSKIP("Install Cisco OpenH264 for synthetic end-to-end test");
+        uconnect::server::RendezvousConfig config; config.port = 0;
+        uconnect::server::Rendezvous server(config); QVERIFY(server.open());
+        std::jthread serverThread([&](std::stop_token stop) { while (!stop.stop_requested()) server.poll_once(5ms); });
+        Session host, viewer;
+        const auto ih = Identity::generate(), iv = Identity::generate();
+        host.setIdentity(ih); viewer.setIdentity(iv);
+        AccessPolicy hp;
+        hp.special.insert(keyToHex(iv.publicKey()), {perm::ScreenView, perm::ScreenDirect});
+        host.setAccessPolicy(hp); viewer.setAccessPolicy({});
+        host.setLocalHello({"Host", "test", ServiceScreen}); viewer.setLocalHello({"Viewer", "test", 0});
+        ScreenSettings settings; settings.ciscoLibrary = qEnvironmentVariable("UCD_TEST_OPENH264");
+        settings.gpuCapture = false; settings.encoderThreads = 3; settings.queueFrames = 6;
+        settings.monitors = {QVariantMap{{"name", "Synthetic"}, {"width", 320}, {"height", 240}}};
+        host.screen()->configure(settings);
+        QString hostId;
+        connect(&host, &Session::snapshotChanged, this, [&](const auto& s) { if (!s.selfId.isEmpty()) hostId = s.selfId; });
+        bool proven = false;
+        connect(&viewer, &Session::peersChanged, this, [&](const auto& peers) {
+            for (const auto& p : peers) if (p.identityState == "verified" && p.stateCode == 3) proven = true;
+        });
+        const auto creds = uconnect::TopicCreds::generate_keyed();
+        Session::Options options{QString::fromStdString("127.0.0.1:" + std::to_string(server.port())), QString::fromStdString(creds.to_uri())};
+        host.start(options); viewer.start(options);
+        QTRY_VERIFY_WITH_TIMEOUT(proven && !hostId.isEmpty(), 20000);
+        const auto remote = *uconnect::from_hex<uconnect::kDevIdLen>(hostId.toStdString());
+
+        // Shown pictures: when, and which (each frame's grey level is its number).
+        struct Shown { qint64 at; int level; };
+        QVector<Shown> shown;
+        QElapsedTimer clock; clock.start();
+        connect(viewer.screen(), &ScreenService::frameReady, this, [&](const QString&, const QVideoFrame& frame) {
+            const QImage image = QVideoFrame(frame).toImage();
+            shown.push_back({clock.elapsed(), image.isNull() ? -1 : qGray(image.pixel(image.width() / 2, image.height() / 2))});
+        });
+        QVariantMap state;
+        connect(viewer.screen(), &ScreenService::viewerChanged, this, [&](const QString&, const QVariantMap& update) {
+            for (auto it = update.begin(); it != update.end(); ++it) state[it.key()] = it.value();
+        });
+        viewer.screen()->request(remote, false, 320, 20, 1000000, 150);  // 20 fps, 1 Mbit/s, 150 ms buffer
+        QTRY_VERIFY_WITH_TIMEOUT(state.value("state") == "live", 5000);
+
+        // Offered every 10 ms (100 fps): the host keeps one every 50 ms.
+        int level = 0;
+        QTimer source; source.setInterval(10);
+        connect(&source, &QTimer::timeout, this, [&] {
+            QImage image(320, 240, QImage::Format_RGBA8888);
+            image.fill(QColor(level % 256, level % 256, level % 256));
+            host.screen()->submitImage(image); level = (level + 1) % 250;
+        });
+        source.start();
+        QTRY_VERIFY_WITH_TIMEOUT(shown.size() >= 20, 15000);
+        const auto before = shown.size();
+        QTest::qWait(3000);
+        source.stop();
+
+        // In order: the grey level never goes back (until it wraps).
+        int backwards = 0;
+        for (qsizetype i = before + 1; i < shown.size(); ++i)
+            if (shown[i].level >= 0 && shown[i - 1].level >= 0 && shown[i].level < shown[i - 1].level && shown[i - 1].level - shown[i].level < 100)
+                ++backwards;
+        QCOMPARE(backwards, 0);
+        // At the asked pace: about 20 a second, evenly.
+        const auto count = shown.size() - before;
+        QVERIFY2(count >= 45 && count <= 75, qPrintable(QString::number(count)));
+        QVector<qint64> gaps;
+        for (qsizetype i = before + 1; i < shown.size(); ++i) gaps.push_back(shown[i].at - shown[i - 1].at);
+        std::sort(gaps.begin(), gaps.end());
+        const qint64 median = gaps[gaps.size() / 2];
+        QVERIFY2(median >= 35 && median <= 65, qPrintable(QString::number(median)));
+        // The host's own report reached the viewer, within the asked bitrate.
+        const auto hostStats = state.value("host").toMap();
+        QVERIFY(hostStats.value("fps").toDouble() > 0);
+        QVERIFY(hostStats.value("targetKbps").toDouble() <= 1000);
+        QVERIFY(hostStats.value("threads").toInt() == 3);
+        QCOMPARE(state.value("bufferMs").toInt(), 150);
+        viewer.screen()->stop(remote);
         host.stop(); viewer.stop();
     }
 

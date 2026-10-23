@@ -1219,11 +1219,11 @@ Window {
                     columnSpacing: 12
                     rowSpacing: 8
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum FPS") }
-                    USpinBox { from: 1; to: 120; value: draft.camera.maxFps || 30; onValueModified: dlg.setCameraSetting("maxFps", value) }
+                    USpinBox { from: 1; to: 165; value: draft.camera.maxFps || 60; onValueModified: dlg.setCameraSetting("maxFps", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum width") }
                     USpinBox { from: 320; to: 3840; stepSize: 160; value: draft.camera.maxWidth || 1280; onValueModified: dlg.setCameraSetting("maxWidth", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum bitrate (Mbit/s)") }
-                    USpinBox { from: 1; to: 20; value: (draft.camera.maxBitrate || 8000000) / 1000000; onValueModified: dlg.setCameraSetting("maxBitrate", value * 1000000) }
+                    USpinBox { from: 1; to: 100; value: (draft.camera.maxBitrate || 16000000) / 1000000; onValueModified: dlg.setCameraSetting("maxBitrate", value * 1000000) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum viewers") }
                     USpinBox { from: 1; to: 8; value: draft.camera.maxViewers || 1; onValueModified: dlg.setCameraSetting("maxViewers", value) }
                 }
@@ -1290,11 +1290,11 @@ Window {
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Default monitor (0 = first)") }
                     USpinBox { from: 0; to: 15; value: draft.screen.monitor || 0; onValueModified: dlg.setScreenSetting("monitor", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum FPS") }
-                    USpinBox { from: 1; to: 165; value: draft.screen.maxFps || 30; onValueModified: dlg.setScreenSetting("maxFps", value) }
+                    USpinBox { from: 1; to: 165; value: draft.screen.maxFps || 60; onValueModified: dlg.setScreenSetting("maxFps", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum width") }
                     USpinBox { from: 320; to: 3840; stepSize: 160; value: draft.screen.maxWidth || 1920; onValueModified: dlg.setScreenSetting("maxWidth", value) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum bitrate (Mbit/s)") }
-                    USpinBox { from: 1; to: 20; value: (draft.screen.maxBitrate || 8000000) / 1000000; onValueModified: dlg.setScreenSetting("maxBitrate", value * 1000000) }
+                    USpinBox { from: 1; to: 100; value: (draft.screen.maxBitrate || 16000000) / 1000000; onValueModified: dlg.setScreenSetting("maxBitrate", value * 1000000) }
                     FieldLabel { Layout.preferredWidth: 200; text: qsTr("Maximum viewers") }
                     USpinBox { from: 1; to: 8; value: draft.screen.maxViewers || 1; onValueModified: dlg.setScreenSetting("maxViewers", value) }
                 }
@@ -1324,6 +1324,28 @@ Window {
                 UTextField { Layout.preferredWidth: 220; text: draft.screen.stopShortcut || "Ctrl+Alt+Shift+S"; onTextEdited: dlg.setScreenSetting("stopShortcut", text) }
             }
             Help { text: qsTr("Stops all sharing at once (screen, camera and displays), from any app. It is active only while something is shared.") }
+            TitledSeparator { text: qsTr("Sending Pipeline") }
+            GridLayout {
+                id: pipelineGrid
+                readonly property var threadChoices: [0, 1, 2, 3, 4, 6, 8, 12, 16]
+                columns: 2
+                columnSpacing: 12
+                rowSpacing: 8
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Conversion threads") }
+                UComboBox {
+                    Layout.preferredWidth: 220
+                    model: pipelineGrid.threadChoices.map(t => t > 0 ? String(t) : qsTr("Automatic"))
+                    currentIndex: Math.max(0, pipelineGrid.threadChoices.indexOf(draft.screen.encoderThreads || 0))
+                    onActivated: index => dlg.setScreenSetting("encoderThreads", pipelineGrid.threadChoices[index])
+                }
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Queued frames") }
+                USpinBox {
+                    from: 1; to: 30
+                    value: draft.screen.queueFrames || 6
+                    onValueModified: dlg.setScreenSetting("queueFrames", value)
+                }
+            }
+            Help { text: qsTr("Captured frames wait in a queue and are converted for the encoder on several threads at once, then encoded in order. A longer queue drops fewer frames when the computer is briefly busy, at the cost of delay. Screen sharing on Windows captures and converts on the graphics card instead.") }
             TitledSeparator { text: qsTr("Video Encoding") }
             Help { text: qsTr("Hardware encoders (NVENC, Quick Sync, AMF, VideoToolbox) are used when the computer has one. Without one, sharing needs the software fallback.") }
             UCheckBox {
@@ -1390,6 +1412,45 @@ Window {
         ColumnLayout {
             spacing: 8
             Help { text: qsTr("For watching other devices' screens and cameras, and controlling them.") }
+            TitledSeparator { text: qsTr("Quality to Ask For") }
+            Help { text: qsTr("What a new view asks the other device for; its own limits apply too. A view's menu changes them while it is open.") }
+            GridLayout {
+                columns: 2
+                columnSpacing: 12
+                rowSpacing: 8
+                readonly property var frameRates: [15, 24, 30, 60, 90, 120, 144]
+                readonly property var widths: [3840, 2560, 1920, 1280, 854]
+                readonly property var bitrates: [0, 2000000, 4000000, 8000000, 16000000, 32000000, 50000000]
+                id: askGrid
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Frame rate") }
+                UComboBox {
+                    Layout.preferredWidth: 220
+                    model: askGrid.frameRates.map(f => qsTr("%1 fps").arg(f))
+                    currentIndex: Math.max(0, askGrid.frameRates.indexOf(draft.screen.viewFps || 60))
+                    onActivated: index => dlg.setScreenSetting("viewFps", askGrid.frameRates[index])
+                }
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Resolution") }
+                UComboBox {
+                    Layout.preferredWidth: 220
+                    model: [qsTr("Original (up to 4K)"), qsTr("1440p"), qsTr("1080p"), qsTr("720p"), qsTr("480p")]
+                    currentIndex: Math.max(0, askGrid.widths.indexOf(draft.screen.viewWidth || 1920))
+                    onActivated: index => dlg.setScreenSetting("viewWidth", askGrid.widths[index])
+                }
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Bitrate") }
+                UComboBox {
+                    Layout.preferredWidth: 220
+                    model: askGrid.bitrates.map(b => b > 0 ? qsTr("%1 Mbit/s").arg(b / 1000000) : qsTr("Automatic"))
+                    currentIndex: Math.max(0, askGrid.bitrates.indexOf(draft.screen.viewBitrate || 0))
+                    onActivated: index => dlg.setScreenSetting("viewBitrate", askGrid.bitrates[index])
+                }
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Playback buffer (ms)") }
+                USpinBox {
+                    from: 0; to: 2000; stepSize: 20
+                    value: draft.screen.viewBufferMs !== undefined ? draft.screen.viewBufferMs : 100
+                    onValueModified: dlg.setScreenSetting("viewBufferMs", value)
+                }
+            }
+            Help { text: qsTr("Pictures are shown at the pace they were captured, this long after the quickest ones arrive: a longer buffer rides out a bumpier network, at the cost of delay. 0 shows each picture as soon as it is decoded.") }
             TitledSeparator { text: qsTr("Controlling Another Device") }
             GridLayout {
                 columns: 2

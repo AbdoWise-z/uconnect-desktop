@@ -256,7 +256,7 @@ private slots:
         for (const QVariant& v : dialog_->property("navEntries").toList())
             if (v.toMap().value("kind") == "setting")
                 results << v.toMap().value("page").toMap().value("id").toString();
-        QVERIFY2(results == (QStringList{"camera", "screen", "display"}), qPrintable(results.join(",")));
+        QVERIFY2(results == (QStringList{"camera", "screen", "display", "watching"}), qPrintable(results.join(",")));
         QVERIFY(QMetaObject::invokeMethod(dialog_.get(), "openSetting",
                                           Q_ARG(QVariant, QVariant("camera")),
                                           Q_ARG(QVariant, QVariant("Maximum bitrate (Mbit/s)"))));

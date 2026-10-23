@@ -83,12 +83,15 @@ struct Encoder::Impl {
         params.iTargetBitrate = options.bitrate; params.iRCMode = RC_BITRATE_MODE;
         params.fMaxFrameRate = options.fps; params.uiIntraPeriod = options.fps * 4;
         params.iSpatialLayerNum = 1; params.iTemporalLayerNum = 1;
-        params.bEnableFrameSkip = true; params.iMultipleThreadIdc = 1;
+        // Several threads need as many slices: each encodes one.
+        const int threads = std::clamp(options.threads, 1, 8);
+        params.bEnableFrameSkip = true; params.iMultipleThreadIdc = threads;
         params.bEnableAdaptiveQuant = false; params.bEnableBackgroundDetection = false;
         auto& layer = params.sSpatialLayers[0];
         layer.iVideoWidth = width; layer.iVideoHeight = height;
         layer.fFrameRate = options.fps; layer.iSpatialBitrate = options.bitrate;
-        layer.sSliceArgument.uiSliceMode = SM_SINGLE_SLICE;
+        layer.sSliceArgument.uiSliceMode = threads > 1 ? SM_FIXEDSLCNUM_SLICE : SM_SINGLE_SLICE;
+        layer.sSliceArgument.uiSliceNum = threads > 1 ? unsigned(threads) : 1;
         if (software->InitializeExt(&params)) {
             error = "Cannot initialize OpenH264"; destroy(software); software = nullptr; return false;
         }
@@ -154,6 +157,10 @@ Encoder::Encoder() : impl_(std::make_unique<Impl>()) {}
 Encoder::~Encoder() = default;
 void Encoder::reset() { impl_ = std::make_unique<Impl>(); }
 QString Encoder::name() const { return impl_->name; }
+EncoderInput Encoder::input() const {
+    if (!impl_->frame) return {};
+    return {impl_->size, impl_->frame->format};
+}
 QString Encoder::error() const { return impl_->error; }
 QStringList Encoder::candidates() {
 #ifdef Q_OS_WIN
@@ -224,6 +231,70 @@ std::optional<EncodedFrame> Encoder::encode(const QVideoFrame& input, const Code
     auto result = encodeSource(source, options, session, number, captureMs, keyframe);
     frame.unmap();
     return result;
+}
+
+namespace {
+// Each conversion thread keeps its own swscale context.
+struct ThreadScaler {
+    SwsContext* context = nullptr;
+    ~ThreadScaler() { sws_freeContext(context); }
+};
+thread_local ThreadScaler threadScaler;
+}  // namespace
+
+std::optional<PreparedFrame> Encoder::prepare(const QVideoFrame& video, const QImage& image, const EncoderInput& target) {
+    if (!target.valid()) return std::nullopt;
+    QVideoFrame mapped(video);
+    QImage converted;
+    Source source;
+    bool unmap = false;
+    if (mapped.isValid()) {
+        const auto format = avFormat(mapped.pixelFormat());
+        if (format != AV_PIX_FMT_NONE && mapped.map(QVideoFrame::ReadOnly)) {
+            unmap = true;
+            source = {mapped.size(), format};
+            for (int plane = 0; plane < std::min(mapped.planeCount(), 4); ++plane) {
+                source.data[plane] = mapped.bits(plane); source.stride[plane] = mapped.bytesPerLine(plane);
+            }
+        } else {
+            converted = mapped.toImage();
+        }
+    } else {
+        converted = image;
+    }
+    if (!unmap) {
+        if (converted.isNull()) return std::nullopt;
+        if (avFormat(converted.format()) == AV_PIX_FMT_NONE) converted = converted.convertToFormat(QImage::Format_RGBA8888);
+        source = {converted.size(), avFormat(converted.format()), {converted.constBits()}, {int(converted.bytesPerLine())}};
+    }
+    std::optional<PreparedFrame> result;
+    if (source.size.width() >= 2 && source.size.height() >= 2) {
+        AVFrame* frame = av_frame_alloc();
+        frame->width = target.size.width(); frame->height = target.size.height(); frame->format = target.format;
+        bool ok = av_frame_get_buffer(frame, 32) >= 0;
+        if (ok && source.format == AVPixelFormat(target.format) && source.size == target.size) {
+            // Already the layout: a copy (swscale's unscaled NV12 copy drops the chroma plane in FFmpeg 7.1).
+            av_image_copy(frame->data, frame->linesize, source.data, source.stride, source.format, frame->width, frame->height);
+        } else if (ok) {
+            threadScaler.context = sws_getCachedContext(threadScaler.context, source.size.width(), source.size.height(), source.format,
+                frame->width, frame->height, AVPixelFormat(target.format), SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+            ok = threadScaler.context && sws_scale(threadScaler.context, source.data, source.stride, 0, source.size.height(),
+                                                   frame->data, frame->linesize) > 0;
+        }
+        if (ok) result = PreparedFrame{target, std::shared_ptr<void>(frame, [](void* f) { auto* p = static_cast<AVFrame*>(f); av_frame_free(&p); })};
+        else av_frame_free(&frame);
+    }
+    if (unmap) mapped.unmap();
+    return result;
+}
+
+std::optional<EncodedFrame> Encoder::encode(const PreparedFrame& prepared, const CodecOptions& options,
+        quint16 session, quint32 number, quint32 captureMs, bool keyframe) {
+    const auto* frame = static_cast<const AVFrame*>(prepared.frame.get());
+    if (!frame) return std::nullopt;
+    Source source{prepared.input.size, AVPixelFormat(prepared.input.format)};
+    for (int plane = 0; plane < 4; ++plane) { source.data[plane] = frame->data[plane]; source.stride[plane] = frame->linesize[plane]; }
+    return encodeSource(source, options, session, number, captureMs, keyframe);
 }
 
 std::optional<EncodedFrame> Encoder::encodeSource(const Source& input, const CodecOptions& options,

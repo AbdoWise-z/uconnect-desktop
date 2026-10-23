@@ -228,7 +228,7 @@ void CongestionController::reset(const QString& path, int maxFps, int maxWidth, 
     maxFps_ = fps_ = std::clamp(maxFps, 1, MaxFps);
     maxWidth_ = width_ = std::clamp(maxWidth, 320, 3840);
     const int start = startBitrate > 0 && path == "direct" ? startBitrate
-        : path == "direct" ? 4000000 : path == "relayed" ? 1500000 : 1000000;
+        : path == "direct" ? 8000000 : path == "relayed" ? 3000000 : 2000000;
     bitrate_ = std::min(cap_, start);
     bad_ = good_ = slowDecode_ = cooldown_ = congestedStreak_ = 0;
 }
@@ -261,7 +261,7 @@ void CongestionController::update(const Feedback& report) {
         return;
     }
     bad_ = 0; ++good_; congestedStreak_ = 0;
-    if (report.received > 0) bitrate_ = std::min(cap_, bitrate_ + std::max(50000, bitrate_ / 20));
+    if (report.received > 0) bitrate_ = std::min(cap_, bitrate_ + std::max(100000, bitrate_ / 12));
     if (good_ >= 10) {
         width_ = std::min(maxWidth_, width_ + 160);
         if (slowDecode_ == 0) fps_ = std::min(maxFps_, fps_ + 5);
