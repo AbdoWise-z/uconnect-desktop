@@ -105,6 +105,7 @@ private:
     qint64 lastKeyMs_ = -100000, behindAt_ = -100000;
     quint64 dropped_ = 0, retransmitted_ = 0;
     void trimSent(qint64 nowMs);
+    qint64 inflightLimit() const;
 };
 
 }  // namespace ucd::screen

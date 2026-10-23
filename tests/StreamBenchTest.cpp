@@ -223,7 +223,17 @@ private slots:
                                      .arg(lastState.value("host").toMap().value("transport").toString())
                                      .arg(lastState.value("host").toMap().value("lagMs").toDouble(), 0, 'f', 0)
                                      .arg(lastState.value("host").toMap().value("fps").toDouble(), 0, 'f', 0)
-                                     .arg(lastState.value("host").toMap().value("sentKbps").toDouble(), 0, 'f', 0);
+                                     .arg(lastState.value("host").toMap().value("sentKbps").toDouble(), 0, 'f', 0)
+                              + QStringLiteral(" (target %1 kbit/s %2 fps %3 px, %4, rtt %5 ms, loss %6%, fec %7, repeats %8, dropped %9/s)")
+                                     .arg(lastState.value("host").toMap().value("targetKbps").toDouble(), 0, 'f', 0)
+                                     .arg(lastState.value("host").toMap().value("targetFps").toDouble(), 0, 'f', 0)
+                                     .arg(lastState.value("host").toMap().value("width").toDouble(), 0, 'f', 0)
+                                     .arg(lastState.value("host").toMap().value("estimator").toString())
+                                     .arg(lastState.value("host").toMap().value("rttMs").toDouble(), 0, 'f', 0)
+                                     .arg(lastState.value("host").toMap().value("lossPct").toDouble(), 0, 'f', 1)
+                                     .arg(lastState.value("host").toMap().value("fec").toDouble(), 0, 'f', 0)
+                                     .arg(lastState.value("host").toMap().value("repeats").toDouble(), 0, 'f', 0)
+                                     .arg(lastState.value("host").toMap().value("dropped").toDouble(), 0, 'f', 1);
         }
         const qint64 to = clock.elapsed();
         QVector<double> gaps;

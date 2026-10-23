@@ -29,11 +29,14 @@ bool MediaSender::enqueue(const EncodedFrame& frame, qint64) {
     // two fragments when it loses a lot, one per fragment (each sent twice,
     // in effect) when it loses most of a spell.
     const double loss = std::max(bwe_.lossRate(), bwe_.burstLossRate());
-    fecGroup_ = options_.reliable || loss < 0.02 ? 0 : loss < 0.08 ? 8 : loss < 0.20 ? 4 : loss < 0.40 ? 2 : 1;
+    fecGroup_ = options_.reliable || loss < 0.02 ? 0 : loss < 0.08 ? 8 : loss < 0.20 ? 4 : loss < 0.45 ? 2 : 1;
     // A keyframe is big and everything after it depends on it: protected
     // more, so it needs fewer repeats.
     const int group = frame.keyframe && fecGroup_ > 2 ? 2 : fecGroup_;
-    auto packets = packetize(options_.kind, frame, nextSeq_, group);
+    // Sequence numbers are given as packets leave (pump): a queue dropped
+    // before it was sent must not read as loss at the receiver.
+    quint32 scratch = 0;
+    auto packets = packetize(options_.kind, frame, scratch, group);
     if (packets.isEmpty()) { ++dropped_; return false; }
     int bytes = 0; for (const auto& p : packets) bytes += MediaHeader + int(p.payload.size());
     awaitKey_ = false;
@@ -46,8 +49,15 @@ bool MediaSender::enqueue(const EncodedFrame& frame, qint64) {
 bool MediaSender::shouldSkipCapture(qint64 nowMs) const {
     const int target = bwe_.targetBps();
     if (queuedBytes_ > qint64(target) * options_.queueMs / 8000) return true;
-    if (options_.reliable && inflightBytes_ > qint64(target) * options_.inflightMs / 8000) return true;
+    if (options_.reliable && inflightBytes_ > inflightLimit()) return true;
     return false;
+}
+
+// Over a reliable path what is unacknowledged is what waits in the socket
+// and the network: bounded, or the lag grows unseen. At least a round trip
+// and a half of it, though, or a long path could never carry the rate.
+qint64 MediaSender::inflightLimit() const {
+    return qint64(bwe_.targetBps()) * std::max<qint64>(options_.inflightMs, qint64(1.5 * rttMs_)) / 8000;
 }
 
 void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)>& send) {
@@ -58,14 +68,13 @@ void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)
     if (lastPumpMs_) budgetBytes_ = std::min(budgetBytes_ + rate * double(nowMs - lastPumpMs_), double(MaxBurstBytes) + rate * 5);
     lastPumpMs_ = nowMs;
     trimSent(nowMs);
-    // Over a reliable path what is unacknowledged is what waits in the
-    // socket and the network: bounded, or the lag grows unseen.
-    const qint64 inflightLimit = qint64(bwe_.targetBps()) * options_.inflightMs / 8000;
+    const qint64 inflightLimit = this->inflightLimit();
     while (!queue_.empty()) {
-        const auto& p = queue_.front();
+        auto& p = queue_.front();
         const int size = MediaHeader + int(p.payload.size());
         if (budgetBytes_ < size) break;
         if (options_.reliable && inflightBytes_ + size > inflightLimit) break;
+        if (!p.retransmit) p.seq = nextSeq_++;  // a repeat keeps the number the receiver asked for
         const auto bytes = encodeMedia(p);
         if (!send(bytes)) break;  // refused for now (the path is still opening, or TCP pushes back)
         budgetBytes_ -= size; queuedBytes_ -= size; inflightBytes_ += size;

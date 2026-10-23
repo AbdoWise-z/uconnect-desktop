@@ -75,10 +75,10 @@ void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64
     trend_ = double(deltas_) * slope * TrendGain;
     const double dt = lastUpdateMs_ ? double(nowMs - lastUpdateMs_) : 100.;
     lastUpdateMs_ = nowMs;
-    // The worst recent spell, halving every second; a handful of packets
-    // is too few to call a spell.
-    burstLoss_ *= std::pow(0.5, dt / 1000.);
-    if (got + lost >= 5) burstLoss_ = std::max(burstLoss_, double(lost) / double(got + lost));
+    // The worst recent spell, halving every half second; a handful of
+    // packets is too few to call a spell.
+    burstLoss_ *= std::pow(0.5, dt / 500.);
+    if (got + lost >= 10) burstLoss_ = std::max(burstLoss_, double(lost) / double(got + lost));
     Signal signal = detect(trend_, dt);
     if (signal == Signal::Overuse) {
         if (overusingSinceMs_ < 0) overusingSinceMs_ = nowMs;
@@ -128,7 +128,9 @@ void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64
     // the path losing at random (a mobile uplink): no rate helps that, repair
     // packets and repeats carry the stream across it.
     if (rttMs > 0) minRttMs_ = minRttMs_ > 0 ? std::min(minRttMs_, rttMs) : rttMs;
-    const bool queueing = trend_ > 0 || (minRttMs_ > 0 && rttMs > 1.3 * minRttMs_ + 10);
+    // A cellular link's round trip wanders by tens of milliseconds and its
+    // delay trend is seldom exactly flat: only a clear rise counts.
+    const bool queueing = trend_ > threshold_ / 2 || (minRttMs_ > 0 && rttMs > 1.5 * minRttMs_ + 30);
     if (loss_ > 0.10 && !limitedByApp && queueing && receiveBps_ > 0 && nowMs - lastLossCutMs_ >= std::max(300., 3 * rttMs)) {
         target = std::min(target, int(targetBps_ * (1 - 0.5 * std::min(loss_, 0.5))));
         lastLossCutMs_ = nowMs; state_ = State::Decrease; lastDecreaseBps_ = target;

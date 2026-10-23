@@ -143,6 +143,7 @@ private:
         QString path = "opening";
         MediaSender media;
         qint64 qualityAt = 0;  // when width and fps were last reconsidered
+        qint64 qualityChangedAt = 0;  // and last changed: a change settles before the next
     };
     struct Viewer {
         quint32 request = 0;

@@ -1022,18 +1022,26 @@ void ScreenService::monitor(const Peer& peer, int index) {
 void ScreenService::adaptQuality(Host& host) {
     static constexpr int rungs[] = {3840, 2560, 1920, 1280, 854};
     static constexpr int needs[] = {8000000, 4000000, 2000000, 800000, 0};  // at 30 fps
+    // A change costs a keyframe and takes a moment to show in the rates:
+    // one at a time, a second and a half apart.
+    if (host.qualityAt - host.qualityChangedAt < 1500) return;
     const int bps = host.media.encoderBps();
     const double atFps = std::clamp(host.maxFps / 30., 0.5, 4.);
     // Stepping down is only for a path that has shown its limit, and only
     // while the source actually asks for more than it gets: a simple picture
     // needing little is not a slow path.
     const bool down = host.media.pathLimited() && !host.media.applicationLimited();
-    // Frame rate first: under about half a megabit even the smallest picture
-    // needs fewer frames to stay clean.
+    // Frame rate: under about a megabit the smallest picture at 60 fps is a
+    // blur, at 30 it is legible; only under a quarter of that do fewer frames
+    // still help. Back up a rung only with a third more than it took to come
+    // down, so the rate does not flap.
+    static constexpr int fpsRungs[] = {30, 15, 10};
+    static constexpr int fpsUnder[] = {1000000, 250000, 150000};  // the rate under which each rung applies
     int fps = host.maxFps;
-    if (down && bps < 250000) fps = std::min(fps, 10);
-    else if (down && (bps < 400000 || (host.fps <= 15 && bps < 520000))) fps = std::min(fps, 15);
-    else if (!down && host.fps < host.maxFps && bps < 520000) fps = host.fps;  // no room yet to go back up
+    for (int i = 0; i < 3; ++i) {
+        const bool at = host.fps <= fpsRungs[i];
+        if ((down && bps < fpsUnder[i]) || (at && bps < fpsUnder[i] * 1.3)) fps = std::min(fps, fpsRungs[i]);
+    }
     int width = host.width;
     int rung = 0; while (rung < 4 && rungs[rung] > host.maxWidth) ++rung;
     int current = 0; while (current < 4 && rungs[current] > width) ++current;
@@ -1041,7 +1049,9 @@ void ScreenService::adaptQuality(Host& host) {
     if (down && bps < needs[current] * scale * 0.8 && current < 4) width = rungs[current + 1];  // down a rung
     else if (current > rung && bps > needs[current - 1] * scale * 1.3) width = rungs[current - 1];  // up a rung
     width = std::min(width, host.maxWidth);
-    if (width != host.width || fps != host.fps) { host.width = width; host.fps = fps; host.media.setFps(fps); }
+    if (width != host.width || fps != host.fps) {
+        host.width = width; host.fps = fps; host.media.setFps(fps); host.qualityChangedAt = host.qualityAt;
+    }
 }
 
 void ScreenService::setControl(const Peer& peer, bool on, quint32 request, const QString& detail) {
