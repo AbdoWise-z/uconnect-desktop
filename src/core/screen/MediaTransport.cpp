@@ -152,6 +152,9 @@ QVector<EncodedFrame> Reassembler::receive(const QByteArray& packet, qint64 nowM
     }
     assembly.parts[index] = packet.mid(FragmentHeader);
     buffered_ += assembly.parts[index].size(); ++assembly.received; ++stats_.received;
+    // Still arriving is not late: a sender may spread a big frame (a phone's
+    // keyframe, paced for its uplink) over several frame intervals.
+    assembly.deadline = std::max(assembly.deadline, nowMs + 2 * interval_ + qint64(std::clamp(stats_.jitterMs, 0., 60.)));
     if (assembly.received == count) {
         assembly.complete = true;
         // Clock offset cancels in differences. Timestamp wrap is handled in

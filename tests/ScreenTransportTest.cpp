@@ -281,6 +281,24 @@ private slots:
         QCOMPARE(nacks, 3); QVERIFY(keyframe);
     }
 
+    // A phone paces a keyframe over a slow uplink: arriving over 200 ms, a
+    // piece every 10 ms, it is still arriving, not late or lost.
+    void slowlyArrivingFrameIsNotLost() {
+        Reassembler receiver; receiver.reset(1, 60);
+        auto key = frame(0, true, 60000); key.session = 1;
+        const auto parts = fragment(key);
+        QVERIFY(parts.size() >= 20);
+        QVector<EncodedFrame> done;
+        for (int i = 0; i < parts.size(); ++i) {
+            const qint64 now = qint64(i) * 200 / (parts.size() - 1);
+            const auto recovery = receiver.expire(now);
+            QVERIFY(recovery.nacks.isEmpty()); QVERIFY(!recovery.keyframe);
+            done += receiver.receive(parts[i], now);
+        }
+        QCOMPARE(done.size(), 1);
+        QCOMPARE(receiver.report(0).lost, quint64(0));
+    }
+
     // Extended displays on Wi-Fi: a lone bad report, or loss under 10%, does
     // not cut the bitrate (each cut costs a hardware encoder a keyframe), but
     // sustained loss still does.
