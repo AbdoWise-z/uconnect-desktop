@@ -1052,9 +1052,6 @@ void ScreenService::monitor(const Peer& peer, int index) {
 void ScreenService::adaptQuality(Host& host) {
     static constexpr int rungs[] = {3840, 2560, 1920, 1280, 854};
     static constexpr int needs[] = {8000000, 4000000, 2000000, 800000, 0};  // at 30 fps
-    // A change costs a keyframe and takes a moment to show in the rates:
-    // one at a time, a second and a half apart.
-    if (host.qualityAt - host.qualityChangedAt < 1500) return;
     const int bps = host.media.smoothedEncoderBps();
     const double atFps = std::clamp(host.maxFps / 30., 0.5, 4.);
     // Stepping down is only for a path that has shown its limit, and only
@@ -1079,8 +1076,18 @@ void ScreenService::adaptQuality(Host& host) {
     if (down && bps < needs[current] * scale * 0.8 && current < 4) width = rungs[current + 1];  // down a rung
     else if (current > rung && bps > needs[current - 1] * scale * 1.3) width = rungs[current - 1];  // up a rung
     width = std::min(width, host.maxWidth);
-    if (width != host.width || fps != host.fps) {
-        host.width = width; host.fps = fps; host.media.setFps(fps); host.qualityChangedAt = host.qualityAt;
+    // A change costs a keyframe and takes a moment to show in the rates, and
+    // the estimate wanders: a step down waits for the path to have shown its
+    // limit for 2 s, a step up for 5 s of headroom, and neither comes within
+    // 3 s of the last change.
+    const qint64 now = host.qualityAt;
+    const bool wantsDown = width < host.width || fps < host.fps, wantsUp = width > host.width || fps > host.fps;
+    host.downSince = wantsDown ? (host.downSince < 0 ? now : host.downSince) : -1;
+    host.upSince = wantsUp ? (host.upSince < 0 ? now : host.upSince) : -1;
+    const bool due = (wantsDown && now - host.downSince >= 2000) || (wantsUp && now - host.upSince >= 5000);
+    if (due && now - host.qualityChangedAt >= 3000) {
+        host.width = width; host.fps = fps; host.media.setFps(fps); host.qualityChangedAt = now;
+        host.downSince = host.upSince = -1;
     }
 }
 

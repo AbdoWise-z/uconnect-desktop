@@ -144,6 +144,7 @@ private:
         MediaSender media;
         qint64 qualityAt = 0;  // when width and fps were last reconsidered
         qint64 qualityChangedAt = 0;  // and last changed: a change settles before the next
+        qint64 downSince = -1, upSince = -1;  // since when a step down or up has been called for
     };
     struct Viewer {
         quint32 request = 0;
