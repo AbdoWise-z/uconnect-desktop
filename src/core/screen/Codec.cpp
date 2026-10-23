@@ -121,8 +121,9 @@ struct Encoder::Impl {
             context->bit_rate = options.bitrate; context->rc_max_rate = options.bitrate;
             context->rc_buffer_size = options.bitrate / 8;
             // No keyframe on a schedule (see openCisco); intra refresh where
-            // the encoder offers it.
-            context->gop_size = 0xFFFF; context->max_b_frames = 0;
+            // the encoder offers it. VideoToolbox stalls (no output at all)
+            // with an open-ended interval: one every ten seconds there.
+            context->gop_size = candidate == "h264_videotoolbox" ? options.fps * 10 : 0xFFFF; context->max_b_frames = 0;
             context->flags |= AV_CODEC_FLAG_LOW_DELAY;
             // As swscale converts by default.
             context->colorspace = AVCOL_SPC_SMPTE170M; context->color_range = AVCOL_RANGE_MPEG;
