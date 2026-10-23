@@ -99,6 +99,8 @@ endif ()
 
 # --- core: networking and services, no UI --------------------------------------
 add_library(uconnect_desktop_core STATIC
+    src/core/Bunzip2.cpp
+    src/core/Bunzip2.hpp
     src/core/FsUtil.cpp
     src/core/FsUtil.hpp
     src/core/Hello.cpp
@@ -108,6 +110,8 @@ add_library(uconnect_desktop_core STATIC
     src/core/OffThread.hpp
     src/core/NetworkRules.cpp
     src/core/NetworkRules.hpp
+    src/core/OpenH264Installer.cpp
+    src/core/OpenH264Installer.hpp
     src/core/Permissions.cpp
     src/core/Permissions.hpp
     src/core/Session.cpp
@@ -130,6 +134,17 @@ add_library(uconnect_desktop_core STATIC
     src/core/sync/SyncService.hpp
 )
 target_include_directories(uconnect_desktop_core PUBLIC src)
+# Cisco's license for its OpenH264 binary, shown before the app downloads it.
+set(_ucd_openh264_license_file "${CMAKE_SOURCE_DIR}/docs/OpenH264-BINARY-LICENSE.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_ucd_openh264_license_file}")
+file(READ "${_ucd_openh264_license_file}" _ucd_openh264_license)
+file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/generated/openh264_license.h"
+    CONTENT "#pragma once
+// Generated from docs/OpenH264-BINARY-LICENSE.txt.
+inline constexpr char kOpenH264License[] = R\"UCDLICENSE(@_ucd_openh264_license@)UCDLICENSE\";
+"
+    @ONLY)
+target_include_directories(uconnect_desktop_core PRIVATE "${CMAKE_BINARY_DIR}/generated")
 target_link_libraries(uconnect_desktop_core PUBLIC Qt6::Core Qt6::Network uconnect PRIVATE monocypher)
 if (UCD_SCREEN_AVAILABLE)
     target_sources(uconnect_desktop_core PRIVATE
@@ -490,6 +505,9 @@ if (UCD_BUILD_TESTS)
         endif ()
     endif ()
     ucd_add_test(StorageServiceTest)
+    ucd_add_test(Bunzip2Test)
+    ucd_add_test(OpenH264InstallerTest)  # downloads from Cisco with UCD_TEST_NETWORK=1
+    target_compile_definitions(Bunzip2Test PRIVATE UCD_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data")
     ucd_add_test(SyncLogicTest)
     ucd_add_test(SyncServiceTest)
 

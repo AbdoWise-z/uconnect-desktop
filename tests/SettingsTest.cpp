@@ -207,6 +207,25 @@ private slots:
         dialog_->setProperty("currentPage", "general");
     }
 
+    // Settings > Screen Sharing offers to download Cisco's OpenH264 binary.
+    void screenPageOffersTheCodecDownload() {
+        QStringList warnings;
+        auto conn = connect(engine_.get(), &QQmlEngine::warnings, this, [&](const QList<QQmlError>& list) {
+            for (const QQmlError& e : list) warnings << e.toString();
+        });
+        QVERIFY(dialog_->setProperty("currentPage", "screen"));
+        const auto hasText = [&](const QString& text) {
+            for (QObject* child : dialog_->findChildren<QObject*>())
+                if (child->property("text").toString() == text) return true;
+            return false;
+        };
+        QTRY_VERIFY(hasText("Download from Cisco...") || hasText("Download Again..."));
+        QVERIFY(hasText("Accept and Download"));  // the license prompt
+        disconnect(conn);
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join(QStringLiteral(" | "))));
+        dialog_->setProperty("currentPage", "general");
+    }
+
     // A camera's viewer window, with the webcam button and its install prompt.
     void loadsCameraViewerWindow() {
         QQmlComponent component(engine_.get(), QUrl::fromLocalFile(temp_.path() + "/ServiceWindow.qml"));

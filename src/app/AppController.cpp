@@ -177,6 +177,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     session_->moveToThread(&worker_);
     screen_ = new ScreenController(session_, this);
     camera_ = new ScreenController(session_, this, true);
+    openH264_ = new OpenH264Installer(this);
     display_ = new DisplayController(session_, this);
     tray_ = new TrayIcon(this, screen_, camera_, display_);
     // Only where the window can be opened again, and never before setup.

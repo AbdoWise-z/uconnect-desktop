@@ -3,6 +3,8 @@
 
 Usage: python scripts/install-openh264.py <destination-folder>
 Enable its use in Settings > Screen Sharing and enter the resulting path.
+(Settings > Screen Sharing > Download from Cisco does the same in the app;
+keep the pins in step with src/core/OpenH264Installer.cpp.)
 """
 import bz2
 import hashlib

@@ -20,6 +20,7 @@
 
 #include "app/PeerListModel.hpp"
 #include "app/TransferListModel.hpp"
+#include "core/OpenH264Installer.hpp"
 #include "core/Session.hpp"
 #include "core/screen/StopShortcut.hpp"
 
@@ -48,6 +49,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool firstRun READ firstRun NOTIFY firstRunChanged)
     Q_PROPERTY(QObject* screen READ screen CONSTANT)
     Q_PROPERTY(QObject* camera READ camera CONSTANT)
+    // Downloads Cisco's OpenH264 binary for the software codec fallback.
+    Q_PROPERTY(QObject* openH264 READ openH264 CONSTANT)
     Q_PROPERTY(QObject* display READ display CONSTANT)
     Q_PROPERTY(QObject* tray READ tray CONSTANT)
     Q_PROPERTY(QString serverAddress READ serverAddress WRITE setServerAddress NOTIFY settingsChanged)
@@ -115,6 +118,7 @@ class AppController : public QObject {
 public:
     QObject* screen() const;
     QObject* camera() const;
+    QObject* openH264() const { return openH264_; }
     QObject* display() const;
     QObject* tray() const;
     explicit AppController(const LaunchOptions& options, QObject* parent = nullptr);
@@ -463,6 +467,7 @@ private:
     Session* session_ = nullptr;  // lives on worker_
     ScreenController* screen_ = nullptr;
     ScreenController* camera_ = nullptr;
+    OpenH264Installer* openH264_ = nullptr;
     DisplayController* display_ = nullptr;
     TrayIcon* tray_ = nullptr;
     std::unique_ptr<screen::StopShortcut> mediaStop_;

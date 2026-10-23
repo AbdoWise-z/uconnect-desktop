@@ -90,6 +90,67 @@ Window {
     function removeRule(i) { withRules(r => r.splice(i, 1)) }
     function addRule() { withRules(r => r.push({ pattern: "m.m.m.x", label: "", perms: [] })) }
 
+    // Cisco's OpenH264 download (Screen Sharing): its license first, then the
+    // path it was saved to goes into the draft, like any other change.
+    property bool codecJustInstalled: false
+    Connections {
+        target: App.openH264
+        function onInstalled(path) {
+            dlg.setScreenSetting("codecLibrary", path)
+            dlg.setScreenSetting("softwareCodec", true)
+            dlg.codecJustInstalled = true
+        }
+    }
+    Popup {
+        id: codecLicense
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        padding: 20
+        width: 600
+        height: Math.min(560, (Overlay.overlay ? Overlay.overlay.height : 600) - 40)
+        background: Rectangle { color: Theme.panel; border.color: Theme.popupBorder; radius: 8 }
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 10
+            Text {
+                text: qsTr("Cisco OpenH264")
+                color: Theme.text
+                font.pixelSize: 16
+                font.bold: true
+            }
+            Help {
+                text: qsTr("uConnect will download %1 from Cisco (ciscobinary.openh264.org). Cisco provides it, and licenses it, as follows:")
+                          .arg(App.openH264.fileName)
+            }
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                TextArea {
+                    readOnly: true
+                    wrapMode: TextEdit.Wrap
+                    textFormat: TextEdit.PlainText
+                    text: App.openH264.license
+                    color: Theme.text
+                    font.pixelSize: Theme.smallFontSize
+                    background: Rectangle { color: Theme.canvas; border.color: Theme.border; radius: 4 }
+                }
+            }
+            RowLayout {
+                Item { Layout.fillWidth: true }
+                UButton { text: qsTr("Cancel"); onClicked: codecLicense.close() }
+                UButton {
+                    text: qsTr("Accept and Download")
+                    onClicked: {
+                        dlg.codecJustInstalled = false
+                        App.openH264.install()
+                        codecLicense.close()
+                    }
+                }
+            }
+        }
+    }
+
     // Copying another device's rules (rules.get / rules.list).
     readonly property var connectedDevices: { App.peers.revision; return App.peers.connectedDevices() }
     property string copyStatus: ""
@@ -1184,14 +1245,55 @@ Window {
                     onToggled: dlg.setScreenSetting("softwareCodec", checked)
                 }
                 Help { text: "OpenH264 Video Codec provided by Cisco Systems, Inc." }
-                UTextField {
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    placeholderText: qsTr("Path to separately installed Cisco OpenH264 2.6 library")
-                    text: draft.screen.codecLibrary || ""
-                    onTextEdited: dlg.setScreenSetting("codecLibrary", text)
+                    spacing: 8
+                    UTextField {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        placeholderText: qsTr("Path to separately installed Cisco OpenH264 2.6 library")
+                        text: draft.screen.codecLibrary || ""
+                        onTextEdited: dlg.setScreenSetting("codecLibrary", text)
+                    }
+                    UButton {
+                        visible: App.openH264.supported
+                        enabled: App.openH264.state !== "downloading"
+                        text: App.openH264.exists(draft.screen.codecLibrary || "") ? qsTr("Download Again...")
+                                                                                   : qsTr("Download from Cisco...")
+                        onClicked: codecLicense.open()
+                    }
                 }
-                Help { text: qsTr("Use scripts/install-openh264.py to download the Cisco binary separately. Its license is in docs/OpenH264-BINARY-LICENSE.txt.") }
+                RowLayout {
+                    visible: App.openH264.state === "downloading"
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 6
+                        radius: 3
+                        color: Theme.border
+                        Rectangle {
+                            width: parent.width * Math.max(0.03, App.openH264.progress)
+                            height: parent.height
+                            radius: 3
+                            color: Theme.accent
+                        }
+                    }
+                    UButton { text: qsTr("Cancel"); onClicked: App.openH264.cancel() }
+                }
+                Help {
+                    readonly property string path: draft.screen.codecLibrary || ""
+                    color: App.openH264.state === "failed" || (path !== "" && !App.openH264.exists(path))
+                           ? Theme.error : Theme.textSecondary
+                    text: App.openH264.state === "downloading" ? qsTr("Downloading %1 from Cisco…").arg(App.openH264.fileName)
+                        : App.openH264.state === "failed" ? App.openH264.error
+                        : App.openH264.state === "done" && dlg.codecJustInstalled
+                          ? qsTr("Downloaded from Cisco and verified. Click OK or Apply to use it.")
+                        : path !== "" && !App.openH264.exists(path) ? qsTr("There is no file at this path.")
+                        : App.openH264.supported
+                          ? qsTr("“Download from Cisco” gets Cisco's binary for this system straight from Cisco, checks it against Cisco's published archive and saves it with its license. Or enter the path of one you installed yourself.")
+                          : qsTr("Cisco publishes no OpenH264 binary for this system.")
+                }
             }
         }
     }

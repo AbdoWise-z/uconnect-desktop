@@ -23,7 +23,12 @@ binary patent license. A Cisco binary fallback is a separate dependency.
 The fallback uses OpenH264 API headers from Cisco commit
 `652bdb7719f30b52b08e506645a7322ff1b2cc6f` (v2.6.0), under the BSD license
 retained in each header. The binary is downloaded separately from Cisco,
-never embedded in our packages. Installer for Windows, macOS and Linux (x64/ARM64):
+never embedded in our packages. Settings > Screen Sharing downloads it: after
+showing Cisco's license, the app fetches Cisco's archive for the system from
+ciscobinary.openh264.org, checks its SHA-256 against the pinned value,
+unpacks it (bzip2, `src/core/Bunzip2.cpp`) and saves it with its license in
+the app's data folder (`codecs/`). The same releases can be installed by hand
+on Windows, macOS and Linux (x64/ARM64) with
 `python scripts/install-openh264.py <codec-folder>`.
 The Windows x64 compressed archive SHA-256 is
 `dab5f2a872777f9a58b69bfa9fbcf20d9f82f2d6ec91383fd70bff49bd34ac9f`.
@@ -39,7 +44,8 @@ For a shared LGPL SDK on macOS/Linux, run `bash scripts/build-ffmpeg-lgpl.sh`.
 It pins FFmpeg 7.1.5's source archive and disables dependency autodetection;
 it never enables GPL or nonfree components. Building this script requires
 native compiler tools, make, pkg-config and nasm on x86. The other pinned
-Cisco archive hashes are listed in `scripts/install-openh264.py`.
+Cisco archive hashes are listed in `scripts/install-openh264.py` and
+`src/core/OpenH264Installer.cpp`.
 
 ## Extended display driver (Windows)
 

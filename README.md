@@ -203,7 +203,8 @@ third-party software it uses keeps its own licenses, below.
 
 uConnect uses [Qt](https://www.qt.io) (LGPL v3), [FFmpeg](https://ffmpeg.org)
 (LGPL, dynamically linked and replaceable) and, optionally, Cisco's OpenH264
-binary, downloaded separately by the user. The Windows extended display
+binary, downloaded from Cisco by the user (Settings > Screen Sharing, or
+`scripts/install-openh264.py`). The Windows extended display
 driver is a fork of [SudoVDA](https://github.com/SudoMaker/SudoVDA), based on
 Microsoft's indirect display driver sample (MS-PL). See
 [docs/third-party-screen.md](docs/third-party-screen.md) for the details and
