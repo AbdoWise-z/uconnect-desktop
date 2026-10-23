@@ -95,6 +95,14 @@ Window {
     property string copyStatus: ""
     property var offeredRules: []
     property string offeredFrom: ""
+    property string offeredFingerprint: ""
+    // Names can be copied: a device is told apart by its fingerprint, whose
+    // start is shown next to its name ("not proven" until it proved it).
+    function shortFingerprint(device) {
+        return device && device.identityState === "verified" && device.fingerprint
+               ? device.fingerprint.substring(0, 9) : qsTr("not proven")
+    }
+    function deviceLabel(device) { return device.displayName + "  ·  " + shortFingerprint(device) }
     Connections {
         target: App
         function onNetworkRulesOffered(devId, deviceName, rules, error) {
@@ -104,8 +112,10 @@ Window {
                     : qsTr("%1 could not share its rules (%2).").arg(deviceName).arg(error)
                 return
             }
+            const device = App.peers.get(devId)
             dlg.offeredRules = rules
             dlg.offeredFrom = deviceName
+            dlg.offeredFingerprint = device.identityState === "verified" ? device.fingerprint : ""
             dlg.copyStatus = ""
             importRules.open()
         }
@@ -126,6 +136,23 @@ Window {
                 color: Theme.text
                 font.pixelSize: 16
                 font.bold: true
+            }
+            RowLayout {
+                spacing: 8
+                UIcon {
+                    name: dlg.offeredFingerprint ? "fingerprint" : "warning"
+                    size: 16
+                    color: dlg.offeredFingerprint ? Theme.textSecondary : Theme.error
+                }
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.PlainText
+                    color: dlg.offeredFingerprint ? Theme.text : Theme.error
+                    font.family: dlg.offeredFingerprint ? "Consolas" : ""
+                    text: dlg.offeredFingerprint ? dlg.offeredFingerprint
+                                                 : qsTr("This device has not proved its identity.")
+                }
             }
             Help {
                 text: dlg.offeredRules.length === 0
@@ -733,15 +760,15 @@ Window {
                 spacing: 8
                 UComboBox {
                     id: copyFrom
-                    Layout.preferredWidth: 260
-                    model: dlg.connectedDevices.map(d => d.displayName)
+                    Layout.preferredWidth: 320
+                    model: dlg.connectedDevices.map(d => dlg.deviceLabel(d))
                     enabled: dlg.connectedDevices.length > 0
                 }
                 UButton {
                     text: qsTr("Request Rules")
                     enabled: dlg.connectedDevices.length > 0 && copyFrom.currentIndex >= 0
                     onClicked: {
-                        dlg.copyStatus = qsTr("Asking %1...").arg(dlg.connectedDevices[copyFrom.currentIndex].displayName)
+                        dlg.copyStatus = qsTr("Asking %1...").arg(dlg.deviceLabel(dlg.connectedDevices[copyFrom.currentIndex]))
                         App.requestNetworkRules(dlg.connectedDevices[copyFrom.currentIndex].devId)
                     }
                 }
