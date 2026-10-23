@@ -16,7 +16,7 @@ void MediaSender::reset(const Options& options) {
     bwe_.reset({options.startBps, options.minBps, options.maxBps});
     nextSeq_ = 0; queue_.clear(); queuedBytes_ = 0; budgetBytes_ = MaxBurstBytes; lastPumpMs_ = 0;
     sent_.clear(); inflightBytes_ = 0; feedbackBase_ = 0; haveFeedback_ = false;
-    rttMs_ = 0; lagMs_ = 0; fecGroup_ = 0; lastSentCaptureMs_ = 0;
+    rttMs_ = 0; minRttMs_ = 0; lagMs_ = 0; smoothEncoderBps_ = 0; fecGroup_ = 0; lastSentCaptureMs_ = 0;
     awaitKey_ = false; lastKeyMs_ = -100000; behindAt_ = -100000;
     dropped_ = retransmitted_ = 0;
 }
@@ -55,9 +55,11 @@ bool MediaSender::shouldSkipCapture(qint64 nowMs) const {
 
 // Over a reliable path what is unacknowledged is what waits in the socket
 // and the network: bounded, or the lag grows unseen. At least a round trip
-// and a half of it, though, or a long path could never carry the rate.
+// and a half of it, though (the quickest seen: queueing lengthens the
+// others, and a bound that grew with it would bound nothing), or a long
+// path could never carry the rate.
 qint64 MediaSender::inflightLimit() const {
-    return qint64(bwe_.targetBps()) * std::max<qint64>(options_.inflightMs, qint64(1.5 * rttMs_)) / 8000;
+    return qint64(bwe_.targetBps()) * std::max<qint64>(options_.inflightMs, qint64(1.5 * minRttMs_)) / 8000;
 }
 
 void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)>& send) {
@@ -66,6 +68,8 @@ void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)
     // at once.
     const double rate = bwe_.targetBps() * options_.pacingGain / 8000.;  // bytes per ms
     if (lastPumpMs_) budgetBytes_ = std::min(budgetBytes_ + rate * double(nowMs - lastPumpMs_), double(MaxBurstBytes) + rate * 5);
+    const double weight = lastPumpMs_ && smoothEncoderBps_ > 0 ? std::min(1., double(nowMs - lastPumpMs_) / 1000.) : 1.;
+    smoothEncoderBps_ += (encoderBps() - smoothEncoderBps_) * weight;
     lastPumpMs_ = nowMs;
     trimSent(nowMs);
     const qint64 inflightLimit = this->inflightLimit();
@@ -86,9 +90,14 @@ void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)
 }
 
 void MediaSender::trimSent(qint64 nowMs) {
-    while (!sent_.empty() && nowMs - sent_.begin()->second.sentMs > SentHistoryMs) {
-        if (!sent_.begin()->second.acknowledged && !sent_.begin()->second.lost) inflightBytes_ -= sent_.begin()->second.size;
-        sent_.erase(sent_.begin());
+    for (auto it = sent_.begin(); it != sent_.end() && nowMs - it->second.sentMs > SentHistoryMs;) {
+        const auto& s = it->second;
+        // On a reliable path an unacknowledged packet is still queued
+        // somewhere on the way, however old: it stays counted (within
+        // reason), or the bound would let the queue grow unseen.
+        if (options_.reliable && !s.acknowledged && !s.lost && nowMs - s.sentMs < 10 * SentHistoryMs) { ++it; continue; }
+        if (!s.acknowledged && !s.lost) inflightBytes_ -= s.size;
+        it = sent_.erase(it);
     }
     inflightBytes_ = std::max<qint64>(0, inflightBytes_);
 }
@@ -122,9 +131,15 @@ void MediaSender::onFeedback(const QByteArray& packet, qint64 nowMs) {
     if (newestSentMs >= 0) {
         const double rtt = std::max(1., double(nowMs - newestSentMs) - double(f.heldMs));
         rttMs_ = rttMs_ > 0 ? 0.8 * rttMs_ + 0.2 * rtt : rtt;
+        minRttMs_ = minRttMs_ > 0 ? std::min(minRttMs_, rtt) : rtt;
     }
     std::sort(results.begin(), results.end(), [](const auto& a, const auto& b) { return a.sendMs < b.sendMs; });
     if (!results.isEmpty()) bwe_.onFeedback(results, nowMs, rttMs_);
+    // On a reliable path the bound on what is in flight is what limits
+    // sending when the path cannot drain it: the rate follows what arrives.
+    if (options_.reliable && !results.isEmpty() && inflightBytes_ >= 0.9 * double(inflightLimit()) && bwe_.receiveBps() > 0) {
+        bwe_.limitTo(int(0.85 * bwe_.receiveBps()));
+    }
     // Repeats: what it still wants, once per 40 ms each, while it is recent.
     for (const quint32 seq : f.nacks) {
         auto it = sent_.find(seq);

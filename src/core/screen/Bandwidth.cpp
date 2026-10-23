@@ -21,6 +21,12 @@ void BandwidthEstimator::reset(const Options& options) {
     previousSendMs_ = 0; previousArrivalMs_ = 0; received_.clear(); lastArrivalMs_ = 0; sent_.clear(); lastSendMs_ = 0; minRttMs_ = 0;
 }
 
+void BandwidthEstimator::limitTo(int bps) {
+    const int target = std::clamp(bps, options_.minBps, options_.maxBps);
+    if (target >= targetBps_) return;
+    targetBps_ = target; lastDecreaseBps_ = target; state_ = State::Decrease;
+}
+
 QString BandwidthEstimator::state() const {
     return state_ == State::Hold ? QStringLiteral("hold") : state_ == State::Increase ? QStringLiteral("increase") : QStringLiteral("decrease");
 }

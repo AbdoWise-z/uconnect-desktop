@@ -42,6 +42,12 @@ public:
     Stats report();
     double jitterMs() const { return jitterMs_; }
     double trendMs() const { return trendMs_; }
+    // The longest a recent gap took to fill (a repeat arriving, or the packet
+    // merely late), fading over a few seconds.
+    double repairDelayMs() const { return repairDelayMs_; }
+    // The playout delay that would show every frame on time, from the jitter
+    // and the time gaps take to fill; the caller smooths it.
+    int suggestedPlayoutMs() const;
     std::optional<quint32> latestCaptureMs() const { return latestCaptureMs_; }
     // The frames still being assembled, for diagnostics: "number:got/count".
     QString pendingText() const;
@@ -76,7 +82,8 @@ private:
     Stats stats_;
     std::optional<quint32> latestCaptureMs_;
     quint32 latestFrame_ = 0;
-    double jitterMs_ = 0, trendMs_ = 0;
+    double jitterMs_ = 0, trendMs_ = 0, repairDelayMs_ = 0;
+    qint64 lastExpireMs_ = 0;
     std::optional<double> previousTransit_;
 };
 

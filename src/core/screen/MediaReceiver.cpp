@@ -2,6 +2,7 @@
 
 #include <QtEndian>
 #include <algorithm>
+#include <cmath>
 
 namespace ucd::screen {
 namespace {
@@ -15,6 +16,7 @@ void MediaReceiver::reset(quint16 session, quint8 kind, int fps) {
     waiting_ = true; haveLast_ = false; keyWanted_ = false; last_ = 0;
     frames_.clear(); arrivals_.clear(); haveSeq_ = false; highestSeq_ = feedbackBase_ = 0; missing_.clear(); haveFloor_ = false; nackFloor_ = 0;
     lastFeedbackMs_ = newestArrivalMs_ = 0; stats_ = {}; latestCaptureMs_.reset(); latestFrame_ = 0;
+    repairDelayMs_ = 0; lastExpireMs_ = 0;
     jitterMs_ = trendMs_ = 0; previousTransit_.reset();
 }
 
@@ -50,9 +52,15 @@ void MediaReceiver::noteArrival(quint32 seq, qint64 nowMs) {
         // Everything between is missing until it shows up.
         for (quint32 s = highestSeq_ + 1; seqNewer(seq, s) && missing_.size() < 1000; ++s) missing_[s] = nowMs;
         highestSeq_ = seq;
-    } else {
-        missing_.erase(seq);
+    } else if (const auto m = missing_.find(seq); m != missing_.end()) {
+        // A gap filled: how long that took is what a playout buffer must cover.
+        repairDelayMs_ = std::max(repairDelayMs_, double(nowMs - m->second));
+        missing_.erase(m);
     }
+}
+
+int MediaReceiver::suggestedPlayoutMs() const {
+    return std::clamp(int(std::lround(interval_ + 2 * jitterMs_ + repairDelayMs_)), 20, 500);
 }
 
 QVector<EncodedFrame> MediaReceiver::receive(const QByteArray& packet, qint64 nowMs) {
@@ -151,6 +159,8 @@ void MediaReceiver::expire(qint64 nowMs) {
     for (auto it = missing_.begin(); it != missing_.end();) {
         if (nowMs - it->second > MissingForgetMs) it = missing_.erase(it); else ++it;
     }
+    if (lastExpireMs_) repairDelayMs_ *= std::pow(0.5, double(nowMs - lastExpireMs_) / 3000.);
+    lastExpireMs_ = nowMs;
 }
 
 bool MediaReceiver::feedbackDue(qint64 nowMs) const {

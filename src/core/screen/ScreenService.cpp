@@ -198,7 +198,7 @@ void ScreenService::request(const Peer& peer, bool control, int maxWidth, int fp
     viewer.request = nextRequest_++; if (!nextRequest_) ++nextRequest_;
     viewer.width = std::clamp(maxWidth, 320, 3840); viewer.fps = std::clamp(fps, 1, MaxFps);
     viewer.maxBitrate = maxBitrate > 0 ? std::clamp(maxBitrate, MinBitrate, MaxBitrate) : 0;
-    viewer.bufferMs = std::clamp(bufferMs, 0, 2000);
+    viewer.bufferMs = std::clamp(bufferMs, -1, 2000);  // -1: automatic, following the network
     viewer.expires = now_() + 35000; viewer.reportAt = now_();
     viewers_.emplace(peer, std::move(viewer)); timer_.start();
     showViewer(peer, "requesting", {}, {{"pictured", false}, {"stalled", false}, {"hostStatus", QString()}, {"host", QVariantMap()}});
@@ -578,7 +578,7 @@ void ScreenService::decodeNext(const Peer& peer) {
     // last of a batch (the others just advance the decoder), since a picture
     // costs a copy out of the decoder and the older ones would be thrown
     // away anyway.
-    const bool everyFrame = display_ || viewer.bufferMs > 0;
+    const bool everyFrame = display_ || playoutBufferMs(viewer) > 0;
     QMetaObject::invokeMethod(decoderWorker_, [this, peer, token, generation, complete = std::move(complete), started, everyFrame] {
         auto& decoder = decoders_[peer]; if (!decoder) decoder = std::make_unique<Decoder>();
         QVector<Viewer::Shown> images; bool any = false;
@@ -612,7 +612,7 @@ void ScreenService::decodeNext(const Peer& peer) {
                     for (const auto& image : images) v.present.push_back(image);
                     while (v.present.size() > 3) v.present.pop_front();
                     presentNext(peer, v, now_());
-                } else if (v.bufferMs <= 0) {
+                } else if (playoutBufferMs(v) <= 0) {
                     emit frameReady(hex(peer), images.back().picture); ++stats_.shown; ++v.shown;
                 } else {
                     const qint64 now = now_();
@@ -625,7 +625,7 @@ void ScreenService::decodeNext(const Peer& peer) {
                         qint32 quickest = transit;
                         for (const auto& [at, value] : v.transits) quickest = std::min(quickest, value);
                         v.baseline = quickest; v.haveBaseline = true;
-                        if (qint32(image.captureMs + quint32(v.baseline + v.bufferMs) - quint32(now)) < 0) ++v.late;
+                        if (qint32(image.captureMs + quint32(v.baseline + playoutBufferMs(v)) - quint32(now)) < 0) ++v.late;
                         v.present.push_back(image);
                     }
                     // A second or more behind: catch up rather than fall further behind.
@@ -660,7 +660,7 @@ void ScreenService::playout(const Peer& peer, Viewer& viewer, qint64 now) {
     std::optional<QVideoFrame> show;
     while (!viewer.present.empty()) {
         const auto& front = viewer.present.front();
-        const qint32 wait = qint32(front.captureMs + quint32(viewer.baseline + viewer.bufferMs) - quint32(now));
+        const qint32 wait = qint32(front.captureMs + quint32(viewer.baseline + playoutBufferMs(viewer)) - quint32(now));
         if (wait > 0) break;
         if (show) ++viewer.skipped;
         show = front.picture;
@@ -983,9 +983,16 @@ void ScreenService::tick() {
             showViewer(peer, "live", {}, {{"stalled", true}});
         }
         viewer.media.expire(now);
+        if (viewer.bufferMs < 0 && now - viewer.autoAt >= 250) {
+            // The automatic buffer follows the network: the jitter and the
+            // time gaps take to fill, up at once and down slowly.
+            viewer.autoAt = now;
+            const int want = viewer.media.suggestedPlayoutMs();
+            viewer.autoBufferMs = want > viewer.autoBufferMs ? want : std::max(want, viewer.autoBufferMs - 5);
+        }
         if (viewer.channel && viewer.media.feedbackDue(now)) {
-            const int playout = viewer.present.empty() ? viewer.bufferMs
-                : int(qint32(viewer.present.front().captureMs + quint32(viewer.baseline + viewer.bufferMs) - quint32(now)));
+            const int playout = viewer.present.empty() ? playoutBufferMs(viewer)
+                : int(qint32(viewer.present.front().captureMs + quint32(viewer.baseline + playoutBufferMs(viewer)) - quint32(now)));
             const auto feedback = viewer.media.takeFeedback(now, std::max(0, playout), viewer.decodeMs);
             if (!feedback.isEmpty()) datagram_(peer, feedback);
         }
@@ -994,10 +1001,10 @@ void ScreenService::tick() {
             const double span = double(std::max<qint64>(1, now - viewer.reportAt));
             // How long the next picture waits to be shown: the buffer in use.
             const double waiting = viewer.present.empty() ? 0.
-                : double(qint32(viewer.present.front().captureMs + quint32(viewer.baseline + viewer.bufferMs) - quint32(now)));
+                : double(qint32(viewer.present.front().captureMs + quint32(viewer.baseline + playoutBufferMs(viewer)) - quint32(now)));
             showViewer(peer, "live", {}, {{"fps", viewer.decoded * 1000. / span},
                 {"shownFps", viewer.shown * 1000. / span}, {"late", viewer.late}, {"skipped", viewer.skipped},
-                {"bufferMs", viewer.bufferMs}, {"waitingMs", waiting}, {"waitingFrames", int(viewer.present.size())},
+                {"bufferMs", playoutBufferMs(viewer)}, {"waitingMs", waiting}, {"waitingFrames", int(viewer.present.size())},
                 {"bitrate", double(viewer.bytes) * 8000. / span}, {"decodeMs", viewer.decodeMs},
                 {"loss", double(report.lost) / std::max(1., double(report.received + report.lost))},
                 {"jitterMs", viewer.media.jitterMs()}, {"recovered", double(report.recovered)}, {"repeats", double(report.repaired)},
@@ -1025,7 +1032,7 @@ void ScreenService::adaptQuality(Host& host) {
     // A change costs a keyframe and takes a moment to show in the rates:
     // one at a time, a second and a half apart.
     if (host.qualityAt - host.qualityChangedAt < 1500) return;
-    const int bps = host.media.encoderBps();
+    const int bps = host.media.smoothedEncoderBps();
     const double atFps = std::clamp(host.maxFps / 30., 0.5, 4.);
     // Stepping down is only for a path that has shown its limit, and only
     // while the source actually asks for more than it gets: a simple picture

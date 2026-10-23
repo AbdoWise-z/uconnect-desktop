@@ -654,110 +654,138 @@ rules or defaults, 4) then decide what it may do (7.3). `screen.view`,
 `display.show` and `display.direct` are sensitive (4). Datagram kinds are separate from the reliable envelope in section
 2: 1 = screen video, 2 = screen cursor, 3 = camera video, 4 = extended display video, 5 = extended display cursor.
 
-### 7.1 Video fragments
+### 7.1 Media packets (screen/camera 2.0)
 
-All multibyte integers are unsigned, big endian. Header (16 bytes):
+Every datagram a host sends in a session, video and repair alike, is
+numbered in one sequence, so the viewer can tell the host exactly which
+arrived and when. All multibyte integers are unsigned, big endian. Header
+(21 bytes):
 
 | offset | field |
 |---|---|
-| 0 | u8 kind = 1 |
-| 1 | u8 flags: bit 0 keyframe, bit 1 retransmission |
+| 0 | u8 kind (1 screen video, 3 camera video, 4 display video) |
+| 1 | u8 type: 0 media, 1 repair, 2 feedback (7.2) |
 | 2 | u16 nonzero session token |
-| 4 | u32 frame sequence (wraps) |
-| 8 | u16 fragment index (zero based) |
-| 10 | u16 fragment count |
-| 12 | u32 capture timestamp in monotonic milliseconds (wraps) |
-| 16 | encoded payload, 1–1084 bytes |
+| 4 | u32 packet sequence (wraps; given as the packet leaves, so the numbers have no gaps) |
+| 8 | u32 frame number (wraps) |
+| 12 | u16 fragment index (zero based) |
+| 14 | u16 fragment count |
+| 16 | u32 capture timestamp in monotonic milliseconds (wraps) |
+| 20 | u8 flags: bit 0 keyframe, bit 1 repeat (sent again on request) |
+| 21 | payload |
 
-Nonfinal fragments have exactly 1084 payload bytes. Frames are bounded to
-4 MiB, at most 8 assemblies and 8 MiB of buffered payload per viewer.
-Duplicate fragments do not affect feedback. Mismatched tokens, metadata,
-unknown flags, oversized counts and malformed lengths are discarded.
+A media packet carries one fragment of a frame, at most 1076 bytes (1100 less
+the header and a repair packet's own 3 bytes, so a repair fits in a
+datagram). Frames are bounded to 4 MiB; a viewer holds at most 32 frames
+being assembled.
 
-Frames normally expire after two frame intervals plus measured jitter
-(capped at 60 ms). An incomplete frame receives one `scr.nack` with its
-`frame` and missing `indexes`; its deadline is extended by one interval
-(at least 30 ms). While deltas are gated (below), only keyframes are
-nacked. The sender keeps the fragments of frames sent in the last 500 ms
-(at most 16 frames) and resends requested ones with the retransmission
-flag. A frame that still cannot complete is a lost reference: delta delivery
-is gated until a complete keyframe; `scr.keyframe` requests are rate limited
-to once per 200 ms. Delivery follows frame sequence order, including
-sequence wrap.
+A repair packet carries the frame fields of its group, `fragment index`
+being the first of a group of consecutive fragments, and as payload the
+group's size (u8), the XOR of the fragments' lengths (u16) and the XOR of
+their payloads (zero padded, as long as the longest): any one fragment of
+the group that is lost is rebuilt from the others. The host sizes the groups
+to what the path loses, by the worst recent spell rather than the mean:
+none under 2%, one repair per 8 fragments under 8%, per 4 under 20%, per 2
+under 45%, per 1 above (each fragment twice, in effect); a keyframe's
+groups are never larger than 2. Nothing is repaired on a reliable (TCP)
+path.
 
-The viewer decodes complete frames in order on its decoder thread. Frames
-completing while a decode runs wait for it (none can be skipped: each is a
-reference for the next); if more than a second of video (at least 8 frames)
-waits, they are dropped and a keyframe requested.
+A frame that makes no progress for 400 ms (at least eight frame intervals)
+is given up with the frames behind it, and the viewer waits for a keyframe,
+which it asks for in its feedback. A complete keyframe is delivered ahead of
+whatever incomplete frames precede it. Delivery otherwise follows frame
+number order, including wrap.
 
-### 7.2 Reports and pacing
+### 7.2 Feedback, rate and pacing
 
-`scr.report` carries window counters `received`, `lost`, `late`, and numeric
-`jitterMs`, `owdTrendMs`, `decodeMs`. Transit differences estimate delay trend
-without assuming synchronized clocks. They are not glass-to-glass latency.
+Every 50 ms (every 500 ms while nothing arrives, as a keepalive; sooner when
+a keyframe is wanted) the viewer sends the host a feedback datagram of the
+media kind with type 2:
 
-Each frame's datagrams are spread over about half a frame interval
-(the first few at once), starting when the previous frame's are due. Up to 3
-frames may wait; a further frame is dropped. A datagram the path refuses
-(still opening, or the TCP fallback's queue full) is retried on the next
-pump, not dropped. Frames older than four frame intervals (at least 150 ms)
-are dropped with every frame queued behind them, and the next frame is a
-keyframe, so a blocked path cannot accumulate stale video.
+| offset | field |
+|---|---|
+| 0 | u8 kind, u8 type = 2 |
+| 2 | u16 session token |
+| 4 | u32 base sequence: the first packet reported on |
+| 8 | u16 count of arrivals that follow (at most 200) |
+| 10 | u32 reference time, the viewer's clock in milliseconds, 16 s ago (wraps) |
+| 14 | u16 held: milliseconds from the newest arrival to this feedback leaving |
+| 16 | u32 newest complete frame's number; u32 its capture timestamp |
+| 24 | u16 playout delay in use; u16 decode time in tenths of a millisecond |
+| 28 | u8 flags: bit 0 keyframe wanted, bit 1 the newest-frame fields are valid |
+| 29 | count x u16 arrival: quarter milliseconds after the reference time, or 0xFFFF for a packet that has not arrived |
+| then | u8 count of repeats wanted (at most 32), then that many u32 sequences |
 
-Bitrate starts at 8 Mbit/s on direct UDP, 3 Mbit/s on relay, 2 Mbit/s on
-TCP or while the path is still opening (each within the session's cap), and
-never goes below 300 kbit/s. Loss above 5% or a delay trend above
-15 ms cuts it by 20%, at most once per three reports; persistent congestion
-at the floor lowers the frame rate (not below 15), then the width. Decoding
-slower than the frame interval (by 20%, three reports running) lowers only
-the frame rate, by a quarter (not below 5). Clean reports raise the bitrate
-by about 8% (at least 100 kbit/s) each; every 10 clean reports widen the picture by
-160 pixels and, unless decoding is slow, add 5 fps. Configuration caps apply
-throughout.
+Each feedback reports every sequence from the base to the highest seen,
+once; the next starts after it. Clocks are never compared across devices:
+the host reads the spacing of arrivals against the spacing of its own
+departures. A packet reported missing is counted lost; one the viewer still
+wants (missing for 10 ms and newer than the last frame it delivered) is
+listed as a repeat, and the host sends it again, with the repeat flag and its
+original sequence, at most once per 40 ms, ahead of new packets, from the
+last 2 s it has sent. The round trip is the time from the newest packet
+reported leaving to its feedback arriving, less the held time.
 
-Hardware encoders restart with a keyframe on a bitrate change, so the host
-applies the controller's bitrate in batches: cuts of more than 15% at most
-once a second, raises of more than 25% at most every 5 s, smaller drift after
-15 s. Changes beyond 2x reopen the encoder. Software OpenH264 follows every
-change.
+Bandwidth estimate. The host runs a delay-gradient estimator in the manner
+of Google congestion control: a trend line through the accumulated
+inter-arrival minus inter-departure deltas of the last 20 packets, weighted
+by how many have been seen, against an adaptive threshold (12.5 ms at the
+start). A rising trend held for 10 ms is overuse: the target drops to 85% of
+the receive rate (bytes arrived over the last 500 ms). Otherwise it grows,
+by 8% per 100 ms until the path has pushed back once, then by about a packet
+per round trip while near the last cut. More than 10% loss cuts it by half
+the loss share, at most once per 300 ms or three round trips, but only with
+a clear delay rise or the round trip half again above its minimum: loss
+with no delay behind it is a path losing at random (a mobile uplink), which
+repair and repeats carry across. The target never exceeds 1.5x the receive
+rate (plus the floor) once the path is being used, holds while the source
+sends under 70% of it, and stays within the session's cap and the floor of
+150 kbit/s. The host starts at 1.5 Mbit/s (a direct link may start higher).
 
-Lossy UDP. When more than 15% of the stream is lost in 6 of the last 10
-reports on a direct or relayed path (some mobile uplinks police UDP and drop
-a large share of it at any rate), the host sends the rest of the session
-over the TCP connection instead: late rather than lost. A viewer accepts
-datagrams over TCP whatever its own path. A viewer gives a frame whose
-datagrams are still arriving more time (each one moves its deadline), since
-a host may spread a keyframe over several frame intervals.
+The encoder is asked for the target less the repair share and the loss
+(what repeats take); the quality ladder steps the picture down a rung
+(3840, 2560, 1920, 1280, 854 on the long side needing about 8, 4, 2, 0.8 and
+0 Mbit/s at 30 fps, scaled by the frame rate) when the path has shown its
+limit and the source asks for more than it gets, and back up with a third
+to spare; the frame rate goes to 30 under 1 Mbit/s, 15 under 250 kbit/s and
+10 under 150 kbit/s. Changes are at least 1.5 s apart and decided on the
+encoder rate averaged over a second.
 
-Lag. A `scr.report` may carry `latestMs`, the `captureMs` of the newest
-complete frame the viewer has. The host compares it with the newest frame it
-sent (the same clock) to learn how far behind the viewer is, which no loss
-figure shows over TCP, where what the path cannot carry queues instead.
-Behind by 300 ms the bitrate is eased off as under loss; behind by 600 ms
-the host drops everything queued to send, sends a keyframe next, and skips
-delta frames until it (at most once per 1.5 s). `scr.stats` carries the
-host's `lagMs` and its sending `transport` (`udp` or `tcp`).
+Pacing. Packets leave at 1.5x the target, a few at a time, from a queue
+bounded at 150 ms of the target: while it is deeper the host skips captures
+(an encoded frame is never dropped, since the frames after it depend on it;
+a phone, whose encoder cannot skip, drops the frame and asks its encoder for
+a keyframe). A viewer more than 600 ms behind (its newest capture timestamp
+against the newest sent, the same clock) has the queue dropped and a
+keyframe sent next, at most once per 1.5 s. A keyframe is produced only on
+request (encoders run without a keyframe schedule, at a constant bitrate,
+refreshing intra where they can), at most once per 150 ms or a round trip.
 
-Pacing and playout (screen/camera 1.2). A host may convert several captured
-frames for the encoder at once, but encodes and sends them strictly in
-capture order, each stamped with its own `captureMs`; when its queue of
-captured frames is full it drops the newest capture before encoding, so no
-keyframe is needed. A viewer may keep a playback buffer: it shows each
-picture at its `captureMs` plus the smallest transit time of the last 5 s
-plus the buffer, so pictures keep the sender's pace whatever the network's
-jitter; a picture whose time has passed is shown at once (counted late), and
-of several due at once only the newest is shown. Without a buffer each
-picture is shown as soon as it is decoded.
+Reliable paths. Over the TCP fallback nothing is lost and nothing is
+repaired; what the path cannot carry queues. The host bounds what it has
+sent and not yet heard of to 300 ms of the target (at least a round trip
+and a half, by the quickest round trip seen), counting a packet until it is
+acknowledged, and when that bound is what limits sending the target follows
+85% of the receive rate.
+
+Playout. A viewer shows each picture at its `captureMs` plus the smallest
+transit time of the last 5 s plus a playout buffer, so pictures keep the
+host's pace whatever the network's jitter; a picture whose time has passed is
+shown at once (counted late), and of several due at once only the newest is
+shown. The buffer is the user's choice or automatic: the frame interval plus
+twice the jitter plus the longest a recent gap took to fill, raised at once
+and lowered slowly. Without a buffer each picture is shown as soon as it is
+decoded.
 
 Once a second the host sends each viewer `scr.stats` (`session` and
 numbers, all optional): `fps` (frames encoded), `encodeMs`, `convertMs`,
 `threads`, `queue`, `queuePeak`, `dropped` and `throttled` (captures dropped
-for a full queue, or skipped to keep to the frame rate, per second),
-`sentKbps`, the controller's `targetFps`, `targetKbps` and `width`,
-`senderDrops` (frames the sender dropped in all), and the string `pipeline`.
-They are for display; a viewer may ignore them. A viewer's `scr.report` may
-add `shownFps`, `late`, `skipped`, `bufferMs`, `waitingMs` and
-`waitingFrames` about its playout.
+or skipped, per second), `sentKbps`, `receiveKbps` (what the viewer
+reports arriving), `targetFps`, `targetKbps` and `width` (the ladder's),
+`senderDrops`, `lagMs`, `rttMs`, `lossPct`, `fec` (fragments per repair
+packet, 0 none), `repeats` (packets sent again in all), the strings
+`transport` (`udp` or `tcp`), `estimator` (`increase`, `hold`, `decrease`)
+and `pipeline`. They are for display; a viewer may ignore them.
 
 ### 7.3 Screen sessions and consent
 
@@ -772,9 +800,7 @@ Reliable control messages have these types:
 | `scr.monitor` | `session`, zero-based `index` |
 | `scr.monitorChanged` | `session`, `index`; shared source changed for all viewers |
 | `scr.pipeline` | `session`, `name`, `cursorEmbedded`; capture/encoder path changed |
-| `scr.keyframe` | `session` |
-| `scr.nack` | `session`, `frame`, `indexes` |
-| `scr.report` | `session` plus the report fields in 7.2 |
+| `scr.keyframe` | `session`; a viewer may also ask in its feedback (7.2), which is the usual way |
 | `scr.stats` | host → viewer, `session` plus the figures in 7.2; once a second |
 | `scr.error` | `session`, human-readable `detail`, followed by stop |
 | `scr.status` | `session`, human-readable `detail`; the host has had nothing to send 5 s after starting (sent once) |
@@ -797,8 +823,8 @@ user, along with any `scr.status` detail.
 
 H.264 is carried as Annex B access units with parameter sets in keyframes;
 there are no B frames. Capture and decode submissions are bounded and run
-on dedicated codec threads. The viewer reports decode time, loss, bitrate,
-frame rate and the transport path. `captureMs` is monotonic and cannot be
+on dedicated codec threads. The viewer reports arrivals, decode time and
+playout in its feedback datagrams (7.2). `captureMs` is monotonic and cannot be
 interpreted as absolute cross-device latency without clock synchronization.
 
 ### 7.4 Shared sources and camera
@@ -940,6 +966,7 @@ request gets `busy`.
 | rules 1.0 | trust replaced by special rules; network rules per topic (4.2); `rules.get`, `rules.list`, `rules.err`. Sync membership needs a proven identity, special rules and the folder's grants (sync 1.1); sharing needs a proven identity, and any source may grant sensitive permissions, defaults included (screen/camera 1.1, display 1.1). Only local policy changed: no message changed shape |
 | screen/camera 1.2 | the viewer chooses the frame rate, width and (new `maxBitrate`) bitrate to receive, within the host's limits; `scr.stats` and the playout fields of `scr.report` (7.2); frames converted in parallel but sent in order; higher starting bitrates |
 | rules 1.1 | Permissions from special rules, the matching network rule and the defaults add up; special rules may be an exception that applies alone (4). Local policy only |
+| screen/camera 2.0 | media packets numbered in one sequence with repair packets, feedback datagrams every 50 ms in place of `scr.nack` and `scr.report`, a delay-gradient bandwidth estimate with pacing and a quality ladder, encoders without a keyframe schedule, an automatic playout buffer (7.1, 7.2). The media header changed shape: both ends update together |
 | identity | the proof context string (3) was `"uconnect-desktop identity v1"` before this revision; it is now the implementation-neutral `"uconnect identity v1"`. The `id` message keeps `"v":1`; peers from before and after do not verify each other's identity, so both ends update together. Connections and storage with default permissions are unaffected |
 
 Almost every change only adds messages, fields and codes, so an older peer

@@ -29,6 +29,9 @@ public:
     void reset(const Options& options);
     // `results` in send order; `rttMs` the current round trip, if known.
     void onFeedback(const QVector<PacketResult>& results, qint64 nowMs, double rttMs);
+    // The path has shown it carries no more than `bps` (a reliable path's
+    // queue filling): the target comes down to it.
+    void limitTo(int bps);
     int targetBps() const { return targetBps_; }
     int receiveBps() const { return receiveBps_; }
     int sendBps() const { return sendBps_; }

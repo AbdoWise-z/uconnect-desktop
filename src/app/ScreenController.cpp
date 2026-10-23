@@ -20,7 +20,7 @@ ScreenController::ScreenController(Session* session, QObject* parent, bool camer
         {"maxViewers", 1}, {"gpuCapture", true}, {"releaseUsage", 228}, {"stopShortcut", "Ctrl+Alt+Shift+S"}, {"softwareCodec", false}, {"codecLibrary", ""},
         {"encoderThreads", 0}, {"queueFrames", 6},
         // What this device asks for when it watches another (Settings > Watching).
-        {"viewFps", 60}, {"viewWidth", 1920}, {"viewBitrate", 0}, {"viewBufferMs", 100},
+        {"viewFps", 60}, {"viewWidth", 1920}, {"viewBitrate", 0}, {"viewBufferMs", -1},
         {"offered", QStringList{}}};  // camera ids the user offers; empty = all
     QSettings store;
     // Defaults before 0.2.0 beta 3 were 30 fps and 8 Mbit/s, and applying
@@ -173,7 +173,7 @@ void ScreenController::configure(const QVariantMap& values) {
     settings_["viewFps"] = std::clamp(settings_["viewFps"].toInt(), 1, screen::MaxFps);
     settings_["viewWidth"] = std::clamp(settings_["viewWidth"].toInt(), 320, 3840);
     settings_["viewBitrate"] = std::clamp(settings_["viewBitrate"].toInt(), 0, screen::MaxBitrate);
-    settings_["viewBufferMs"] = std::clamp(settings_["viewBufferMs"].toInt(), 0, 2000);
+    settings_["viewBufferMs"] = std::clamp(settings_["viewBufferMs"].toInt(), -1, 2000);  // -1: automatic
     if (!QList<int>{228, 41, 69}.contains(settings_["releaseUsage"].toInt())) settings_["releaseUsage"] = 228;
     QSettings store;
     const QString ns = camera_ ? "camera/" : "screen/";

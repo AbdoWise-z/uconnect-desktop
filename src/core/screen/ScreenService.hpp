@@ -149,7 +149,9 @@ private:
         quint32 request = 0;
         quint16 token = 0;
         qint64 expires = 0, reportAt = 0;
-        int width = 1920, fps = 30, maxBitrate = 0, bufferMs = 0;
+        int width = 1920, fps = 30, maxBitrate = 0, bufferMs = 0;  // bufferMs -1: automatic
+        int autoBufferMs = 100;  // the automatic buffer in use, following the network
+        qint64 autoAt = 0;
         QString state = "requesting", path = "opening";
         MediaReceiver media;
         quint64 bytes = 0;
@@ -201,6 +203,8 @@ private:
     void decodeNext(const Peer& peer);
     void presentNext(const Peer& peer, Viewer& viewer, qint64 now);
     void playout(const Peer& peer, Viewer& viewer, qint64 now);
+    // The playout buffer in use: the one asked for, or the automatic one.
+    static int playoutBufferMs(const Viewer& viewer) { return viewer.bufferMs < 0 ? viewer.autoBufferMs : viewer.bufferMs; }
     // The sending pipeline for captured frames (Qt capture, cameras, tests):
     // frames that are due join a queue, are converted for the encoder on a
     // pool of threads (several at once), then encoded strictly in capture

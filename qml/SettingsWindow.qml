@@ -1443,14 +1443,16 @@ Window {
                     currentIndex: Math.max(0, askGrid.bitrates.indexOf(draft.screen.viewBitrate || 0))
                     onActivated: index => dlg.setScreenSetting("viewBitrate", askGrid.bitrates[index])
                 }
-                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Playback buffer (ms)") }
+                FieldLabel { Layout.preferredWidth: 200; text: qsTr("Playback buffer") }
                 USpinBox {
-                    from: 0; to: 2000; stepSize: 20
-                    value: draft.screen.viewBufferMs !== undefined ? draft.screen.viewBufferMs : 100
+                    from: -1; to: 2000; stepSize: 20
+                    value: draft.screen.viewBufferMs !== undefined ? draft.screen.viewBufferMs : -1
+                    textFromValue: function(v) { return v < 0 ? qsTr("Automatic") : qsTr("%1 ms").arg(v) }
+                    valueFromText: function(t) { return t === qsTr("Automatic") ? -1 : parseInt(t) || 0 }
                     onValueModified: dlg.setScreenSetting("viewBufferMs", value)
                 }
             }
-            Help { text: qsTr("Pictures are shown at the pace they were captured, this long after the quickest ones arrive: a longer buffer rides out a bumpier network, at the cost of delay. 0 shows each picture as soon as it is decoded.") }
+            Help { text: qsTr("Pictures are shown at the pace they were captured, this long after the quickest ones arrive: a longer buffer rides out a bumpier network, at the cost of delay. Automatic follows the network (the jitter, and how long lost pieces take to be sent again); 0 shows each picture as soon as it is decoded.") }
             TitledSeparator { text: qsTr("Controlling Another Device") }
             GridLayout {
                 columns: 2

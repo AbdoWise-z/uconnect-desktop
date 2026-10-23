@@ -64,6 +64,9 @@ public:
         share *= 1 - std::min(bwe_.lossRate(), 0.5);  // repeats take the rest
         return std::max(options_.minBps / 2, int(bwe_.targetBps() * share));
     }
+    // The encoder's rate averaged over the last second or so: what the
+    // quality ladder goes by, so a spell of repair packets does not step it.
+    int smoothedEncoderBps() const { return int(smoothEncoderBps_); }
     int receiveBps() const { return bwe_.receiveBps(); }
     double lossRate() const { return bwe_.lossRate(); }
     double rttMs() const { return rttMs_; }
@@ -98,7 +101,7 @@ private:
     qint64 inflightBytes_ = 0;
     quint32 feedbackBase_ = 0;  // sequences before this were reported on
     bool haveFeedback_ = false;
-    double rttMs_ = 0, lagMs_ = 0;
+    double rttMs_ = 0, minRttMs_ = 0, lagMs_ = 0, smoothEncoderBps_ = 0;
     int fecGroup_ = 0;
     quint32 lastSentCaptureMs_ = 0;
     bool awaitKey_ = false;

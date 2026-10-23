@@ -168,9 +168,10 @@ ColumnLayout {
                         .arg(n(view.session.shownFps, 0)).arg(n(view.session.fps, 0))
                         .arg(n((view.session.bitrate || 0) / 1000000, 1)).arg(n((view.session.loss || 0) * 100, 1))
                         .arg(n(view.session.jitterMs, 1)).arg(view.session.path || qsTr("opening")),
-                    qsTr("Buffer %1 ms (next in %2 ms, %3 waiting) · late %4 · skipped %5 · decode %6 ms")
+                    qsTr("Buffer %1 ms (next in %2 ms, %3 waiting) · late %4 · skipped %5 · decode %6 ms · recovered %7 · repeats %8 · given up %9")
                         .arg(view.session.bufferMs || 0).arg(n(view.session.waitingMs, 0)).arg(view.session.waitingFrames || 0)
-                        .arg(view.session.late || 0).arg(view.session.skipped || 0).arg(n(view.session.decodeMs, 1)),
+                        .arg(view.session.late || 0).arg(view.session.skipped || 0).arg(n(view.session.decodeMs, 1))
+                        .arg(n(view.session.recovered, 0)).arg(n(view.session.repeats, 0)).arg(n(view.session.givenUp, 0)),
                     host.fps === undefined ? qsTr("Host: no statistics (an older version)")
                         : qsTr("Host: %1 fps, encode %2 ms, convert %3 ms on %4 threads · queue %5 (peak %6) · dropped %7/s")
                             .arg(n(host.fps, 0)).arg(n(host.encodeMs, 1)).arg(n(host.convertMs, 1)).arg(host.threads || 0)
@@ -180,7 +181,12 @@ ColumnLayout {
                             .arg(host.targetFps || 0).arg(n((host.targetKbps || 0) / 1000, 1)).arg(host.width || 0)
                             .arg(n((host.sentKbps || 0) / 1000, 1)).arg(host.pipeline || "")
                             .arg(host.transport ? qsTr(" over %1").arg(host.transport.toUpperCase()) : "")
-                            .arg(host.lagMs !== undefined ? qsTr(" · lag %1 ms").arg(n(host.lagMs, 0)) : "")
+                            .arg(host.lagMs !== undefined ? qsTr(" · lag %1 ms").arg(n(host.lagMs, 0)) : ""),
+                    host.rttMs === undefined ? ""
+                        : qsTr("Path: round trip %1 ms · loss %2% · %3 · repeats %4 · estimate %5 (%6 Mbit/s arriving)")
+                            .arg(n(host.rttMs, 0)).arg(n(host.lossPct, 1))
+                            .arg(host.fec > 0 ? qsTr("repair 1 per %1").arg(host.fec) : qsTr("no repair"))
+                            .arg(n(host.repeats, 0)).arg(host.estimator || "").arg(n((host.receiveKbps || 0) / 1000, 1))
                 ].filter(line => line.length > 0).join("\n")
             }
         }
