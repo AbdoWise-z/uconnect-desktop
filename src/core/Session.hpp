@@ -254,12 +254,12 @@ private:
     bool                            published_ = false;
 
     // The relay policy this session started with (0 auto, 1 always, 2 direct);
-    // decides the datagram fallback screen and camera media open with.
+    // decides the datagram fallback screen and camera media open with. Media
+    // is never carried over TCP: where it cannot be punched it goes through
+    // the relay, and in "direct" mode nowhere else.
     int relayMode_ = 0;
     uconnect::DatagramFallback mediaFallback() const {
-        return relayMode_ == 2 ? uconnect::DatagramFallback::None
-             : relayMode_ == 1 ? uconnect::DatagramFallback::Relay
-                               : uconnect::DatagramFallback::Tcp;
+        return relayMode_ == 2 ? uconnect::DatagramFallback::None : uconnect::DatagramFallback::Relay;
     }
 
     // Bumped by every start() and stop(), so callbacks queued by a Node that

@@ -6,7 +6,6 @@
 
 namespace ucd::screen {
 namespace {
-constexpr int MaxPendingFrames = 32;
 constexpr qint64 NackAfterMs = 10;       // a gap this old is asked for
 constexpr qint64 MissingForgetMs = 2000;
 }  // namespace
@@ -47,7 +46,13 @@ bool MediaReceiver::Assembly::tryRepair() {
 
 void MediaReceiver::noteArrival(quint32 seq, qint64 nowMs) {
     arrivals_[seq] = nowMs; newestArrivalMs_ = nowMs;
-    if (!haveSeq_) { haveSeq_ = true; highestSeq_ = seq; feedbackBase_ = seq; return; }
+    if (!haveSeq_) {
+        // A session's numbers start at 0: whatever came before the first
+        // packet seen is missing too (the first packets of a keyframe, say).
+        haveSeq_ = true; highestSeq_ = seq; feedbackBase_ = seq < 64 ? 0 : seq;
+        for (quint32 s = feedbackBase_; s < seq; ++s) missing_[s] = nowMs;
+        return;
+    }
     if (seqNewer(seq, highestSeq_)) {
         // Everything between is missing until it shows up.
         for (quint32 s = highestSeq_ + 1; seqNewer(seq, s) && missing_.size() < 1000; ++s) missing_[s] = nowMs;
@@ -60,7 +65,7 @@ void MediaReceiver::noteArrival(quint32 seq, qint64 nowMs) {
 }
 
 int MediaReceiver::suggestedPlayoutMs() const {
-    return std::clamp(int(std::lround(interval_ + 2 * jitterMs_ + repairDelayMs_)), 20, 500);
+    return std::clamp(int(std::lround(interval_ + 2 * jitterMs_ + repairDelayMs_)), 20, LagBudgetMs);
 }
 
 QVector<EncodedFrame> MediaReceiver::receive(const QByteArray& packet, qint64 nowMs) {
@@ -73,7 +78,9 @@ QVector<EncodedFrame> MediaReceiver::receive(const QByteArray& packet, qint64 no
     auto it = frames_.find(p->frame);
     if (it == frames_.end()) {
         if (waiting_ && !p->keyframe) { ++stats_.discarded; return {}; }  // useless until a keyframe
-        if (frames_.size() >= MaxPendingFrames) { give(frames_.begin()); waiting_ = true; keyWanted_ = true; }
+        // Frames may wait the lag budget for repair: room for twice that many.
+        const size_t maxPending = std::max<size_t>(32, 2 * size_t(1000 / interval_) * LagBudgetMs / 1000);
+        if (frames_.size() >= maxPending) { give(frames_.begin()); waiting_ = true; keyWanted_ = true; }
         Assembly a;
         a.frame = {session_, p->frame, p->captureMs, p->keyframe, {}};
         a.count = p->count; a.parts.resize(p->count); a.have.resize(p->count); a.firstMs = a.lastMs = nowMs;
@@ -146,11 +153,11 @@ void MediaReceiver::give(std::map<quint32, Assembly>::iterator it) {
 }
 
 void MediaReceiver::expire(qint64 nowMs) {
-    // A frame that has made no progress for a while (repeats had their
-    // chance: several round trips) is given up with those behind it that
+    // A frame that has made no progress for the lag budget (repeats had
+    // their chance: many round trips) is given up with those behind it that
     // depend on it; the stream restarts at the next keyframe. A big frame
     // still arriving is not stuck, however long it takes.
-    const qint64 giveUpMs = std::max<qint64>(400, 8 * interval_);
+    const qint64 giveUpMs = std::max<qint64>(LagBudgetMs, 8 * interval_);
     for (auto it = frames_.begin(); it != frames_.end();) {
         if (it->second.complete() || nowMs - it->second.lastMs < giveUpMs) { ++it; continue; }
         give(it++);

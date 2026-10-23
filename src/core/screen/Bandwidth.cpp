@@ -47,6 +47,12 @@ void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64
         sent_.emplace_back(r.sendMs, r.bytes); lastSendMs_ = std::max(lastSendMs_, r.sendMs);
         if (!r.received) { ++lost; continue; }
         ++got; bytes += r.bytes;
+        // The receiver's clock jumped (its reference wrapped or restarted):
+        // nothing before compares with what follows.
+        if (haveSample_ && std::abs(r.arrivalMs - previousArrivalMs_) > 3600000.) {
+            haveSample_ = false; samples_.clear(); deltas_ = 0; received_.clear(); lastArrivalMs_ = 0;
+            accumulatedDelayMs_ = smoothedDelayMs_ = 0;
+        }
         received_.emplace_back(r.arrivalMs, r.bytes);
         lastArrivalMs_ = std::max(lastArrivalMs_, r.arrivalMs);
         if (!haveSample_) { haveSample_ = true; firstArrivalMs_ = r.arrivalMs; previousSendMs_ = r.sendMs; previousArrivalMs_ = r.arrivalMs; continue; }

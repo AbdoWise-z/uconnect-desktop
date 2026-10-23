@@ -223,7 +223,8 @@ private slots:
         Run run; run.options.session = 7; run.options.startBps = 4000000; run.seconds = 6;
         run.go(); qInfo().noquote() << QTest::currentTestFunction() << run.targetsText();
         QVERIFY2(run.framesDelivered >= run.framesSent - 2, qPrintable(run.targetsText()));  // the last may still be on its way
-        QVERIFY2(run.lagPercentile(.95) < 80, qPrintable(run.targetsText()));
+        // The first second queues up to the lag budget while the rate climbs.
+        QVERIFY2(run.lagPercentile(.95, 2) < 80, qPrintable(run.targetsText()));
         QVERIFY(run.rttMs > 30 && run.rttMs < 70);  // 20 ms each way plus the feedback interval
         QVERIFY2(run.targets.last() > 4000000, qPrintable(run.targetsText()));  // room to grow
     }
@@ -246,16 +247,6 @@ private slots:
         QVERIFY2(target < 1650000 && target > 700000, qPrintable(run.targetsText()));  // at the bottleneck, a little over at most
         QVERIFY2(run.lagPercentile(.95, 4) < 400, qPrintable(run.targetsText()));
         QVERIFY2(run.framesDelivered > run.framesSent * 0.7, qPrintable(run.targetsText()));  // the first seconds start above the path
-    }
-
-    void reliablePathStaysBoundedByWhatIsInFlight() {
-        Run run; run.options.session = 7; run.options.startBps = 4000000; run.options.reliable = true;
-        run.forward.reliable = true; run.forward.bottleneckBps = 800000; run.forward.queueMs = 5000; run.seconds = 12;
-        run.go(); qInfo().noquote() << QTest::currentTestFunction() << run.targetsText();
-        // Nothing is lost on TCP; the sender keeps what is unacknowledged
-        // small, so the lag stays bounded even with a deep buffer in the path.
-        QVERIFY2(run.lagPercentile(.95, 4) < 700, qPrintable(run.targetsText()));
-        QVERIFY2(run.targets.last() < 1000000, qPrintable(run.targetsText()));
     }
 };
 

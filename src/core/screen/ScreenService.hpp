@@ -172,11 +172,13 @@ private:
         struct Shown { QVideoFrame picture; quint32 captureMs = 0; };
         std::deque<Shown> present;
         qint64 presentAt = 0;
-        // The quickest recent transit (arrival minus capture time, host and
-        // local clocks mixed): the playout clock follows it.
+        // Transits (arrival minus capture time, host and local clocks mixed)
+        // of the last 15 s; the playout clock follows their low percentile,
+        // slewing at most a tenth faster or slower than real time (playout()).
         std::deque<std::pair<qint64, qint32>> transits;
-        qint32 baseline = 0;
-        bool haveBaseline = false;
+        double clockOffset = 0;  // added to a capture time, with the buffer, to give its playout time
+        bool haveClock = false;
+        qint64 clockAt = 0, lastShownAt = 0;
         // This report period: pictures shown, shown after their time, skipped
         // to catch up.
         int shown = 0, late = 0, skipped = 0;
@@ -203,6 +205,9 @@ private:
     void decodeNext(const Peer& peer);
     void presentNext(const Peer& peer, Viewer& viewer, qint64 now);
     void playout(const Peer& peer, Viewer& viewer, qint64 now);
+    void updateClock(Viewer& viewer, qint64 now);
+    // How long until a picture captured at `captureMs` is due (negative: overdue).
+    qint32 playoutWait(const Viewer& viewer, quint32 captureMs, qint64 now) const;
     // The playout buffer in use: the one asked for, or the automatic one.
     static int playoutBufferMs(const Viewer& viewer) { return viewer.bufferMs < 0 ? viewer.autoBufferMs : viewer.bufferMs; }
     // The sending pipeline for captured frames (Qt capture, cameras, tests):

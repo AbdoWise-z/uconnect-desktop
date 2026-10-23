@@ -11,11 +11,12 @@
 // The sending side of a media session, the way real-time services send:
 // frames are cut into numbered packets, with repair packets when the path
 // loses some, and paced out at a steady rate a little above the bitrate the
-// estimator allows rather than a burst per frame. The queue is short: a
-// frame that would wait longer than a fraction of a second is dropped before
-// it goes out (and the caller is told to skip capturing while that lasts),
-// so what reaches the viewer is recent. The receiver's feedback drives the
-// bandwidth estimate, repeats of lost packets, keyframes, and the lag.
+// estimator allows rather than a burst per frame. The queue normally drains
+// as fast as it fills; it may swell to a lag budget of a second (a burst,
+// a spell of loss) before the caller is told to skip capturing, and a viewer
+// that falls behind the budget is brought back with a keyframe. The
+// receiver's feedback drives the bandwidth estimate, repeats of lost
+// packets, keyframes, and the lag.
 namespace ucd::screen {
 
 class MediaSender {
@@ -28,9 +29,7 @@ public:
         // seconds of a full queue.
         int startBps = 1500000, minBps = 150000, maxBps = 100000000;
         double pacingGain = 1.5;       // packets leave this much faster than the target rate
-        int queueMs = 150;             // more than this much queued: frames are dropped, capture skipped
-        int inflightMs = 300;          // over TCP: unacknowledged bytes bounded to this much of the target
-        bool reliable = false;         // the path is TCP: nothing is lost, it queues
+        int queueMs = LagBudgetMs;     // more than this much queued: capture is skipped
         int fps = 30;
     };
     void reset(const Options& options);
@@ -45,8 +44,8 @@ public:
     // The receiver's feedback: arrivals (the bandwidth estimate), repeats,
     // lag, keyframe requests.
     void onFeedback(const QByteArray& packet, qint64 nowMs);
-    // Capturing should pause: the queue, or what is still unacknowledged on
-    // a reliable path, is deep enough that a new frame would only add lag.
+    // Capturing should pause: the queue is deep enough (the lag budget) that
+    // a new frame would only add lag.
     bool shouldSkipCapture(qint64 nowMs) const;
     // The next frame encoded should be a keyframe (the receiver asked, or
     // the queue was dropped); true at most once per few hundred ms.
@@ -54,10 +53,6 @@ public:
     // The queue is dropped (a monitor change, the viewer far behind): the next
     // frame must be a keyframe.
     void dropQueued();
-    void setReliable(bool reliable) {
-        if (reliable != options_.reliable) reliableSinceMs_ = -1;  // counted from the next pump
-        options_.reliable = reliable;
-    }
     void setFps(int fps) { options_.fps = std::max(1, fps); }
     // What the path takes, and what the encoder should produce: the path's
     // rate less the repair packets' share.
@@ -76,7 +71,6 @@ public:
     double lagMs() const { return lagMs_; }
     int fecGroup() const { return fecGroup_; }
     int queuedBytes() const { return queuedBytes_; }
-    qint64 inflightBytes() const { return inflightBytes_; }
     quint64 dropped() const { return dropped_; }
     quint64 retransmitted() const { return retransmitted_; }
     bool awaitingKeyframe() const { return awaitKey_; }  // the next frame must be a keyframe
@@ -101,18 +95,16 @@ private:
     double budgetBytes_ = 0;
     qint64 lastPumpMs_ = 0;
     std::map<quint32, Sent> sent_;  // recent packets, for repeats and feedback
-    qint64 inflightBytes_ = 0;
     quint32 feedbackBase_ = 0;  // sequences before this were reported on
     bool haveFeedback_ = false;
-    double rttMs_ = 0, minRttMs_ = 0, lagMs_ = 0, smoothEncoderBps_ = 0;
-    qint64 reliableSinceMs_ = -1;  // when the path became reliable (-1: not yet seen by pump)
+    double rttMs_ = 0, lagMs_ = 0, smoothEncoderBps_ = 0;
+    qint64 lagSinceMs_ = -1, lagCutMs_ = -100000;  // the viewer behind by half the budget: since when, last cut
     int fecGroup_ = 0;
     quint32 lastSentCaptureMs_ = 0;
     bool awaitKey_ = false;
     qint64 lastKeyMs_ = -100000, behindAt_ = -100000;
     quint64 dropped_ = 0, retransmitted_ = 0;
     void trimSent(qint64 nowMs);
-    qint64 inflightLimit() const;
 };
 
 }  // namespace ucd::screen

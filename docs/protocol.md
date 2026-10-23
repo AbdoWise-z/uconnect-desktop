@@ -687,12 +687,15 @@ the group that is lost is rebuilt from the others. The host sizes the groups
 to what the path loses, by the worst recent spell rather than the mean:
 none under 2%, one repair per 8 fragments under 8%, per 4 under 20%, per 2
 under 45%, per 1 above (each fragment twice, in effect); a keyframe's
-groups are never larger than 2. Nothing is repaired on a reliable (TCP)
-path.
+groups are never larger than 2.
 
-A frame that makes no progress for 400 ms (at least eight frame intervals)
-is given up with the frames behind it, and the viewer waits for a keyframe,
-which it asks for in its feedback. A complete keyframe is delivered ahead of
+The lag budget. One figure, 1 s, bounds how far behind live a viewer may
+fall before the stream is brought back, on both ends. A frame that makes no
+progress for the budget (at least eight frame intervals) is given up with
+the frames behind it, and the viewer waits for a keyframe, which it asks for
+in its feedback; a viewer holds up to two seconds' worth of frames under
+assembly. A session's sequence numbers start at 0, so packets before the
+first one a viewer sees count as missing too. A complete keyframe is delivered ahead of
 whatever incomplete frames precede it. Delivery otherwise follows frame
 number order, including wrap.
 
@@ -752,30 +755,34 @@ to spare; the frame rate goes to 30 under 1 Mbit/s, 15 under 250 kbit/s and
 encoder rate averaged over a second.
 
 Pacing. Packets leave at 1.5x the target, a few at a time, from a queue
-bounded at 150 ms of the target: while it is deeper the host skips captures
-(an encoded frame is never dropped, since the frames after it depend on it;
-a phone, whose encoder cannot skip, drops the frame and asks its encoder for
-a keyframe). A viewer more than 600 ms behind (its newest capture timestamp
-against the newest sent, the same clock) has the queue dropped and a
-keyframe sent next, at most once per 1.5 s. A keyframe is produced only on
-request (encoders run without a keyframe schedule, at a constant bitrate,
-refreshing intra where they can), at most once per 150 ms or a round trip.
+that normally drains as fast as it fills and may swell to the lag budget of
+the target before the host skips captures (an encoded frame is never
+dropped, since the frames after it depend on it; a phone, whose encoder
+cannot skip, drops the frame and asks its encoder for a keyframe). A viewer
+behind by more than the budget (its newest capture timestamp against the
+newest sent, the same clock) has the queue dropped and a keyframe sent next,
+at most once per 1.5 s; one behind by half the budget for a couple of
+seconds brings the target down 15%, since no loss figure shows a path that
+queues. A keyframe is produced only on request (encoders run without a
+keyframe schedule, at a constant bitrate, refreshing intra where they can),
+at most once per 150 ms or a round trip.
 
-Reliable paths. Over the TCP fallback nothing is lost and nothing is
-repaired; what the path cannot carry queues. The host bounds what it has
-sent and not yet heard of to 300 ms of the target (at least a round trip
-and a half, by the quickest round trip seen), counting a packet until it is
-acknowledged, and when that bound is what limits sending the target follows
-85% of the receive rate.
+Transport. Media is carried over UDP only: punched direct, or through the
+relay when punching fails (never in "direct" relay mode). It is never
+carried inside the TCP connection; a host waits up to 40 s for first
+feedback while the channel opens, 5 s between feedbacks after that.
 
-Playout. A viewer shows each picture at its `captureMs` plus the smallest
-transit time of the last 5 s plus a playout buffer, so pictures keep the
-host's pace whatever the network's jitter; a picture whose time has passed is
-shown at once (counted late), and of several due at once only the newest is
-shown. The buffer is the user's choice or automatic: the frame interval plus
-twice the jitter plus the longest a recent gap took to fill, raised at once
-and lowered slowly. Without a buffer each picture is shown as soon as it is
-decoded.
+Playout. A viewer shows each picture at its `captureMs` plus a playout
+clock plus a buffer, so pictures keep the host's pace whatever the network's
+jitter. The clock follows the 5th percentile of the transit times of the
+last 15 s and slews at most a tenth faster or slower than real time, so a
+change in the path's delay is taken up gradually; pictures behind their
+time are shown a tenth faster than captured (counted late), never skipped,
+unless the lag has passed the budget, when playback jumps to the newest.
+The buffer is the user's choice or automatic: the frame interval plus twice
+the jitter plus the longest a recent gap took to fill, within the budget,
+raised at once and lowered slowly. Without a buffer each picture is shown
+as soon as it is decoded.
 
 Once a second the host sends each viewer `scr.stats` (`session` and
 numbers, all optional): `fps` (frames encoded), `encodeMs`, `convertMs`,
@@ -784,8 +791,8 @@ or skipped, per second), `sentKbps`, `receiveKbps` (what the viewer
 reports arriving), `targetFps`, `targetKbps` and `width` (the ladder's),
 `senderDrops`, `lagMs`, `rttMs`, `lossPct`, `fec` (fragments per repair
 packet, 0 none), `repeats` (packets sent again in all), the strings
-`transport` (`udp` or `tcp`), `estimator` (`increase`, `hold`, `decrease`)
-and `pipeline`. They are for display; a viewer may ignore them.
+`transport` (`udp`), `estimator` (`increase`, `hold`, `decrease`) and
+`pipeline`. They are for display; a viewer may ignore them.
 
 ### 7.3 Screen sessions and consent
 

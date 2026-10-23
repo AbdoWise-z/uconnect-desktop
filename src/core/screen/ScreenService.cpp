@@ -246,7 +246,6 @@ void ScreenService::startHost(const Peer& peer) {
     options.minBps = MinBitrate; options.maxBps = host.maxBitrate;
     // An extended display runs between nearby devices with room to spare.
     options.startBps = std::min(host.maxBitrate, display_ ? DisplayStartBitrate : 1500000);
-    options.reliable = host.path == "tcp";
     host.media.reset(options);
     if (!open_(peer)) { fail(peer, host.request, "transport"); hosts_.erase(peer); emit hostEnded(hex(peer), "transport"); return; }
     emit consentClosed(hex(peer), host.request);
@@ -617,19 +616,11 @@ void ScreenService::decodeNext(const Peer& peer) {
                 } else {
                     const qint64 now = now_();
                     for (const auto& image : images) {
-                        // The playout clock follows the quickest transit of the last
-                        // few seconds: frames slowed by the network wait less.
-                        const qint32 transit = qint32(quint32(now) - image.captureMs);
-                        v.transits.push_back({now, transit});
-                        while (v.transits.size() > 1 && now - v.transits.front().first > 5000) v.transits.pop_front();
-                        qint32 quickest = transit;
-                        for (const auto& [at, value] : v.transits) quickest = std::min(quickest, value);
-                        v.baseline = quickest; v.haveBaseline = true;
-                        if (qint32(image.captureMs + quint32(v.baseline + playoutBufferMs(v)) - quint32(now)) < 0) ++v.late;
+                        v.transits.push_back({now, qint32(quint32(now) - image.captureMs)});
+                        while (v.transits.size() > 1 && now - v.transits.front().first > 15000) v.transits.pop_front();
                         v.present.push_back(image);
                     }
-                    // A second or more behind: catch up rather than fall further behind.
-                    while (v.present.size() > 240) { v.present.pop_front(); ++v.skipped; }
+                    updateClock(v, now);
                     playout(peer, v, now);
                 }
             }
@@ -652,27 +643,55 @@ void ScreenService::presentNext(const Peer& peer, Viewer& viewer, qint64 now) {
     viewer.presentAt = now - viewer.presentAt > qint64(interval) ? now + qint64(next) : viewer.presentAt + qint64(next);
 }
 
-// Screens and cameras with a playout buffer: each picture is shown at its
-// capture time plus the buffer, on the clock of the quickest recent transit,
-// so the stream keeps the host's pace whatever the network does to it. When
-// several are due (the viewer fell behind), the newest is shown.
-void ScreenService::playout(const Peer& peer, Viewer& viewer, qint64 now) {
-    std::optional<QVideoFrame> show;
-    while (!viewer.present.empty()) {
-        const auto& front = viewer.present.front();
-        const qint32 wait = qint32(front.captureMs + quint32(viewer.baseline + playoutBufferMs(viewer)) - quint32(now));
-        if (wait > 0) break;
-        if (show) ++viewer.skipped;
-        show = front.picture;
-        viewer.present.pop_front();
+// The playout clock: what is added to a capture time (with the buffer) to
+// give the local time a picture is shown at. It follows a low percentile of
+// the recent transits, slewing at most a tenth faster or slower than real
+// time, so a change in the path's delay is taken up gradually rather than
+// as a jump forward (pictures skipped) or a freeze. Only a change beyond
+// the lag budget is taken at once.
+void ScreenService::updateClock(Viewer& viewer, qint64 now) {
+    if (viewer.transits.empty()) return;
+    QVector<qint32> sorted; sorted.reserve(int(viewer.transits.size()));
+    for (const auto& [at, transit] : viewer.transits) sorted.push_back(transit);
+    std::sort(sorted.begin(), sorted.end());
+    const double target = sorted[std::min<qsizetype>(sorted.size() - 1, sorted.size() / 20)];  // the 5th percentile
+    if (!viewer.haveClock || std::abs(target - viewer.clockOffset) > LagBudgetMs) {
+        viewer.clockOffset = target; viewer.haveClock = true;
+    } else {
+        const double step = 0.1 * double(std::max<qint64>(0, now - viewer.clockAt));
+        viewer.clockOffset += std::clamp(target - viewer.clockOffset, -step, step);
     }
-    if (show) { emit frameReady(hex(peer), *show); ++stats_.shown; ++viewer.shown; }
+    viewer.clockAt = now;
+}
+
+qint32 ScreenService::playoutWait(const Viewer& viewer, quint32 captureMs, qint64 now) const {
+    return qint32(captureMs + quint32(qint64(std::lround(viewer.clockOffset)) + playoutBufferMs(viewer)) - quint32(now));
+}
+
+// Screens and cameras with a playout buffer: each picture is shown at its
+// capture time plus the playout clock plus the buffer, so the stream keeps
+// the host's pace whatever the network does to it. Pictures that are
+// behind are shown a tenth faster than they were captured, never skipped,
+// unless the lag has passed the budget: then playback jumps to the newest.
+void ScreenService::playout(const Peer& peer, Viewer& viewer, qint64 now) {
+    if (viewer.present.empty()) return;
+    updateClock(viewer, now);
+    const double interval = 1000. / std::max(1, viewer.fps);
+    const qint32 wait = playoutWait(viewer, viewer.present.front().captureMs, now);
+    if (wait > 0) return;
+    if (-wait > LagBudgetMs) {
+        while (viewer.present.size() > 1) { viewer.present.pop_front(); ++viewer.skipped; }
+    } else if (viewer.lastShownAt && now - viewer.lastShownAt < 0.9 * interval) {
+        return;  // catching up, a tenth faster than captured
+    }
+    if (-wait > interval) ++viewer.late;
+    emit frameReady(hex(peer), viewer.present.front().picture); ++stats_.shown; ++viewer.shown;
+    viewer.present.pop_front(); viewer.lastShownAt = now;
 }
 
 void ScreenService::pathChanged(const Peer& peer, const QString& path) {
     if (auto it = hosts_.find(peer); it != hosts_.end()) {
         it->second.path = path;
-        it->second.media.setReliable(path == "tcp");
         // An extended display needs the devices near each other: through the
         // relay or over TCP it would lag too far behind the mouse.
         if (display_ && it->second.live && path != "direct" && path != "opening") {
@@ -996,7 +1015,7 @@ void ScreenService::tick() {
         }
         if (viewer.channel && viewer.media.feedbackDue(now)) {
             const int playout = viewer.present.empty() ? playoutBufferMs(viewer)
-                : int(qint32(viewer.present.front().captureMs + quint32(viewer.baseline + playoutBufferMs(viewer)) - quint32(now)));
+                : int(playoutWait(viewer, viewer.present.front().captureMs, now));
             const auto feedback = viewer.media.takeFeedback(now, std::max(0, playout), viewer.decodeMs);
             if (!feedback.isEmpty()) datagram_(peer, feedback);
         }
@@ -1005,7 +1024,7 @@ void ScreenService::tick() {
             const double span = double(std::max<qint64>(1, now - viewer.reportAt));
             // How long the next picture waits to be shown: the buffer in use.
             const double waiting = viewer.present.empty() ? 0.
-                : double(qint32(viewer.present.front().captureMs + quint32(viewer.baseline + playoutBufferMs(viewer)) - quint32(now)));
+                : double(playoutWait(viewer, viewer.present.front().captureMs, now));
             showViewer(peer, "live", {}, {{"fps", viewer.decoded * 1000. / span},
                 {"shownFps", viewer.shown * 1000. / span}, {"late", viewer.late}, {"skipped", viewer.skipped},
                 {"bufferMs", playoutBufferMs(viewer)}, {"waitingMs", waiting}, {"waitingFrames", int(viewer.present.size())},

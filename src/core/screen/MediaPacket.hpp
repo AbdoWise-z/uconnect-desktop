@@ -21,6 +21,10 @@ constexpr int MaxFrameBytes = 4 * 1024 * 1024;
 constexpr int MaxFragments = (MaxFrameBytes + MediaPayload - 1) / MediaPayload;
 // Highest frame rate a session may ask for or run at (high refresh displays).
 constexpr int MaxFps = 165;
+// The lag budget: how far behind live a viewer may fall before the stream
+// is brought back (a keyframe), and how long it waits for a frame's repair.
+// Within it, lag is taken up by playing a little faster.
+constexpr int LagBudgetMs = 1000;
 constexpr int MinBitrate = 150000, MaxBitrate = 100000000;
 
 struct EncodedFrame {

@@ -7,7 +7,6 @@ namespace ucd::screen {
 namespace {
 constexpr qint64 SentHistoryMs = 2000;   // packets kept for repeats
 constexpr qint64 RepeatSpacingMs = 40;   // one repeat of a packet per this long
-constexpr int BehindMs = 600;            // the viewer this far behind: start over from a keyframe
 constexpr int MaxBurstBytes = 3 * MaxDatagram;
 }  // namespace
 
@@ -15,8 +14,8 @@ void MediaSender::reset(const Options& options) {
     options_ = options; options_.fps = std::max(1, options.fps);
     bwe_.reset({options.startBps, options.minBps, options.maxBps});
     nextSeq_ = 0; queue_.clear(); queuedBytes_ = 0; budgetBytes_ = MaxBurstBytes; lastPumpMs_ = 0;
-    sent_.clear(); inflightBytes_ = 0; feedbackBase_ = 0; haveFeedback_ = false;
-    rttMs_ = 0; minRttMs_ = 0; lagMs_ = 0; smoothEncoderBps_ = 0; fecGroup_ = 0; lastSentCaptureMs_ = 0; reliableSinceMs_ = -1;
+    sent_.clear(); feedbackBase_ = 0; haveFeedback_ = false;
+    rttMs_ = 0; lagMs_ = 0; smoothEncoderBps_ = 0; fecGroup_ = 0; lastSentCaptureMs_ = 0; lagSinceMs_ = -1; lagCutMs_ = -100000;
     awaitKey_ = false; lastKeyMs_ = -100000; behindAt_ = -100000;
     dropped_ = retransmitted_ = 0;
 }
@@ -29,7 +28,7 @@ bool MediaSender::enqueue(const EncodedFrame& frame, qint64) {
     // two fragments when it loses a lot, one per fragment (each sent twice,
     // in effect) when it loses most of a spell.
     const double loss = std::max(bwe_.lossRate(), bwe_.burstLossRate());
-    fecGroup_ = options_.reliable || loss < 0.02 ? 0 : loss < 0.08 ? 8 : loss < 0.20 ? 4 : loss < 0.45 ? 2 : 1;
+    fecGroup_ = loss < 0.02 ? 0 : loss < 0.08 ? 8 : loss < 0.20 ? 4 : loss < 0.45 ? 2 : 1;
     // A keyframe is big and everything after it depends on it: protected
     // more, so it needs fewer repeats.
     const int group = frame.keyframe && fecGroup_ > 2 ? 2 : fecGroup_;
@@ -48,18 +47,7 @@ bool MediaSender::enqueue(const EncodedFrame& frame, qint64) {
 
 bool MediaSender::shouldSkipCapture(qint64 nowMs) const {
     const int target = bwe_.targetBps();
-    if (queuedBytes_ > qint64(target) * options_.queueMs / 8000) return true;
-    if (options_.reliable && inflightBytes_ > inflightLimit()) return true;
-    return false;
-}
-
-// Over a reliable path what is unacknowledged is what waits in the socket
-// and the network: bounded, or the lag grows unseen. At least a round trip
-// and a half of it, though (the quickest seen: queueing lengthens the
-// others, and a bound that grew with it would bound nothing), or a long
-// path could never carry the rate.
-qint64 MediaSender::inflightLimit() const {
-    return qint64(bwe_.targetBps()) * std::max<qint64>(options_.inflightMs, qint64(1.5 * minRttMs_)) / 8000;
+    return queuedBytes_ > qint64(target) * options_.queueMs / 8000;
 }
 
 void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)>& send) {
@@ -68,21 +56,18 @@ void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)
     // at once.
     const double rate = bwe_.targetBps() * options_.pacingGain / 8000.;  // bytes per ms
     if (lastPumpMs_) budgetBytes_ = std::min(budgetBytes_ + rate * double(nowMs - lastPumpMs_), double(MaxBurstBytes) + rate * 5);
-    if (options_.reliable && reliableSinceMs_ < 0) reliableSinceMs_ = nowMs;
     const double weight = lastPumpMs_ && smoothEncoderBps_ > 0 ? std::min(1., double(nowMs - lastPumpMs_) / 1000.) : 1.;
     smoothEncoderBps_ += (encoderBps() - smoothEncoderBps_) * weight;
     lastPumpMs_ = nowMs;
     trimSent(nowMs);
-    const qint64 inflightLimit = this->inflightLimit();
     while (!queue_.empty()) {
         auto& p = queue_.front();
         const int size = MediaHeader + int(p.payload.size());
         if (budgetBytes_ < size) break;
-        if (options_.reliable && inflightBytes_ + size > inflightLimit) break;
         if (!p.retransmit) p.seq = nextSeq_++;  // a repeat keeps the number the receiver asked for
         const auto bytes = encodeMedia(p);
         if (!send(bytes)) break;  // refused for now (the path is still opening, or TCP pushes back)
-        budgetBytes_ -= size; queuedBytes_ -= size; inflightBytes_ += size;
+        budgetBytes_ -= size; queuedBytes_ -= size;
         auto& s = sent_[p.seq];
         const auto lastRepeat = s.lastRepeatMs;  // a repeat keeps its spacing
         s = Sent{bytes, nowMs, lastRepeat, size, false, false};
@@ -91,16 +76,7 @@ void MediaSender::pump(qint64 nowMs, const std::function<bool(const QByteArray&)
 }
 
 void MediaSender::trimSent(qint64 nowMs) {
-    for (auto it = sent_.begin(); it != sent_.end() && nowMs - it->second.sentMs > SentHistoryMs;) {
-        const auto& s = it->second;
-        // On a reliable path an unacknowledged packet is still queued
-        // somewhere on the way, however old: it stays counted (within
-        // reason), or the bound would let the queue grow unseen.
-        if (options_.reliable && !s.acknowledged && !s.lost && nowMs - s.sentMs < 10 * SentHistoryMs) { ++it; continue; }
-        if (!s.acknowledged && !s.lost) inflightBytes_ -= s.size;
-        it = sent_.erase(it);
-    }
-    inflightBytes_ = std::max<qint64>(0, inflightBytes_);
+    while (!sent_.empty() && nowMs - sent_.begin()->second.sentMs > SentHistoryMs) sent_.erase(sent_.begin());
 }
 
 void MediaSender::onFeedback(const QByteArray& packet, qint64 nowMs) {
@@ -116,34 +92,23 @@ void MediaSender::onFeedback(const QByteArray& packet, qint64 nowMs) {
         auto& s = it->second;
         if (s.acknowledged) continue;
         if (f.arrivals[i] == Feedback::Missing) {
-            if (!s.lost) { s.lost = true; inflightBytes_ -= s.size; }
+            s.lost = true;
             results.push_back({s.sentMs, 0, s.size, false});
         } else {
-            if (!s.lost) inflightBytes_ -= s.size;
             s.acknowledged = true; s.lost = false;
             const double arrival = double(f.refTimeMs) + f.arrivals[i] / 4.;
             results.push_back({s.sentMs, arrival, s.size, true});
             newestSentMs = std::max(newestSentMs, s.sentMs);
         }
     }
-    inflightBytes_ = std::max<qint64>(0, inflightBytes_);
     // Round trip: from the newest reported packet leaving to its feedback
     // arriving, less the time the receiver held the feedback.
     if (newestSentMs >= 0) {
         const double rtt = std::max(1., double(nowMs - newestSentMs) - double(f.heldMs));
         rttMs_ = rttMs_ > 0 ? 0.8 * rttMs_ + 0.2 * rtt : rtt;
-        minRttMs_ = minRttMs_ > 0 ? std::min(minRttMs_, rtt) : rtt;
     }
     std::sort(results.begin(), results.end(), [](const auto& a, const auto& b) { return a.sendMs < b.sendMs; });
     if (!results.isEmpty()) bwe_.onFeedback(results, nowMs, rttMs_);
-    // On a reliable path the bound on what is in flight is what limits
-    // sending when the path cannot drain it: the rate follows what arrives.
-    // Not in the path's first moments (opening, or just moved to TCP), when
-    // what arrives says little.
-    if (options_.reliable && reliableSinceMs_ >= 0 && nowMs - reliableSinceMs_ > 2000 && !results.isEmpty() &&
-        inflightBytes_ >= 0.9 * double(inflightLimit()) && bwe_.receiveBps() > 0) {
-        bwe_.limitTo(int(0.85 * bwe_.receiveBps()));
-    }
     // Repeats: what it still wants, once per 40 ms each, while it is recent.
     for (const quint32 seq : f.nacks) {
         auto it = sent_.find(seq);
@@ -154,9 +119,19 @@ void MediaSender::onFeedback(const QByteArray& packet, qint64 nowMs) {
             again->retransmit = true; queue_.push_front(*again); queuedBytes_ += it->second.size; ++retransmitted_;
         }
     }
-    // Lag: the newest frame it has against the newest queued, on this clock.
+    // Lag: the newest frame it has against the newest queued, on this
+    // clock. Beyond the budget, the queue is dropped and the stream starts
+    // over from a keyframe; above half of it for a couple of seconds, the
+    // path is not carrying the rate (a loss figure never shows that on a
+    // path that queues), and the target comes down.
     if (f.haveLatest) lagMs_ = std::max(0, int(qint32(lastSentCaptureMs_ - f.latestCaptureMs)));
-    if (lagMs_ > BehindMs && nowMs - behindAt_ > 1500) { behindAt_ = nowMs; dropQueued(); }
+    if (lagMs_ > LagBudgetMs && nowMs - behindAt_ > 1500) { behindAt_ = nowMs; dropQueued(); }
+    if (lagMs_ > LagBudgetMs / 2) {
+        if (lagSinceMs_ < 0) lagSinceMs_ = nowMs;
+        else if (nowMs - lagSinceMs_ > 2000 && nowMs - lagCutMs_ > 2000) { lagCutMs_ = nowMs; bwe_.limitTo(int(0.85 * bwe_.targetBps())); }
+    } else {
+        lagSinceMs_ = -1;
+    }
     if (f.keyframeWanted) awaitKey_ = true;
 }
 
