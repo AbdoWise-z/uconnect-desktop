@@ -53,12 +53,16 @@
 - **Smooth streams, your choice of quality.** The watching side picks the
   resolution, frame rate (up to 120 fps, 60 by default) and bitrate it
   receives, from the view menu or Settings › Watching; the sharing side's
-  limits cap them. Captured frames queue and are converted on several
-  threads, then encoded and sent in order with their own timestamps, and the
-  viewer plays them back at the pace they were captured after a short
-  buffer, so the stream neither speeds up nor stalls with the network.
-  Every limit, the queue and the threads are settings, and the view's
-  statistics show how both sides keep up.
+  limits cap them. Video travels the way real-time services send it: paced
+  packets with repair packets sized to what the path loses, lost pieces
+  asked for again within a round trip, a bandwidth estimate from the
+  viewer's feedback every 50 ms that the encoder follows, and a quality
+  ladder that steps the picture down on a thin path and back up when it
+  recovers, so a phone on mobile data stays within a fraction of a second.
+  The viewer plays frames back at the pace they were captured after a
+  buffer that follows the network (or one you choose), so the stream
+  neither speeds up nor stalls. Every limit, the queue and the threads are
+  settings, and the view's statistics show how both sides keep up.
 - **Another device's camera as a webcam.** While you watch a camera, the
   webcam button in its window shows it to every app on the computer as
   "uConnect Camera", for video calls (Discord, Teams...) or recording.
