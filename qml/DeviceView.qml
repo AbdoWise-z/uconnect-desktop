@@ -18,6 +18,8 @@ Flickable {
     readonly property bool verified: identityState === "verified"
     // It has special rules here (its own permissions, by its key).
     readonly property bool special: !gone && peer.special === true
+    // ...marked as an exception: only they apply, not network rules or defaults.
+    readonly property bool exception: special && peer.exception === true
     // The network rule its address matched, if any.
     readonly property var matchedRule: (peer.networkRule !== undefined && peer.networkRule >= 0
                                         && peer.networkRule < App.networkRules.length)
@@ -273,8 +275,12 @@ Flickable {
                           ? (view.specialEntry && view.specialEntry.name !== view.name
                              ? qsTr("Special rules (added as “%1”)").arg(view.specialEntry.name)
                              : qsTr("Special rules"))
+                            + (view.exception ? "  ·  " + qsTr("exception")
+                               : view.matchedRule ? "  ·  " + qsTr("plus network rule %1 and defaults")
+                                                                .arg(view.matchedRule.label || view.matchedRule.pattern)
+                               : "  ·  " + qsTr("plus defaults"))
                           : view.peer.permissionSource === "rule"
-                            ? qsTr("Network rule %1").arg(view.matchedRule ? (view.matchedRule.label || view.matchedRule.pattern) : "")
+                            ? qsTr("Network rule %1, plus defaults").arg(view.matchedRule ? (view.matchedRule.label || view.matchedRule.pattern) : "")
                             : qsTr("Default permissions")
                 }
                 UButton {
@@ -293,19 +299,42 @@ Flickable {
         TitledSeparator {
             text: qsTr("What It May Do Here")
         }
-        // Where its permissions come from: its own set, a network rule, or the
-        // defaults (first that applies, see AccessPolicy).
+        // Where its permissions come from: its special rules, the network rule
+        // it matches and the defaults, together (see AccessPolicy); the icon by
+        // each permission says which grants it.
         Text {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: Theme.textSecondary
-            text: view.peer.permissionSource === "device"
-                  ? qsTr("Its special rules. Changes apply immediately.")
-                  : view.peer.permissionSource === "rule"
-                    ? qsTr("From the network rule %1, because it connects from %2.")
-                          .arg(view.matchedRule ? (view.matchedRule.label || view.matchedRule.pattern) : "")
-                          .arg(view.peer.address)
-                    : qsTr("Your default permissions, which any device with the invite link gets.")
+            text: view.exception
+                  ? qsTr("Only its special rules apply: it is an exception to the network rules and defaults. Changes apply immediately.")
+                  : view.special
+                    ? qsTr("Its special rules, plus what %1 grant it. Changes apply immediately.")
+                          .arg(view.matchedRule ? qsTr("the network rule %1 and your defaults")
+                                                      .arg(view.matchedRule.label || view.matchedRule.pattern)
+                                                : qsTr("your defaults"))
+                    : view.peer.permissionSource === "rule"
+                      ? qsTr("From the network rule %1, because it connects from %2, plus your defaults.")
+                            .arg(view.matchedRule ? (view.matchedRule.label || view.matchedRule.pattern) : "")
+                            .arg(view.peer.address)
+                      : qsTr("Your default permissions, which any device with the invite link gets.")
+        }
+        RowLayout {
+            visible: view.special
+            Layout.fillWidth: true
+            spacing: 10
+            UCheckBox {
+                text: qsTr("Exception")
+                checked: view.exception
+                onToggled: App.setSpecialException(view.peer.identityKey, checked)
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: Theme.textSecondary
+                font.pixelSize: Theme.smallFontSize
+                text: qsTr("Only its special rules apply, so it can be given less than the network rules or defaults grant. Turning this on keeps what it has now.")
+            }
         }
         Rectangle {
             visible: !view.special && !view.gone
@@ -338,6 +367,8 @@ Flickable {
         PermissionEditor {
             Layout.fillWidth: true
             granted: view.gone ? [] : view.peer.permissions
+            from: view.gone || !view.peer.permissionFrom ? ({}) : view.peer.permissionFrom
+            ruleName: view.matchedRule ? (view.matchedRule.label || view.matchedRule.pattern) : ""
             editable: view.special
             opacity: view.special ? 1 : 0.55
             onToggled: (permission, granted) => App.setDevicePermission(view.peer.identityKey, permission, granted)
@@ -345,9 +376,9 @@ Flickable {
         RowLayout {
             spacing: 14
             ULink {
-                visible: view.peer.permissionSource !== "device"
-                text: view.peer.permissionSource === "rule" ? qsTr("Edit network rules...") : qsTr("Edit default permissions...")
-                onClicked: view.settingsRequested(view.peer.permissionSource === "rule" ? "network" : "permissions")
+                visible: !view.exception
+                text: view.matchedRule ? qsTr("Edit network rules...") : qsTr("Edit default permissions...")
+                onClicked: view.settingsRequested(view.matchedRule ? "network" : "permissions")
             }
         }
 

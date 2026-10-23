@@ -23,6 +23,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 #include <QVector>
 
 #include "core/Hello.hpp"
@@ -66,6 +67,7 @@ struct PeerRecord {
     QString     identityKey;    // hex public key, once verified
     QString     fingerprint;
     bool        special = false;  // this device set special rules for it
+    bool        exception = false;  // ...marked as an exception: only those apply
     QStringList permissions;  // what this device grants it
     QStringList grantedToMe;  // what it says it grants this device
 
@@ -74,8 +76,10 @@ struct PeerRecord {
     // rules, -1 for none). See NetworkRules.hpp.
     QString address;
     int     networkRule = -1;
-    // Where `permissions` come from: "device", "rule" or "default".
-    QString permissionSource;
+    // The most specific layer that applies to it: "device", "rule" or
+    // "default"; and for each permission, the layer that grants it.
+    QString     permissionSource;
+    QVariantMap permissionFrom;  // permission -> "device" | "rule" | "default"
 
     bool operator==(const PeerRecord&) const = default;
 };
@@ -97,17 +101,18 @@ struct NodeSnapshot {
 // What this device lets others do. Owned by the GUI side, which pushes a copy
 // to the Session whenever it changes.
 //
-// What a device may do here, the first that applies:
+// What a device may do here is everything these grant it, together:
 //   1. its special rules: permissions set for that device (by public key);
 //   2. the first of this topic's network rules its address matches;
-//   3. the defaults, which never include sensitive permissions (camera,
-//      screen, control, display...), as any holder of the invite link gets them.
+//   3. the defaults, which any holder of the invite link gets.
+// Special rules marked as an exception replace 2 and 3: only they apply.
 // 1 and 2 need the device to have proven its identity.
 struct AccessPolicy {
-    PermissionSet                 defaults;  // when nothing more specific applies
-    QHash<QString, PermissionSet> special;   // public key (hex) -> its special rules
-    // This topic's network rules (first match wins for proven devices without special rules
-    // devices) and this device's own addresses, for their "m" parts.
+    PermissionSet                 defaults;    // what every device gets
+    QHash<QString, PermissionSet> special;     // public key (hex) -> its special rules
+    QSet<QString>                 exceptions;  // keys whose special rules are all that applies
+    // This topic's network rules (first match wins, for proven devices) and
+    // this device's own addresses, for their "m" parts.
     QVector<NetworkRule> rules;
     QList<QHostAddress>  localAddresses;
 };
@@ -227,7 +232,12 @@ private:
     QHostAddress peerAddress(const uconnect::DevId& dev) const;
     int          networkRuleFor(const uconnect::DevId& dev) const;
     // permissionsFor() and where the answer came from (see AccessPolicy).
-    std::pair<PermissionSet, QString> resolvePermissions(const uconnect::DevId& dev) const;
+    struct Resolved {
+        PermissionSet           permissions;
+        QString                 source;  // the most specific layer that applies
+        QHash<QString, QString> from;    // permission -> the layer that grants it
+    };
+    Resolved resolvePermissions(const uconnect::DevId& dev) const;
 
     void          sendIdentity(const uconnect::DevId& dev);
     void          sendGrants(const uconnect::DevId& dev);

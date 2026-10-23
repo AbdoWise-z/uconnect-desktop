@@ -541,14 +541,16 @@ void Session::emitPeers() {
                 r.identityKey   = keyToHex(*p.identity);
                 r.fingerprint   = fingerprint(*p.identity);
                 r.special       = policy_.special.contains(r.identityKey);
+                r.exception     = r.special && policy_.exceptions.contains(r.identityKey);
             } else {
                 r.identityState = p.identityInvalid ? QStringLiteral("invalid") : QStringLiteral("pending");
             }
             if (const QHostAddress a = peerAddress(dev); !a.isNull()) r.address = a.toString();
             r.networkRule = networkRuleFor(dev);
-            const auto [perms, source] = resolvePermissions(dev);
-            r.permissions      = perms.values();
-            r.permissionSource = source;
+            const Resolved resolved = resolvePermissions(dev);
+            r.permissions      = resolved.permissions.values();
+            r.permissionSource = resolved.source;
+            for (auto f = resolved.from.begin(); f != resolved.from.end(); ++f) r.permissionFrom.insert(f.key(), f.value());
             r.permissions.sort();
             r.grantedToMe = p.grantedToMe;
             out.push_back(std::move(r));
@@ -636,7 +638,7 @@ void Session::onData(const uconnect::DevId& dev, const std::vector<uint8_t>& dat
         if (t == QLatin1String("rules.get")) {
             // Only a proven device with special rules here, or one a network
             // rule covers, may copy them -- not one on the defaults alone.
-            const bool allowed = resolvePermissions(dev).second != QLatin1String("default");
+            const bool allowed = resolvePermissions(dev).source != QLatin1String("default");
             topic_->send(dev, encodeControl(allowed
                 ? QJsonObject{{"t", "rules.list"}, {"rules", networkRulesToJson(policy_.rules)}}
                 : QJsonObject{{"t", "rules.err"}, {"code", "forbidden"}}));
@@ -710,19 +712,34 @@ void Session::onGrants(const uconnect::DevId& dev, const QJsonObject& message) {
     emitPeers();
 }
 
-PermissionSet Session::permissionsFor(const uconnect::DevId& dev) const { return resolvePermissions(dev).first; }
+PermissionSet Session::permissionsFor(const uconnect::DevId& dev) const { return resolvePermissions(dev).permissions; }
 
-std::pair<PermissionSet, QString> Session::resolvePermissions(const uconnect::DevId& dev) const {
+Session::Resolved Session::resolvePermissions(const uconnect::DevId& dev) const {
+    Resolved out;
+    // Most specific first, so each permission is credited to the layer that
+    // grants it there; lower layers only add what is not granted yet.
+    const auto add = [&out](const PermissionSet& perms, const QString& layer) {
+        for (const QString& p : knownPermissions(perms)) {
+            if (out.permissions.contains(p)) continue;
+            out.permissions.insert(p);
+            out.from.insert(p, layer);
+        }
+        if (out.source.isEmpty()) out.source = layer;
+    };
     const auto it = peers_.find(dev);
     if (it != peers_.end() && it->second.identity) {
-        const auto special = policy_.special.constFind(keyToHex(*it->second.identity));
-        if (special != policy_.special.constEnd()) return {special.value(), QStringLiteral("device")};
+        const QString key = keyToHex(*it->second.identity);
+        if (const auto special = policy_.special.constFind(key); special != policy_.special.constEnd()) {
+            add(special.value(), QStringLiteral("device"));
+            if (policy_.exceptions.contains(key)) return out;
+        }
         if (const int rule = networkRuleFor(dev); rule >= 0) {
             const QStringList& list = policy_.rules[rule].permissions;
-            return {PermissionSet(list.begin(), list.end()), QStringLiteral("rule")};
+            add(PermissionSet(list.begin(), list.end()), QStringLiteral("rule"));
         }
     }
-    return {knownPermissions(policy_.defaults), QStringLiteral("default")};
+    add(policy_.defaults, QStringLiteral("default"));
+    return out;
 }
 
 QHostAddress Session::peerAddress(const uconnect::DevId& dev) const {
@@ -760,7 +777,7 @@ screen::PeerAccess Session::accessFor(const uconnect::DevId& peer) const {
         access.verified = true;
         // A proven peer may share whatever its rules grant, defaults included.
         access.trusted = true;
-        access.permissions = resolvePermissions(peer).first;
+        access.permissions = resolvePermissions(peer).permissions;
     }
     return access;
 }

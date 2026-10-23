@@ -37,6 +37,8 @@ QVariant PeerListModel::roleValue(const PeerRecord& p, int role) const {
     case IdentityKeyRole: return p.identityKey;
     case FingerprintRole: return p.fingerprint;
     case SpecialRole: return p.special;
+    case ExceptionRole: return p.exception;
+    case PermissionFromRole: return p.permissionFrom;
     case PermissionsRole: return p.permissions;
     case GrantedToMeRole: return p.grantedToMe;
     default: return {};
@@ -65,6 +67,8 @@ QHash<int, QByteArray> PeerListModel::roleNames() const {
         {IdentityKeyRole, "identityKey"},
         {FingerprintRole, "fingerprint"},
         {SpecialRole, "special"},
+        {ExceptionRole, "exception"},
+        {PermissionFromRole, "permissionFrom"},
         {PermissionsRole, "permissions"},
         {GrantedToMeRole, "grantedToMe"},
     };

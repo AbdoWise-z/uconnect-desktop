@@ -536,7 +536,7 @@ Window {
 
             TitledSeparator { text: qsTr("How Permissions Are Decided") }
             Help {
-                text: qsTr("For each device, the first of these applies: its special rules, then this topic's network rules, then the defaults below.")
+                text: qsTr("Each device gets what its special rules, this topic's network rule it matches and the defaults below grant, together. Special rules marked as an exception apply alone.")
             }
             ULink {
                 text: qsTr("Network rules for this topic...")
@@ -545,7 +545,7 @@ Window {
 
             TitledSeparator { text: qsTr("Default Permissions") }
             Help {
-                text: qsTr("What a device may do here when no special or network rule covers it, including devices whose identity is unknown.")
+                text: qsTr("What every device may do here, including devices whose identity is unknown. Special and network rules add to these.")
             }
             PermissionEditor {
                 Layout.fillWidth: true
@@ -604,7 +604,8 @@ Window {
                         font.pixelSize: Theme.smallFontSize
                         text: {
                             const n = specialRow.modelData.permissions.length
-                            return n === 0 ? qsTr("No permissions") : n === 1 ? qsTr("1 permission") : qsTr("%1 permissions").arg(n)
+                            const count = n === 0 ? qsTr("No permissions") : n === 1 ? qsTr("1 permission") : qsTr("%1 permissions").arg(n)
+                            return specialRow.modelData.exception ? count + "  ·  " + qsTr("exception") : count
                         }
                     }
                     UButton {
@@ -627,7 +628,7 @@ Window {
 
             TitledSeparator { text: qsTr("Network Rules for This Topic") }
             Help {
-                text: qsTr("Choose what devices may do here by where they connect from. The first rule a device matches applies, unless it has special rules. A device matches only once it has proved its identity, over a direct connection: through the relay its address is unknown.")
+                text: qsTr("Choose what devices may do here by where they connect from. The first rule a device matches applies, adding to the defaults and to its special rules (unless those are an exception). A device matches only once it has proved its identity, over a direct connection: through the relay its address is unknown.")
             }
             Help {
                 text: qsTr("Patterns have four parts: x for any value, m for the same as this device's address, or a number. m.m.m.x is this device's /24 network, 100.x.x.x anything starting with 100, x.x.x.x any address.")

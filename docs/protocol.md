@@ -5,7 +5,7 @@ repository and the separately maintained Flutter mobile app. An app that
 follows this document can talk to any other, whatever language it is
 written in.
 
-Revision: **storage 1.3, sync 1.1, screen/camera 1.1, display 1.1, rules 1.0** (2026-10). Changes are listed at the end.
+Revision: **storage 1.3, sync 1.1, screen/camera 1.1, display 1.1, rules 1.1** (2026-10). Changes are listed at the end.
 
 The words MUST, SHOULD and MAY are used as in RFC 2119.
 
@@ -120,15 +120,18 @@ receiver drops invalid patterns and unknown permission ids, and keeps at most
 
 ## 4. Permissions
 
-Each device decides what every peer may do. The first of these that applies
-gives a peer its permissions:
+Each device decides what every peer may do. A peer gets every permission
+that any of these that apply to it grants:
 
 1. **Special rules**: permissions this device set for the peer's verified
    key. Adding them is the moment a user compares fingerprints.
 2. **Network rules** (4.2): the first rule of this topic whose pattern
    matches the address the peer's direct connection comes from, once its
    identity is verified.
-3. **Defaults**: for everyone else, including peers without a verified key.
+3. **Defaults**: for every peer, including peers without a verified key.
+
+Special rules may be marked as an **exception**: then they alone apply, and
+the peer can be given less than a network rule or the defaults grant.
 
 Camera, screen, control and display ids are **sensitive**. Any of the three
 may grant them, but since any holder of the invite link gets the defaults,
@@ -895,6 +898,7 @@ request gets `busy`.
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
 | display 1.0 | extended display (7.6): `display` service, `display.show` / `display.direct`, `dsp.request`, `dsp.wait`, `dsp.err`, `dsp.accept`, the screen session under `dsp.*`, datagram kinds 4 and 5 |
 | rules 1.0 | trust replaced by special rules; network rules per topic (4.2); `rules.get`, `rules.list`, `rules.err`. Sync membership needs a proven identity, special rules and the folder's grants (sync 1.1); sharing needs a proven identity, and any source may grant sensitive permissions, defaults included (screen/camera 1.1, display 1.1). Only local policy changed: no message changed shape |
+| rules 1.1 | Permissions from special rules, the matching network rule and the defaults add up; special rules may be an exception that applies alone (4). Local policy only |
 | identity | the proof context string (3) was `"uconnect-desktop identity v1"` before this revision; it is now the implementation-neutral `"uconnect identity v1"`. The `id` message keeps `"v":1`; peers from before and after do not verify each other's identity, so both ends update together. Connections and storage with default permissions are unaffected |
 
 Almost every change only adds messages, fields and codes, so an older peer

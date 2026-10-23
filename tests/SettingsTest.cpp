@@ -249,7 +249,58 @@ private slots:
         const QVariantList special = restarted.specialDevices();
         QCOMPARE(special.size(), 1);
         QCOMPARE(special.first().toMap().value("permissions").toStringList(), QStringList{"storage.read"});
+        // It left out a default, which then did not apply to it: still so.
+        QVERIFY(special.first().toMap().value("exception").toBool());
         QVERIFY(!QSettings().childGroups().contains("trust"));  // moved, not copied
+    }
+
+    // Special rules add to the defaults; an exception applies alone, and
+    // starts from what the device had.
+    void specialRulesAddUpUnlessAnException() {
+        controller_->applySettings({{"defaultPermissions", QStringList{"storage.observe"}}});
+        const QString key(64, QLatin1Char('c'));
+        controller_->addSpecialRules(key, "Laptop");
+        auto entry = [&](const ucd::AppController& c) { return c.specialDevices().first().toMap(); };
+        QVERIFY(entry(*controller_).value("permissions").toStringList().isEmpty());
+        QVERIFY(!entry(*controller_).value("exception").toBool());
+        controller_->setSpecialException(key, true);
+        QCOMPARE(entry(*controller_).value("permissions").toStringList(), QStringList{"storage.observe"});
+        QVERIFY(entry(*controller_).value("exception").toBool());
+        controller_->setDevicePermission(key, "storage.observe", false);
+        QSettings().sync();
+        {
+            ucd::AppController restarted(ucd::LaunchOptions{});
+            QVERIFY(entry(restarted).value("exception").toBool());
+            QVERIFY(entry(restarted).value("permissions").toStringList().isEmpty());
+        }
+        controller_->setSpecialException(key, false);
+        QVERIFY(!entry(*controller_).value("exception").toBool());
+        controller_->removeSpecialRules(key);
+        controller_->applySettings({{"defaultPermissions", QStringList{}}});
+    }
+
+    // Special rules saved before they added up stay as they were: an
+    // exception only where that keeps a default away from the device.
+    void savedSpecialRulesKeepTheirEffect() {
+        const QString narrow(64, QLatin1Char('d')), wide(64, QLatin1Char('e'));
+        {
+            QSettings settings;
+            settings.setValue("permissions/defaults", QStringList{"storage.observe"});
+            settings.setValue(QStringLiteral("special/%1/name").arg(narrow), "Narrow");
+            settings.setValue(QStringLiteral("special/%1/permissions").arg(narrow), QStringList{"storage.read"});
+            settings.setValue(QStringLiteral("special/%1/name").arg(wide), "Wide");
+            settings.setValue(QStringLiteral("special/%1/permissions").arg(wide),
+                              QStringList{"storage.observe", "storage.read"});
+            settings.sync();
+        }
+        ucd::AppController restarted(ucd::LaunchOptions{});
+        QHash<QString, bool> exception;
+        for (const QVariant& d : restarted.specialDevices())
+            exception.insert(d.toMap().value("key").toString(), d.toMap().value("exception").toBool());
+        QCOMPARE(exception.value(narrow, false), true);
+        QCOMPARE(exception.value(wide, true), false);
+        QSettings().remove("special");
+        QSettings().remove("permissions/defaults");
     }
 
     // Network rules belong to the topic they were set on.

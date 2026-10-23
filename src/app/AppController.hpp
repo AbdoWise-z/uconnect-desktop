@@ -93,7 +93,7 @@ class AppController : public QObject {
     Q_PROPERTY(QString myFingerprint READ myFingerprint CONSTANT)
     Q_PROPERTY(QVariantList permissionDefinitions READ permissionDefinitions CONSTANT)
     Q_PROPERTY(QStringList defaultPermissions READ defaultPermissions NOTIFY specialRulesChanged)
-    // Devices with special rules: [{key, fingerprint, name, permissions, since}].
+    // Devices with special rules: [{key, fingerprint, name, permissions, exception, since}].
     Q_PROPERTY(QVariantList specialDevices READ specialDevices NOTIFY specialRulesChanged)
     // This topic's network rules, [{pattern,label,perms}], first
     // match wins; and this device's IPv4 addresses (for the "m" parts).
@@ -258,13 +258,17 @@ public:
     Q_INVOKABLE QString localPath(const QUrl& url) const;
 
     // Special rules: permissions for one device, by the public key (hex) it
-    // proves in each session; they come before network rules and defaults.
-    // Adding them starts from what the device has now. `name` is remembered as
-    // what it was called then.
+    // proves in each session; they add to its network rule and the defaults.
+    // Adding them starts empty, so nothing changes until they are edited.
+    // `name` is remembered as what it was called then.
     Q_INVOKABLE void addSpecialRules(const QString& key, const QString& name);
     Q_INVOKABLE void removeSpecialRules(const QString& key);
     // Sets one permission in a device's special rules (adding them if needed).
     Q_INVOKABLE void setDevicePermission(const QString& key, const QString& permission, bool granted);
+    // An exception: only the device's special rules apply, not its network
+    // rule or the defaults. Turning it on takes in what those granted, so
+    // nothing changes until the rules are edited.
+    Q_INVOKABLE void setSpecialException(const QString& key, bool exception);
 
     // Network rules (per topic). Saved through applySettings({networkRules}).
     Q_INVOKABLE QString networkPatternProblem(const QString& pattern) const;
@@ -382,6 +386,7 @@ private:
         QString     name;
         QStringList permissions;
         QDateTime   since;
+        bool        exception = false;  // only these apply (see AccessPolicy)
     };
     std::optional<Identity>      identity_;
     QString                      myFingerprint_;

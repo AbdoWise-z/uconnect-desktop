@@ -93,7 +93,7 @@ Popup {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: Theme.textSecondary
-            text: qsTr("Its special rules start from what it may do now, and come before network rules and defaults. Change them on its page; they may include sensitive permissions such as camera and screen.")
+            text: qsTr("Its special rules add to what network rules and defaults grant it, so nothing changes until you edit them on its page, where you can also make them an exception that applies alone. They may include sensitive permissions such as camera and screen.")
         }
 
         RowLayout {

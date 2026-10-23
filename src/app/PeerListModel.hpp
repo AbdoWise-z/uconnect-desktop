@@ -38,6 +38,8 @@ public:
         IdentityKeyRole,
         FingerprintRole,
         SpecialRole,
+        ExceptionRole,
+        PermissionFromRole,
         PermissionsRole,
         GrantedToMeRole,
     };

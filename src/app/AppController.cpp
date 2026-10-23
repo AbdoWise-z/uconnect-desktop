@@ -1105,6 +1105,7 @@ QVariantList AppController::specialDevices() const {
             {"fingerprint", fingerprintOfHex(it.key())},
             {"name", it->name},
             {"permissions", it->permissions},
+            {"exception", it->exception},
             {"since", it->since.toString(Qt::ISODate)},
         });
     }
@@ -1114,8 +1115,8 @@ QVariantList AppController::specialDevices() const {
     return out;
 }
 
-// What a device with this key may do here right now (its network rule's or
-// the defaults), as shown for it: where special rules start from.
+// What a device with this key may do here right now, as shown for it: what
+// an exception starts from.
 QStringList AppController::currentPermissionsOf(const QString& key) const {
     for (const PeerRecord& p : peers_.peers())
         if (p.identityKey == key) return p.permissions;
@@ -1124,7 +1125,7 @@ QStringList AppController::currentPermissionsOf(const QString& key) const {
 
 void AppController::addSpecialRules(const QString& key, const QString& name) {
     if (!keyFromHex(key) || special_.contains(key)) return;
-    special_.insert(key, {name.left(64), knownOnly(currentPermissionsOf(key)), QDateTime::currentDateTimeUtc()});
+    special_.insert(key, {name.left(64), {}, QDateTime::currentDateTimeUtc()});
     saveSpecialRules(key);
     emit specialRulesChanged();
     pushAccessPolicy();
@@ -1146,7 +1147,7 @@ void AppController::setDevicePermission(const QString& key, const QString& permi
     if (!keyFromHex(key) || !isKnownPermission(permission)) return;
     if (!special_.contains(key)) {
         QString name = deviceName(key);
-        special_.insert(key, {name.left(64), knownOnly(currentPermissionsOf(key)), QDateTime::currentDateTimeUtc()});
+        special_.insert(key, {name.left(64), {}, QDateTime::currentDateTimeUtc()});
     }
     const auto it = special_.find(key);
     QStringList perms = it->permissions;
@@ -1159,6 +1160,22 @@ void AppController::setDevicePermission(const QString& key, const QString& permi
     pushAccessPolicy();
 }
 
+void AppController::setSpecialException(const QString& key, bool exception) {
+    const auto it = special_.find(key);
+    if (it == special_.end() || it->exception == exception) return;
+    if (exception) {
+        QStringList perms = it->permissions;
+        for (const QString& p : knownOnly(currentPermissionsOf(key)))
+            if (!perms.contains(p)) perms << p;
+        perms.sort();
+        it->permissions = perms;
+    }
+    it->exception = exception;
+    saveSpecialRules(key);
+    emit specialRulesChanged();
+    pushAccessPolicy();
+}
+
 void AppController::loadSpecialRules() {
     QSettings settings;
     defaultPermissions_ = knownOnly(settings.value(Key::DefaultPerms).toStringList());
@@ -1166,8 +1183,14 @@ void AppController::loadSpecialRules() {
     for (const QString& key : settings.childGroups()) {
         if (!keyFromHex(key)) continue;
         settings.beginGroup(key);
-        special_.insert(key, {settings.value("name").toString(), knownOnly(settings.value("permissions").toStringList()),
-                              settings.value("since").toDateTime()});
+        const QStringList perms = knownOnly(settings.value("permissions").toStringList());
+        // Before 0.2.0 beta 3 special rules replaced the defaults. One saved
+        // then that leaves out a default stays that way, as an exception.
+        const bool exception = settings.contains("exception")
+            ? settings.value("exception").toBool()
+            : std::any_of(defaultPermissions_.begin(), defaultPermissions_.end(),
+                          [&](const QString& p) { return !perms.contains(p); });
+        special_.insert(key, {settings.value("name").toString(), perms, settings.value("since").toDateTime(), exception});
         settings.endGroup();
     }
     settings.endGroup();
@@ -1178,10 +1201,12 @@ void AppController::loadSpecialRules() {
     for (const QString& key : legacy) {
         settings.beginGroup(key);
         const bool own = settings.value("custom", true).toBool();
-        if (own && keyFromHex(key) && !special_.contains(key))
-            special_.insert(key, {settings.value("name").toString(),
-                                  knownOnly(settings.value("permissions").toStringList()),
-                                  settings.value("since").toDateTime()});
+        if (own && keyFromHex(key) && !special_.contains(key)) {
+            const QStringList perms = knownOnly(settings.value("permissions").toStringList());
+            const bool exception = std::any_of(defaultPermissions_.begin(), defaultPermissions_.end(),
+                                               [&](const QString& p) { return !perms.contains(p); });
+            special_.insert(key, {settings.value("name").toString(), perms, settings.value("since").toDateTime(), exception});
+        }
         settings.endGroup();
     }
     settings.endGroup();
@@ -1199,13 +1224,16 @@ void AppController::saveSpecialRules(const QString& key) {
     settings.setValue("name", it->name);
     settings.setValue("permissions", it->permissions);
     settings.setValue("since", it->since);
+    settings.setValue("exception", it->exception);
 }
 
 void AppController::pushAccessPolicy() {
     AccessPolicy policy;
     policy.defaults = PermissionSet(defaultPermissions_.begin(), defaultPermissions_.end());
-    for (auto it = special_.begin(); it != special_.end(); ++it)
+    for (auto it = special_.begin(); it != special_.end(); ++it) {
         policy.special.insert(it.key(), PermissionSet(it->permissions.begin(), it->permissions.end()));
+        if (it->exception) policy.exceptions.insert(it.key());
+    }
     policy.rules          = networkRules_;
     policy.localAddresses = localAddresses_;
     onSession([s = session_, policy] { s->setAccessPolicy(policy); });

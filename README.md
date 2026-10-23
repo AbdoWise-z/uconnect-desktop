@@ -29,12 +29,13 @@
 - **Topics and invite links.** Devices meet in a *topic*, shared by an
   invite link, or a QR code a phone scans to open uConnect Mobile on it.
 - **Your rules, per device.** Every service is behind a permission, and for
-  each device the first of these applies: its **special rules** (permissions
-  of its own, added after checking its fingerprint), this topic's **network
-  rules** (ordered address patterns such as `m.m.m.x` for your own subnet,
-  matched against the address its direct connection comes from), then your
-  **defaults**. A device can copy another's rules for quick setup on a
-  trusted network.
+  each device gets what its **special rules** (permissions of its own, added
+  after checking its fingerprint), this topic's **network rules** (ordered
+  address patterns such as `m.m.m.x` for your own subnet, matched against the
+  address its direct connection comes from) and your **defaults** grant,
+  together; the device page shows which layer grants each permission. Mark a
+  device's special rules as an **exception** to apply only those. A device
+  can copy another's rules for quick setup on a trusted network.
 - **Storage.** Browse, download and upload files and whole folders in the
   folders a device shares, with read-only shares and a log of what others did.
 - **Folder sync.** Keep a folder the same on several devices, phones
