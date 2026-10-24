@@ -219,6 +219,28 @@ the rest.
 | `docs/protocol.md` | The app protocol on top of uconnect: messages, permissions, every service |
 | `docs/plans/` | Design notes for screen sharing and the extended display |
 
+## Known issues and next up
+
+Where the project stands (updated 2026-10-24):
+
+- **Streaming over mobile data** now holds a lag budget of a second on both
+  ends and recovers lost packets without keyframes; a phone on cellular data
+  streams at 30 fps/480p on a ~1 Mbit/s uplink and watches a desktop at 60+
+  fps. Media travels over UDP only (direct or through the relay); there is no
+  TCP fallback for video any more, by design.
+- **macOS:** the beta 2 package has not been built yet; the pipeline has been
+  verified on a Mac in loopback and Mac → Windows. VideoToolbox stalls on
+  some sessions ("buffered too many frames"); the encoder now falls back to
+  OpenH264 when that happens, which still wants a longer soak.
+- **Linux:** the beta 2 Linux packages predate the streaming rewrite and will
+  be refreshed; the extended-display and camera features remain Windows-first.
+- **Next up:** bandwidth probing when the encoder has little to send (so a
+  still screen that starts moving finds the path's capacity faster), temporal
+  layering so the frame rate can drop without a resize, a Linux end-to-end
+  pass, and the mobile host's single-viewer limit.
+- Test coverage of the media layer is simulated (`MediaTransportTest`) plus
+  the offscreen `StreamBenchTest`; see [docs/screen-testing.md](docs/screen-testing.md).
+
 ## License
 
 uConnect Desktop is released under the [MIT License](LICENSE). The

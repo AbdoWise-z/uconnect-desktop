@@ -19,13 +19,27 @@ selection, capture and consent are added in later phases.
 
 `MediaTransportTest` runs the media layer (screen/camera 2.0: packets with
 repair, feedback, the bandwidth estimate, pacing) between a sender and a
-receiver in lockstep on a simulated path: clean, with 25% random loss, through
-a bottleneck with a deep buffer, and over a TCP-like path that never drops. It
-checks that every frame of a clean path arrives with low lag, that repair
-packets and repeats carry most frames across heavy loss, that the estimate
-settles at a bottleneck with the lag bounded, and that a reliable path stays
-bounded by what is in flight. Each run prints its per-second figures. No real
-network timing is needed.
+receiver in lockstep on a simulated path: clean, with 25% random loss, and
+through a bottleneck with a deep buffer. It checks that every frame of a
+clean path arrives with low lag once the rate has climbed, that repair
+packets and repeats carry most frames across heavy loss, and that the
+estimate settles at a bottleneck with the lag bounded. Each run prints its
+per-second figures. No real network timing is needed. The phone has the same
+scenarios in `test/media_transport_test.dart`.
+
+`StreamBenchTest` (opt in with `UCD_BENCH_ROLE`) runs the real pipeline
+offscreen: `both` hosts a synthetic animated desktop and views it in one
+process over a local rendezvous; `host` and `viewer` split the two across
+machines through a real server (`UCD_BENCH_SERVER`, `UCD_BENCH_TOPIC`). A
+viewer can watch any device in the topic (`UCD_BENCH_HOST_NAME`, e.g. a
+phone, with `UCD_BENCH_IDENTITY` keeping its identity so the phone's special
+rule for it holds), and prints a line per second: frames shown and decoded,
+the receive rate, loss, jitter, the playout buffer's state, recovered and
+repeated packets, frames given up, and the host's own figures (lag, target,
+round trip, repair group, estimator state). `UCD_BENCH_VERBOSE=1` adds the
+uConnect library's log. To measure a phone sharing its screen, keep it moving
+with an on-device loop (`adb shell 'while true; do input swipe …; done'`): a
+swipe per adb call leaves the screen still most of the time and hides lag.
 
 For real-desktop acceptance, use two trusted devices with screen permissions.
 The later phases require measuring 1080p30 capture-to-display latency on a
