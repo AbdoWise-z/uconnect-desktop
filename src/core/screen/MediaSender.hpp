@@ -98,6 +98,7 @@ private:
     quint32 feedbackBase_ = 0;  // sequences before this were reported on
     bool haveFeedback_ = false;
     double rttMs_ = 0, lagMs_ = 0, smoothEncoderBps_ = 0;
+    bool haveLag_ = false;  // the receiver has had a whole frame: the lag means something
     qint64 lagSinceMs_ = -1, lagCutMs_ = -100000;  // the viewer behind by half the budget: since when, last cut
     int fecGroup_ = 0;
     quint32 lastSentCaptureMs_ = 0;

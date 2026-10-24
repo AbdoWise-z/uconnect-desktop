@@ -15,7 +15,7 @@ void MediaSender::reset(const Options& options) {
     bwe_.reset({options.startBps, options.minBps, options.maxBps});
     nextSeq_ = 0; queue_.clear(); queuedBytes_ = 0; budgetBytes_ = MaxBurstBytes; lastPumpMs_ = 0;
     sent_.clear(); feedbackBase_ = 0; haveFeedback_ = false;
-    rttMs_ = 0; lagMs_ = 0; smoothEncoderBps_ = 0; fecGroup_ = 0; lastSentCaptureMs_ = 0; lagSinceMs_ = -1; lagCutMs_ = -100000;
+    rttMs_ = 0; lagMs_ = 0; haveLag_ = false; smoothEncoderBps_ = 0; fecGroup_ = 0; lastSentCaptureMs_ = 0; lagSinceMs_ = -1; lagCutMs_ = -100000;
     awaitKey_ = false; lastKeyMs_ = -100000; behindAt_ = -100000;
     dropped_ = retransmitted_ = 0;
 }
@@ -108,7 +108,10 @@ void MediaSender::onFeedback(const QByteArray& packet, qint64 nowMs) {
         rttMs_ = rttMs_ > 0 ? 0.8 * rttMs_ + 0.2 * rtt : rtt;
     }
     std::sort(results.begin(), results.end(), [](const auto& a, const auto& b) { return a.sendMs < b.sendMs; });
-    if (!results.isEmpty()) bwe_.onFeedback(results, nowMs, rttMs_);
+    // The lag is known once the receiver has had a whole frame; before that
+    // (a keyframe still on its way) the estimator goes by delay alone.
+    if (f.haveLatest) haveLag_ = true;
+    if (!results.isEmpty()) bwe_.onFeedback(results, nowMs, rttMs_, haveLag_ ? lagMs_ : -1);
     // Repeats: what it still wants, once per 40 ms each, while it is recent.
     for (const quint32 seq : f.nacks) {
         auto it = sent_.find(seq);

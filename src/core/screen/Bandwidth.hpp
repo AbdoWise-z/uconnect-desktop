@@ -27,8 +27,9 @@ public:
         bool received = false;
     };
     void reset(const Options& options);
-    // `results` in send order; `rttMs` the current round trip, if known.
-    void onFeedback(const QVector<PacketResult>& results, qint64 nowMs, double rttMs);
+    // `results` in send order; `rttMs` the current round trip, if known;
+    // `lagMs` how far behind live the receiver is (negative if unknown).
+    void onFeedback(const QVector<PacketResult>& results, qint64 nowMs, double rttMs, double lagMs = -1);
     // The path has shown it carries no more than `bps` (a reliable path's
     // queue filling): the target comes down to it.
     void limitTo(int bps);
@@ -65,7 +66,8 @@ private:
     int deltas_ = 0;
     double firstArrivalMs_ = 0;
     bool haveSample_ = false;
-    qint64 previousSendMs_ = 0; double previousArrivalMs_ = 0;
+    qint64 previousSendMs_ = 0; double previousArrivalMs_ = 0;  // the last closed group's
+    qint64 groupStartSendMs_ = 0, groupSendMs_ = 0; double groupArrivalMs_ = 0; bool haveGroup_ = false;  // the group being gathered
     // Bytes received by arrival time, for the receive rate.
     std::deque<std::pair<double, int>> received_;
     double lastArrivalMs_ = 0;

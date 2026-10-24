@@ -11,6 +11,7 @@ constexpr double OveruseHoldMs = 100;  // the trend must stay above the threshol
                                        // link delivers in bursts, which read as a sawtooth of delay)
 constexpr double ReceiveWindowMs = 1000;
 constexpr double MaxTargetOverReceived = 1.5;  // never ask for much more than the path has shown it takes
+constexpr qint64 BurstMs = 5;                  // packets sent this close together are one group
 }  // namespace
 
 void BandwidthEstimator::reset(const Options& options) {
@@ -20,6 +21,7 @@ void BandwidthEstimator::reset(const Options& options) {
     state_ = State::Increase; lastUpdateMs_ = 0; overusingSinceMs_ = -1; lastLossCutMs_ = -1000000; previousTrend_ = 0;
     accumulatedDelayMs_ = smoothedDelayMs_ = 0; samples_.clear(); deltas_ = 0; haveSample_ = false; firstArrivalMs_ = 0;
     previousSendMs_ = 0; previousArrivalMs_ = 0; received_.clear(); lastArrivalMs_ = 0; sent_.clear(); lastSendMs_ = 0; minRttMs_ = 0;
+    groupStartSendMs_ = groupSendMs_ = 0; groupArrivalMs_ = 0; haveGroup_ = false;
 }
 
 void BandwidthEstimator::limitTo(int bps) {
@@ -41,7 +43,7 @@ BandwidthEstimator::Signal BandwidthEstimator::detect(double trend, double dtMs)
     return trend > threshold_ ? Signal::Overuse : trend < -threshold_ ? Signal::Underuse : Signal::Normal;
 }
 
-void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64 nowMs, double rttMs) {
+void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64 nowMs, double rttMs, double lagMs) {
     int lost = 0, got = 0, bytes = 0;
     for (const auto& r : results) {
         sent_.emplace_back(r.sendMs, r.bytes); lastSendMs_ = std::max(lastSendMs_, r.sendMs);
@@ -49,21 +51,36 @@ void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64
         ++got; bytes += r.bytes;
         // The receiver's clock jumped (its reference wrapped or restarted):
         // nothing before compares with what follows.
-        if (haveSample_ && std::abs(r.arrivalMs - previousArrivalMs_) > 3600000.) {
-            haveSample_ = false; samples_.clear(); deltas_ = 0; received_.clear(); lastArrivalMs_ = 0;
+        if (haveSample_ && std::abs(r.arrivalMs - groupArrivalMs_) > 3600000.) {
+            haveSample_ = false; haveGroup_ = false; samples_.clear(); deltas_ = 0; received_.clear(); lastArrivalMs_ = 0;
             accumulatedDelayMs_ = smoothedDelayMs_ = 0;
         }
         received_.emplace_back(r.arrivalMs, r.bytes);
         lastArrivalMs_ = std::max(lastArrivalMs_, r.arrivalMs);
-        if (!haveSample_) { haveSample_ = true; firstArrivalMs_ = r.arrivalMs; previousSendMs_ = r.sendMs; previousArrivalMs_ = r.arrivalMs; continue; }
-        // Arrivals spreading out more than departures: delay is building.
-        const double delta = (r.arrivalMs - previousArrivalMs_) - double(r.sendMs - previousSendMs_);
-        previousSendMs_ = r.sendMs; previousArrivalMs_ = r.arrivalMs;
-        accumulatedDelayMs_ += delta;
-        smoothedDelayMs_ = 0.9 * smoothedDelayMs_ + 0.1 * accumulatedDelayMs_;
-        samples_.emplace_back(r.arrivalMs - firstArrivalMs_, smoothedDelayMs_);
-        while (int(samples_.size()) > TrendWindow) samples_.pop_front();
-        deltas_ = std::min(deltas_ + 1, 60);
+        if (!haveSample_) {
+            haveSample_ = true; firstArrivalMs_ = r.arrivalMs;
+            groupStartSendMs_ = groupSendMs_ = r.sendMs; groupArrivalMs_ = r.arrivalMs; haveGroup_ = false;
+            continue;
+        }
+        // Packets sent within a few milliseconds of each other are one group
+        // (a burst leaves together, and a link that delivers in bursts hands
+        // it over together): the delay deltas are between groups, as in GCC,
+        // or every burst reads as delay building and then falling.
+        if (r.sendMs - groupStartSendMs_ <= BurstMs) {
+            groupSendMs_ = r.sendMs; groupArrivalMs_ = std::max(groupArrivalMs_, r.arrivalMs);
+            continue;
+        }
+        if (haveGroup_) {
+            // Arrivals spreading out more than departures: delay is building.
+            const double delta = (groupArrivalMs_ - previousArrivalMs_) - double(groupSendMs_ - previousSendMs_);
+            accumulatedDelayMs_ += delta;
+            smoothedDelayMs_ = 0.9 * smoothedDelayMs_ + 0.1 * accumulatedDelayMs_;
+            samples_.emplace_back(groupArrivalMs_ - firstArrivalMs_, smoothedDelayMs_);
+            while (int(samples_.size()) > TrendWindow) samples_.pop_front();
+            deltas_ = std::min(deltas_ + 1, 60);
+        }
+        previousSendMs_ = groupSendMs_; previousArrivalMs_ = groupArrivalMs_; haveGroup_ = true;
+        groupStartSendMs_ = groupSendMs_ = r.sendMs; groupArrivalMs_ = r.arrivalMs;
     }
     if (got + lost > 0) loss_ = 0.8 * loss_ + 0.2 * double(lost) / double(got + lost);
     // The receive rate over the last second of arrivals. A link that
@@ -103,6 +120,10 @@ void BandwidthEstimator::onFeedback(const QVector<PacketResult>& results, qint64
     } else {
         overusingSinceMs_ = -1;
     }
+    // A queue building shows as the receiver falling behind live. Within a
+    // tenth of a second of live, a rising trend is the link's own unevenness
+    // (a cellular link delivers in bursts), not a queue of ours.
+    if (signal == Signal::Overuse && lagMs >= 0 && lagMs < 100) signal = Signal::Normal;
     previousTrend_ = trend_;
 
     // Rate control: overuse cuts to a little under what arrives; otherwise
