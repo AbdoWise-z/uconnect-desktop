@@ -677,16 +677,24 @@ void ScreenService::playout(const Peer& peer, Viewer& viewer, qint64 now) {
     if (viewer.present.empty()) return;
     updateClock(viewer, now);
     const double interval = 1000. / std::max(1, viewer.fps);
-    const qint32 wait = playoutWait(viewer, viewer.present.front().captureMs, now);
-    if (wait > 0) return;
-    if (-wait > LagBudgetMs) {
+    const double pace = 0.9 * interval;  // behind, pictures go out this far apart: a tenth faster than captured
+    if (-playoutWait(viewer, viewer.present.front().captureMs, now) > LagBudgetMs) {
+        // Beyond the budget: jump to the newest.
         while (viewer.present.size() > 1) { viewer.present.pop_front(); ++viewer.skipped; }
-    } else if (viewer.lastShownAt && now - viewer.lastShownAt < 0.9 * interval) {
-        return;  // catching up, a tenth faster than captured
+        viewer.lastShownAt = 0;
     }
-    if (-wait > interval) ++viewer.late;
-    emit frameReady(hex(peer), viewer.present.front().picture); ++stats_.shown; ++viewer.shown;
-    viewer.present.pop_front(); viewer.lastShownAt = now;
+    // The timer driving this is coarser than a frame on some systems: as
+    // many due pictures as the pace allows since the last one go out now.
+    if (!viewer.lastShownAt || now - viewer.lastShownAt > 1000) viewer.lastShownAt = now - qint64(pace);
+    int shown = 0;
+    while (!viewer.present.empty()) {
+        const qint32 wait = playoutWait(viewer, viewer.present.front().captureMs, now);
+        if (wait > 0 || double(now - viewer.lastShownAt) < pace * (shown + 1)) break;
+        if (-wait > interval) ++viewer.late;
+        emit frameReady(hex(peer), viewer.present.front().picture); ++stats_.shown; ++viewer.shown;
+        viewer.present.pop_front(); ++shown;
+    }
+    if (shown) viewer.lastShownAt = std::min(now, viewer.lastShownAt + qint64(pace * shown));
 }
 
 void ScreenService::pathChanged(const Peer& peer, const QString& path) {
