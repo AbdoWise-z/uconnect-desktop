@@ -41,7 +41,7 @@ endif ()
 FetchContent_Declare(
     uconnect
     GIT_REPOSITORY https://github.com/AbdoWise-z/uconnect.git
-    GIT_TAG 06c7acae2f0e3fc69e6cc04c89da11d027b3747e
+    GIT_TAG 9f5d23045abed8de4b1806c1eb47da0543574b15
 )
 FetchContent_MakeAvailable(uconnect)
 # uconnect's targets use ${CMAKE_SOURCE_DIR}/include, which only points at its
