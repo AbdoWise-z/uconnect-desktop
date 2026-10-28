@@ -291,6 +291,7 @@ private slots:
         SyncFolder f(config(), "A", state);
         f.setLocal(file("a.txt", "one", {{"A", 1}}));
         f.applyRemote(kBob, 7, true, {file("a.txt", "one", {{"A", 1}})});
+        f.peerStats[kBob] = {1000, 2000, 3};
         QVERIFY(f.save());
         SyncFolder g(config(), "A", state);
         QVERIFY(g.load());
@@ -299,6 +300,57 @@ private slots:
         QCOMPARE(g.local["a.txt"].hash, f.local["a.txt"].hash);
         QCOMPARE(g.remotes[kBob].epoch, quint64(7));
         QCOMPARE(g.remotes[kBob].entries.size(), 1);
+        QCOMPARE(g.peerStats[kBob].lastSeen, qint64(1000));
+        QCOMPARE(g.peerStats[kBob].lastInSync, qint64(2000));
+        QCOMPARE(g.peerStats[kBob].sentSeq, quint64(3));
+    }
+
+    // The editor shows which line decided a path, and which lines are no use.
+    void explainsRules() {
+        const IgnoreRules r(QStringLiteral("# comment\n*.tmp\n!keep.tmp\n/build\n\n!\ncache/\n"));
+        QCOMPARE(r.problems().size(), 1);
+        QCOMPARE(r.problems().first().line, 6);
+        QCOMPARE(r.problems().first().pattern, QStringLiteral("!"));
+
+        IgnoreRules::Match m = r.explain("a.tmp", false);
+        QCOMPARE(m.line, 2);
+        QCOMPARE(m.pattern, QStringLiteral("*.tmp"));
+        QVERIFY(!m.negate);
+        QVERIFY(m.via.isEmpty());
+
+        m = r.explain("keep.tmp", false);  // brought back by the later line
+        QCOMPARE(m.line, 3);
+        QVERIFY(m.negate);
+
+        m = r.explain("build/out/keep.tmp", false);  // the folder above decides
+        QCOMPARE(m.line, 4);
+        QCOMPARE(m.via, QStringLiteral("build"));
+        QVERIFY(!m.negate);
+
+        m = r.explain("x/cache", false);  // folders only: a file of that name is free
+        QCOMPARE(m.line, 0);
+        QCOMPARE(r.explain("x/cache", true).line, 7);
+        QCOMPARE(r.explain("readme.md", false).line, 0);
+        QCOMPARE(IgnoreRules().explain("a.tmp", false).line, 0);
+    }
+
+    // A paused member is sent nothing and nothing is taken from it, but its
+    // grants stay for when it resumes.
+    void pausedGrantsGrantNothing() {
+        Grant g{true, true, true};
+        QVERIFY(g.receive && g.contribute);
+        QVERIFY(!g.sends() && !g.accepts());
+        g.paused = false;
+        QVERIFY(g.sends() && g.accepts());
+
+        FolderConfig c = config();
+        c.peers[kBob].paused = true;
+        QTemporaryDir dir;
+        SyncFolder f(c, "A", dir.filePath("p.cbor"));
+        f.applyRemote(kBob, 1, true, {file("new.txt", "theirs", {{"B", 1}})});
+        QCOMPARE(f.decide("new.txt", neverConnected).kind, Decision::None);
+        f.config.peers[kBob].paused = false;
+        QCOMPARE(f.decide("new.txt", neverConnected).kind, Decision::Apply);
     }
 };
 

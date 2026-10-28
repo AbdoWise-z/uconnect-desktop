@@ -208,7 +208,7 @@ QVector<Candidate> SyncFolder::candidatesFor(const QString& path) const {
     const auto l = local.constFind(path);
     if (l != local.cend() && !l->skipped) all << Candidate{{}, *l};
     for (auto r = remotes.cbegin(); r != remotes.cend(); ++r) {
-        if (!config.peers.value(r.key()).contribute) continue;
+        if (!config.peers.value(r.key()).accepts()) continue;
         const auto e = r->entries.constFind(path);
         if (e != r->entries.cend() && !e->skipped) all << Candidate{r.key(), *e};
     }
@@ -219,7 +219,7 @@ QStringList SyncFolder::holdersOf(const FileEntry& content) const {
     QStringList out;
     if (content.deleted || content.dir) return out;
     for (auto r = remotes.cbegin(); r != remotes.cend(); ++r) {
-        if (!config.peers.value(r.key()).contribute) continue;
+        if (!config.peers.value(r.key()).accepts()) continue;
         const auto e = r->entries.constFind(content.path);
         if (e != r->entries.cend() && !e->skipped && e->sameContent(content)) out << r.key();
     }
@@ -412,6 +412,14 @@ bool SyncFolder::load() {
     const QCborMap fs = m.value(QStringLiteral("forced")).toMap();
     for (auto it = fs.begin(); it != fs.end(); ++it)
         forced.insert(it.key().toString(), FileEntry::fromCbor(it.value().toMap()));
+    peerStats.clear();
+    const QCborMap ps = m.value(QStringLiteral("peers")).toMap();
+    for (auto it = ps.begin(); it != ps.end(); ++it) {
+        const QCborMap pm = it.value().toMap();
+        peerStats.insert(it.key().toString(), {pm.value(QStringLiteral("lastSeen")).toInteger(),
+                                               pm.value(QStringLiteral("lastInSync")).toInteger(),
+                                               quint64(pm.value(QStringLiteral("sentSeq")).toInteger())});
+    }
     return true;
 }
 
@@ -436,6 +444,12 @@ bool SyncFolder::save() const {
     QCborMap fs;
     for (auto it = forced.cbegin(); it != forced.cend(); ++it) fs.insert(it.key(), it->toCbor());
     m.insert(QStringLiteral("forced"), fs);
+    QCborMap ps;
+    for (auto it = peerStats.cbegin(); it != peerStats.cend(); ++it)
+        ps.insert(it.key(), QCborMap{{QStringLiteral("lastSeen"), it->lastSeen},
+                                     {QStringLiteral("lastInSync"), it->lastInSync},
+                                     {QStringLiteral("sentSeq"), qint64(it->sentSeq)}});
+    m.insert(QStringLiteral("peers"), ps);
 
     QSaveFile f(stateFile_);
     if (!f.open(QIODevice::WriteOnly)) return false;

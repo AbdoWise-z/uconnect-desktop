@@ -421,9 +421,10 @@ member through any chain of members that are online.
   - **accept:** take the peer's changes into this device's copy.
 
   A device that is sent a folder but not accepted from keeps a copy without
-  changing anyone else's. When a device changes its grants, it sends
-  `sync.offers` again to connected peers, and `sync.hello` for any folder
-  it had not yet greeted that peer in.
+  changing anyone else's. A device may also **pause** a peer in a folder:
+  its grants are kept but grant nothing until it is resumed. When a device
+  changes its grants, it sends `sync.offers` again to connected peers, and
+  `sync.hello` again for any folder whose grants for that peer changed.
 - **Member id.** A member's id in version vectors is the first 16 hex digits
   of SHA-256(its 32-byte public key).
 
@@ -431,7 +432,7 @@ member through any chain of members that are online.
 
 | message | meaning |
 |---|---|
-| `{"t":"sync.offers", "folders":[{"id","label"}]}` | the folders this device sends the peer; sent on connect and when that changes |
+| `{"t":"sync.offers", "folders":[{"id","label"}]}` | the folders this device sends the peer; sent on connect and when that changes. A folder that was in the sender's offers and is no longer is one the receiver MUST forget the sender's index of: it is not the sender's to act on any more, and the sender's next `sync.hello` for it brings a full index (sync 1.2) |
 | `{"t":"sync.hello", "folder", "epoch", "peerEpoch", "seen", "reply"}` | "I take part in this folder." `epoch`: the sender's index epoch. `peerEpoch`/`seen`: how much of the receiver's index the sender has (`""`/0 if none). A device answers a hello (with `reply:true`) while it accepts from the sender but has not had its index yet, since its own hello may have come before the sender had the folder; a reply is never answered |
 | `{"t":"sync.index", "folder", "epoch", "full", "entries":[...]}` | index entries. `full:true` on the first message of a complete resend: the receiver drops what it held of that index |
 | `{"t":"sync.get", "id", "folder", "path", "block", "offset", "size", "hash"}` | ask for one block of a file |
@@ -969,6 +970,7 @@ request gets `busy`.
 | storage 1.3 | `sha256` on `fs.read.end` and `fs.write.end`; `fs.read` `offset`; codes `corrupt`, `too_large`, `no_space`, `read_only`; `readOnly` in listings |
 | screen/camera 1.0 | consented screen/camera sessions, H.264 datagrams, feedback/recovery, control, cursor, shared sources (section 7) |
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
+| sync 1.2 | a folder that leaves a peer's `sync.offers` is forgotten by the receiver; `sync.hello` again after a grant change; a peer may be paused in a folder. No message changed shape |
 | display 1.0 | extended display (7.6): `display` service, `display.show` / `display.direct`, `dsp.request`, `dsp.wait`, `dsp.err`, `dsp.accept`, the screen session under `dsp.*`, datagram kinds 4 and 5 |
 | rules 1.0 | trust replaced by special rules; network rules per topic (4.2); `rules.get`, `rules.list`, `rules.err`. Sync membership needs a proven identity, special rules and the folder's grants (sync 1.1); sharing needs a proven identity, and any source may grant sensitive permissions, defaults included (screen/camera 1.1, display 1.1). Only local policy changed: no message changed shape |
 | screen/camera 1.2 | the viewer chooses the frame rate, width and (new `maxBitrate`) bitrate to receive, within the host's limits; `scr.stats` and the playout fields of `scr.report` (7.2); frames converted in parallel but sent in order; higher starting bitrates |

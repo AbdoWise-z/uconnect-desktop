@@ -152,6 +152,26 @@ int conflictsOf(const Node& n) {
     return int(n.status.value("conflicts").toList().size());
 }
 
+// path -> state, as the user would see it.
+QHash<QString, QString> statesOf(const Node& n) {
+    QHash<QString, QString> out;
+    for (const QVariant& v : n.svc->files(kFolder))
+        out.insert(v.toMap().value("path").toString(), v.toMap().value("state").toString());
+    return out;
+}
+
+QVariantMap rowOf(const Node& n, const QString& path) {
+    for (const QVariant& v : n.svc->files(kFolder))
+        if (v.toMap().value("path").toString() == path) return v.toMap();
+    return {};
+}
+
+QVariantMap memberOf(const Node& n, const QString& key) {
+    for (const QVariant& v : n.status.value("members").toList())
+        if (v.toMap().value("key").toString() == key) return v.toMap();
+    return {};
+}
+
 }  // namespace
 
 class SyncServiceTest : public QObject {
@@ -533,6 +553,273 @@ private slots:
         QVERIFY(!QFile::exists(n.dir.filePath("planted.txt")));
         QVERIFY(!QFile::exists(outside + "/planted.txt"));
         if (linked) QVERIFY(!QFile::exists(at(0, "escape/secret.txt")));  // bob's link is not synced
+    }
+
+    // --- what the user sees -------------------------------------------------------------
+
+    void listsFilesWithTheirState() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        write(at(0, "a.txt"), "alpha");
+        write(at(0, "sub/b.txt"), "bravo");
+        write(at(0, "x.log"), "log");
+        write(at(0, "mine.txt"), "mine");
+        write(at(0, ".syncignore"), "*.log\n");
+        write(at(0, ".syncskip"), "mine.txt\n");
+        n.join(0);
+        n.join(1);
+        // Alone: everything of hers is still to be sent to bob.
+        QTRY_VERIFY_WITH_TIMEOUT(statesOf(*n.nodes[0]).contains("sub/b.txt"), 5000);
+        QHash<QString, QString> states = statesOf(*n.nodes[0]);
+        QCOMPARE(states.value("a.txt"), QStringLiteral("send"));
+        QCOMPARE(states.value("sub/b.txt"), QStringLiteral("send"));
+        QCOMPARE(states.value("sub"), QStringLiteral("send"));
+        QCOMPARE(states.value("x.log"), QStringLiteral("ignored"));
+        QCOMPARE(rowOf(*n.nodes[0], "x.log").value("detail").toString(), QStringLiteral("*.log"));
+        QCOMPARE(states.value("mine.txt"), QStringLiteral("skipped"));
+        QCOMPARE(rowOf(*n.nodes[0], "mine.txt").value("detail").toString(), QStringLiteral("mine.txt"));
+        QVERIFY(rowOf(*n.nodes[0], "sub").value("dir").toBool());
+        QCOMPARE(rowOf(*n.nodes[0], "a.txt").value("size").toLongLong(), qint64(5));
+        QTRY_COMPARE_WITH_TIMEOUT(memberOf(*n.nodes[0], n.nodes[1]->key).value("toSendFiles").toLongLong(), qint64(3), 5000);
+        QVERIFY(!memberOf(*n.nodes[0], n.nodes[1]->key).value("online").toBool());
+
+        n.link(0, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "sub/b.txt")), QByteArray("bravo"), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(statesOf(*n.nodes[0]).value("sub/b.txt"), QStringLiteral("synced"), 5000);
+        states = statesOf(*n.nodes[0]);
+        QCOMPARE(states.value("a.txt"), QStringLiteral("synced"));
+        QCOMPARE(states.value(".syncignore"), QStringLiteral("synced"));
+        QCOMPARE(states.value("x.log"), QStringLiteral("ignored"));
+        QCOMPARE(states.value("mine.txt"), QStringLiteral("skipped"));
+        QVERIFY(!states.contains(".syncskip"));
+        states = statesOf(*n.nodes[1]);
+        QCOMPARE(states.value("a.txt"), QStringLiteral("synced"));
+        QVERIFY(!states.contains("x.log"));  // never came, and is not here
+        QVERIFY(!states.contains("mine.txt"));
+        QTRY_COMPARE_WITH_TIMEOUT(memberOf(*n.nodes[0], n.nodes[1]->key).value("toSendFiles").toLongLong(), qint64(0), 5000);
+        QVERIFY(memberOf(*n.nodes[0], n.nodes[1]->key).value("online").toBool());
+        QTRY_VERIFY_WITH_TIMEOUT(memberOf(*n.nodes[0], n.nodes[1]->key).value("lastInSync").toLongLong() > 0, 5000);
+        // Skipped before it ever synced, mine.txt is in nobody's index.
+        QCOMPARE(memberOf(*n.nodes[1], n.nodes[0]->key).value("skipped").toLongLong(), qint64(0));
+
+        // A path in depth.
+        const QVariantMap info = n.nodes[1]->svc->fileInfo(kFolder, "a.txt");
+        QCOMPARE(info.value("state").toString(), QStringLiteral("synced"));
+        QCOMPARE(info.value("holders").toList().size(), 1);
+        QCOMPARE(info.value("version").toMap().size(), 1);
+
+        // Bob's copy of the index outlives the connection: what he has yet
+        // to fetch waits for alice to come back.
+        n.unlink(0, 1);
+        write(at(0, "late.txt"), "late");
+        QTRY_COMPARE_WITH_TIMEOUT(statesOf(*n.nodes[0]).value("late.txt"), QStringLiteral("send"), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(memberOf(*n.nodes[0], n.nodes[1]->key).value("toSendFiles").toLongLong(), qint64(1), 5000);
+        FolderConfig paused = n.config(1);
+        paused.paused       = true;  // takes the index, fetches nothing
+        n.nodes[1]->svc->setFolders({paused});
+        n.link(0, 1);
+        QTRY_VERIFY_WITH_TIMEOUT(!n.nodes[1]->svc->fileInfo(kFolder, "late.txt").value("holders").toList().isEmpty(), 10000);
+        n.unlink(0, 1);
+        n.join(1);
+        QTRY_COMPARE_WITH_TIMEOUT(statesOf(*n.nodes[1]).value("late.txt"), QStringLiteral("receive"), 5000);
+        QCOMPARE(rowOf(*n.nodes[1], "late.txt").value("detail").toString(), QStringLiteral("waiting"));
+        QTRY_COMPARE_WITH_TIMEOUT(memberOf(*n.nodes[1], n.nodes[0]->key).value("toReceiveFiles").toLongLong(), qint64(1), 5000);
+        QVERIFY(!QFile::exists(at(1, "late.txt")));
+        n.link(0, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "late.txt")), QByteArray("late"), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(statesOf(*n.nodes[1]).value("late.txt"), QStringLiteral("synced"), 5000);
+    }
+
+    void holdsBackLargeDeletes() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        for (int i = 0; i < 12; ++i) write(at(0, QStringLiteral("f%1.txt").arg(i)), "file");
+        n.join(0);
+        n.join(1);
+        n.link(0, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "f11.txt")), QByteArray("file"), 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->status.value("files").toLongLong(), qint64(12), 5000);
+
+        // Alice wipes most of her copy: bob keeps his files and asks.
+        for (int i = 0; i < 11; ++i) QVERIFY(QFile::remove(at(0, QStringLiteral("f%1.txt").arg(i))));
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->status.value("pendingDeleteCount").toLongLong(), qint64(11), 10000);
+        QTRY_VERIFY(n.nodes[1]->events.join(";").contains(" deletes:11"));
+        QTest::qWait(500);
+        QCOMPARE(contents(at(1, "f0.txt")), QByteArray("file"));
+        QCOMPARE(n.nodes[1]->status.value("pendingDeletes").toList().size(), 11);
+
+        // Keeping them makes them bob's changes: alice gets them back.
+        n.nodes[1]->svc->confirmDeletes(kFolder, false);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(0, "f0.txt")), QByteArray("file"), 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(0, "f10.txt")), QByteArray("file"), 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->status.value("pendingDeleteCount").toLongLong(), qint64(0), 5000);
+        QCOMPARE(n.nodes[1]->status.value("files").toLongLong(), qint64(12));
+
+        // Deleting them again, and this time letting it happen.
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[0]->status.value("files").toLongLong(), qint64(12), 5000);
+        QTest::qWait(300);
+        for (int i = 0; i < 11; ++i) QVERIFY(QFile::remove(at(0, QStringLiteral("f%1.txt").arg(i))));
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->status.value("pendingDeleteCount").toLongLong(), qint64(11), 10000);
+        n.nodes[1]->svc->confirmDeletes(kFolder, true);
+        QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(at(1, "f0.txt")), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->status.value("files").toLongLong(), qint64(1), 5000);
+        QCOMPARE(contents(at(1, "f11.txt")), QByteArray("file"));
+        QCOMPARE(n.nodes[1]->status.value("pendingDeleteCount").toLongLong(), qint64(0));
+
+        // A few deletes in a big folder pass without asking.
+        for (int i = 0; i < 40; ++i) write(at(0, QStringLiteral("g%1.txt").arg(i)), "more");
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->status.value("files").toLongLong(), qint64(41), 15000);
+        QTest::qWait(300);
+        for (int i = 0; i < 5; ++i) QVERIFY(QFile::remove(at(0, QStringLiteral("g%1.txt").arg(i))));
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->status.value("files").toLongLong(), qint64(36), 10000);
+        QCOMPARE(n.nodes[1]->status.value("pendingDeleteCount").toLongLong(), qint64(0));
+    }
+
+    void keepsAndRestoresKeptFiles() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        write(at(0, "docs/x.txt"), "first");
+        write(at(0, "y.txt"), "why");
+        n.join(0);
+        n.join(1);
+        n.link(0, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "docs/x.txt")), QByteArray("first"), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "y.txt")), QByteArray("why"), 10000);
+        QTest::qWait(300);
+        QVERIFY(QFile::remove(at(0, "docs/x.txt")));
+        QTRY_VERIFY_WITH_TIMEOUT(!QFile::exists(at(1, "docs/x.txt")), 10000);
+
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->svc->keptFiles(kFolder).size(), 1, 5000);
+        const QVariantMap kept = n.nodes[1]->svc->keptFiles(kFolder).first().toMap();
+        QCOMPARE(kept.value("path").toString(), QStringLiteral("docs/x.txt"));
+        QCOMPARE(kept.value("size").toLongLong(), qint64(5));
+        QVERIFY(kept.value("kept").toString().startsWith("docs/x~"));
+        QVERIFY(kept.value("time").toLongLong() > 0);
+        QCOMPARE(n.nodes[1]->svc->fileInfo(kFolder, "docs/x.txt").value("kept").toList().size(), 1);
+
+        // Restored, it is bob's change: alice gets it back.
+        QVERIFY(n.nodes[1]->svc->restoreKept(kFolder, kept.value("kept").toString()));
+        QCOMPARE(contents(at(1, "docs/x.txt")), QByteArray("first"));
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(0, "docs/x.txt")), QByteArray("first"), 15000);
+        QCOMPARE(n.nodes[1]->svc->keptFiles(kFolder).size(), 0);
+        QVERIFY(!n.nodes[1]->svc->restoreKept(kFolder, "../y.txt"));  // never out of .synctrash
+        QCOMPARE(contents(at(1, "y.txt")), QByteArray("why"));
+
+        // Discarding one.
+        QTest::qWait(300);
+        QVERIFY(QFile::remove(at(0, "y.txt")));
+        QTRY_COMPARE_WITH_TIMEOUT(n.nodes[1]->svc->keptFiles(kFolder).size(), 1, 10000);
+        QVERIFY(n.nodes[1]->svc->discardKept(kFolder, n.nodes[1]->svc->keptFiles(kFolder).first().toMap().value("kept").toString()));
+        QCOMPARE(n.nodes[1]->svc->keptFiles(kFolder).size(), 0);
+    }
+
+    void previewsAndSavesRules() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        write(at(0, "a.txt"), "a");
+        write(at(0, "b.log"), "b");
+        write(at(0, "docs/c.txt"), "c");
+        write(at(0, "docs/d.log"), "d");
+        n.join(0);
+        n.join(1);
+        n.link(0, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "docs/d.log")), QByteArray("d"), 10000);
+
+        const QVariantMap preview = n.nodes[0]->svc->previewRules(kFolder, false, "*.log\n!\n/docs/\n", "docs/new.txt");
+        QCOMPARE(preview.value("problems").toList().size(), 1);
+        QCOMPARE(preview.value("problems").toList().first().toMap().value("line").toInt(), 2);
+        QCOMPARE(preview.value("stop").toLongLong(), qint64(3));  // b.log, docs/c.txt, docs/d.log
+        QCOMPARE(preview.value("resume").toLongLong(), qint64(0));
+        QHash<QString, QVariantMap> matches;
+        for (const QVariant& v : preview.value("matches").toList()) matches.insert(v.toMap().value("path").toString(), v.toMap());
+        QCOMPARE(matches.value("b.log").value("line").toInt(), 1);
+        QCOMPARE(matches.value("docs").value("line").toInt(), 3);
+        QCOMPARE(matches.value("docs/c.txt").value("via").toString(), QStringLiteral("docs"));
+        QVERIFY(!matches.contains("a.txt"));
+        const QVariantMap probe = preview.value("probe").toMap();
+        QCOMPARE(probe.value("line").toInt(), 3);
+        QVERIFY(probe.value("excluded").toBool());
+
+        QVERIFY(n.nodes[0]->svc->saveRules(kFolder, false, "*.log\n"));
+        QCOMPARE(n.nodes[0]->svc->rulesText(kFolder, false), QStringLiteral("*.log\n"));
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, ".syncignore")), QByteArray("*.log\n"), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(statesOf(*n.nodes[0]).value("b.log"), QStringLiteral("ignored"), 5000);
+        QTRY_COMPARE_WITH_TIMEOUT(statesOf(*n.nodes[1]).value("docs/d.log"), QStringLiteral("ignored"), 5000);
+        QVERIFY(QFile::exists(at(1, "docs/d.log")));  // ignoring never deletes
+        // Left out now, it would come back without the rule.
+        QCOMPARE(n.nodes[0]->svc->previewRules(kFolder, false, "").value("resume").toLongLong(), qint64(2));
+
+        // "Skip on this device" for one file.
+        QVERIFY(n.nodes[1]->svc->addRule(kFolder, true, "docs/c.txt"));
+        QCOMPARE(n.nodes[1]->svc->rulesText(kFolder, true), QStringLiteral("/docs/c.txt\n"));
+        QTRY_COMPARE_WITH_TIMEOUT(statesOf(*n.nodes[1]).value("docs/c.txt"), QStringLiteral("skipped"), 5000);
+        QCOMPARE(rowOf(*n.nodes[1], "docs/c.txt").value("detail").toString(), QStringLiteral("/docs/c.txt"));
+        QTest::qWait(600);
+        QVERIFY(!QFile::exists(at(0, ".syncskip")));
+        QCOMPARE(statesOf(*n.nodes[0]).value("docs/c.txt"), QStringLiteral("synced"));
+        // Alice sees that bob holds one path back.
+        QTRY_COMPARE_WITH_TIMEOUT(memberOf(*n.nodes[0], n.nodes[1]->key).value("skipped").toLongLong(), qint64(1), 5000);
+    }
+
+    void pausesOneDevice() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        write(at(0, "a.txt"), "a");
+        n.join(0);
+        n.join(1);
+        n.link(0, 1);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "a.txt")), QByteArray("a"), 10000);
+
+        FolderConfig c = n.config(0);
+        c.peers[n.nodes[1]->key].paused = true;
+        n.nodes[0]->svc->setFolders({c});
+        QTRY_VERIFY_WITH_TIMEOUT(memberOf(*n.nodes[0], n.nodes[1]->key).value("paused").toBool(), 5000);
+        // Bob, no longer offered the folder, forgets alice's index of it.
+        QTRY_VERIFY_WITH_TIMEOUT(n.nodes[1]->svc->fileInfo(kFolder, "a.txt").value("holders").toList().isEmpty(), 5000);
+        write(at(0, "b.txt"), "b");
+        write(at(1, "c.txt"), "c");
+        QTRY_COMPARE_WITH_TIMEOUT(statesOf(*n.nodes[0]).value("b.txt"), QStringLiteral("synced"), 5000);  // nobody to send to
+        QTest::qWait(1500);
+        QVERIFY(!QFile::exists(at(1, "b.txt")));
+        QVERIFY(!QFile::exists(at(0, "c.txt")));
+
+        c.peers[n.nodes[1]->key].paused = false;
+        n.nodes[0]->svc->setFolders({c});
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "b.txt")), QByteArray("b"), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(0, "c.txt")), QByteArray("c"), 10000);
+    }
+
+    void listsTransfers() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        const QByteArray big = randomBytes(6 * 1024 * 1024, 3);
+        write(at(0, "big.bin"), big);
+        n.join(0);
+        n.join(1);
+        n.link(0, 1);
+        bool seen = false;
+        for (int i = 0; i < 400 && !seen; ++i) {
+            QTest::qWait(10);
+            for (const QVariant& v : n.nodes[1]->svc->transfers()) {
+                const QVariantMap t = v.toMap();
+                if (t.value("path").toString() != "big.bin" || !t.value("active").toBool()) continue;
+                seen = true;
+                QCOMPARE(t.value("folder").toString(), kFolder);
+                QCOMPARE(t.value("size").toLongLong(), qint64(big.size()));
+                QCOMPARE(t.value("key").toString(), n.nodes[0]->key);
+                QVERIFY(t.value("done").toLongLong() <= big.size());
+            }
+        }
+        QVERIFY(seen);
+        QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "big.bin")), big, 20000);
+        QTRY_VERIFY_WITH_TIMEOUT(n.nodes[1]->svc->transfers().isEmpty(), 5000);
+        QVERIFY(memberOf(*n.nodes[1], n.nodes[0]->key).value("rate").toLongLong() >= 0);
     }
 };
 

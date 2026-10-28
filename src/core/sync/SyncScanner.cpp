@@ -42,7 +42,10 @@ struct Walker {
             if (name.startsWith(QLatin1String(kPartPrefix))) continue;
             if (relDir.isEmpty() && (name == QLatin1String(kSkipFile) || name == QLatin1String(kKeptDir))) continue;
             const bool dir = fi.isDir();
-            if (ignore.matches(rel, dir) || skip.matches(rel, dir)) continue;
+            if (const bool ignored = ignore.matches(rel, dir); ignored || skip.matches(rel, dir)) {
+                out.leftOut.insert(rel, {dir, dir ? 0 : fi.size(), !ignored});
+                continue;
+            }
             if (const QString problem = nameProblem(name); !problem.isEmpty()) {
                 out.unsupported.insert(rel, problem);  // and nothing inside it, if a folder
                 continue;

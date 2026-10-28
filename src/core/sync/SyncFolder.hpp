@@ -21,7 +21,10 @@ namespace ucd::sync {
 struct Grant {
     bool receive    = false;  // send it this folder and our changes
     bool contribute = false;  // accept its changes
+    bool paused     = false;  // neither, for now; the grants are kept
     bool operator==(const Grant&) const = default;
+    bool sends() const { return receive && !paused; }
+    bool accepts() const { return contribute && !paused; }
 };
 
 struct FolderConfig {
@@ -75,6 +78,16 @@ public:
         QHash<QString, FileEntry> entries;
     };
     QHash<QString, Remote> remotes;  // by identity key
+
+    // What is remembered about each member, ms since epoch: when it was last
+    // connected, and when this device last had nothing to send it or take
+    // from it.
+    struct PeerStats {
+        qint64  lastSeen   = 0;
+        qint64  lastInSync = 0;
+        quint64 sentSeq    = 0;  // our index up to here has reached it
+    };
+    QHash<QString, PeerStats> peerStats;  // by identity key
 
     IgnoreRules ignore;  // .syncignore and .syncskip, as the owner last read them
     IgnoreRules skip;

@@ -48,10 +48,14 @@ QString globToRegex(const QString& glob) {
 }  // namespace
 
 IgnoreRules::IgnoreRules(const QString& text) : text_(text) {
+    int lineNo = 0;
     for (QString line : text.split(QLatin1Char('\n'))) {
+        ++lineNo;
         line = line.trimmed();
         if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
         Rule rule;
+        rule.line    = lineNo;
+        rule.pattern = line;
         if (line.startsWith(QLatin1Char('!'))) {
             rule.negate = true;
             line        = line.mid(1);
@@ -60,7 +64,10 @@ IgnoreRules::IgnoreRules(const QString& text) : text_(text) {
             rule.dirOnly = true;
             line.chop(1);
         }
-        if (line.isEmpty()) continue;
+        if (line.isEmpty()) {
+            problems_ << Problem{lineNo, rule.pattern};
+            continue;
+        }
         // A slash before the end anchors the pattern at the top.
         const bool anchored = line.contains(QLatin1Char('/'));
         if (line.startsWith(QLatin1Char('/'))) line = line.mid(1);
@@ -71,16 +78,45 @@ IgnoreRules::IgnoreRules(const QString& text) : text_(text) {
                                             body + QStringLiteral("$"),
                                         options);
         if (rule.regex.isValid()) rules_ << rule;
+        else problems_ << Problem{lineNo, rule.pattern};
     }
 }
 
-bool IgnoreRules::matchesItself(const QString& path, bool isDir) const {
-    bool result = false;
+const IgnoreRules::Rule* IgnoreRules::lastMatching(const QString& path, bool isDir) const {
+    const Rule* last = nullptr;
     for (const Rule& rule : rules_) {
         if (rule.dirOnly && !isDir) continue;
-        if (rule.regex.match(path).hasMatch()) result = !rule.negate;
+        if (rule.regex.match(path).hasMatch()) last = &rule;
     }
-    return result;
+    return last;
+}
+
+bool IgnoreRules::matchesItself(const QString& path, bool isDir) const {
+    const Rule* last = lastMatching(path, isDir);
+    return last && !last->negate;
+}
+
+IgnoreRules::Match IgnoreRules::explain(const QString& path, bool isDir) const {
+    Match m;
+    if (rules_.isEmpty()) return m;
+    auto fill = [&](const Rule* rule, const QString& via) {
+        m.line    = rule->line;
+        m.pattern = rule->pattern;
+        m.negate  = rule->negate;
+        m.via     = via;
+    };
+    // A folder above it that is excluded decides, whatever the rules say
+    // about the path itself.
+    qsizetype from = 0;
+    for (qsizetype slash; (slash = path.indexOf(QLatin1Char('/'), from)) >= 0; from = slash + 1) {
+        const QString parent = path.left(slash);
+        if (const Rule* rule = lastMatching(parent, true); rule && !rule->negate) {
+            fill(rule, parent);
+            return m;
+        }
+    }
+    if (const Rule* rule = lastMatching(path, isDir)) fill(rule, {});
+    return m;
 }
 
 bool IgnoreRules::matches(const QString& path, bool isDir) const {

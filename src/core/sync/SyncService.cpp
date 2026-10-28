@@ -11,6 +11,8 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QSaveFile>
+#include <QStorageInfo>
 #include <QTimer>
 
 #include "core/FsUtil.hpp"
@@ -34,6 +36,18 @@ constexpr qint64 kPumpBudget    = 8 * 1024 * 1024;  // bytes sent per event-loop
 constexpr auto   kRequestTimeout = 30s;
 constexpr auto   kSaveEvery      = 2s;
 constexpr auto   kCleanEvery     = 1h;
+constexpr auto   kRateWindow     = 5s;    // rates are averaged over this long
+constexpr auto   kEmitEvery      = 400ms; // progress reaches the UI this often
+constexpr auto   kFreeEvery      = 10s;   // how often the disk's free space is read
+constexpr int    kMaxListed      = 5000;  // rule-preview matches reported
+// A kept file's name: <base>~yyyyMMdd-HHmmss[ (n)][.ext]
+const QRegularExpression kKeptName(QStringLiteral("^(.*)~(\\d{8}-\\d{6})(?: \\(\\d+\\))?(\\.[^.]*)?$"));
+
+QVariantMap versionMap(const VersionVector& v) {
+    QVariantMap out;
+    for (auto it = v.cbegin(); it != v.cend(); ++it) out.insert(it.key(), qint64(it.value()));
+    return out;
+}
 
 std::optional<quint32> idOf(const QJsonObject& o) {
     const qint64 v = o.value("id").toInteger(-1);
@@ -57,6 +71,20 @@ std::vector<uint8_t> dataFrame(quint32 id, const char* bytes, qsizetype size) {
 }
 
 }  // namespace
+
+void SyncService::Meter::add(qint64 bytes) {
+    const auto now = Clock::now();
+    samples.emplace_back(now, bytes);
+    while (!samples.empty() && now - samples.front().first > kRateWindow) samples.pop_front();
+}
+
+qint64 SyncService::Meter::rate() const {
+    const auto now = Clock::now();
+    qint64 sum = 0;
+    for (const auto& [when, bytes] : samples)
+        if (now - when <= kRateWindow) sum += bytes;
+    return sum / std::chrono::duration_cast<std::chrono::seconds>(kRateWindow).count();
+}
 
 SyncService::SyncService(SendFn send, PeerKeyFn peerKey, SinceFn since, QObject* parent)
     : QObject(parent),
@@ -131,11 +159,21 @@ void SyncService::setFolders(const QVector<FolderConfig>& configs) {
         }
     }
     for (const FolderConfig& c : configs) {
+        QHash<QString, Grant> before;
         if (Folder* f = folder(c.id)) {
+            before           = f->state->config.peers;
             f->state->config = c;
             f->replan        = true;
         } else {
             openFolder(c);
+        }
+        // A peer that is no longer sent the folder stops getting its index
+        // (the offers tell it to forget what it had); one whose grants
+        // changed is greeted again, so both sides learn where they stand.
+        for (auto& [dev, peer] : peers_) {
+            const Grant g = c.peers.value(peer.key);
+            if (!g.sends()) peer.listening.remove(c.id);
+            if (g != before.value(peer.key)) peer.helloSent.remove(c.id);
         }
     }
     for (auto& [dev, peer] : peers_) {
@@ -165,7 +203,14 @@ void SyncService::peerUp(const uconnect::DevId& dev) {
     }
     sendOffers(dev);
     sendHellos(dev);
-    for (auto& [id, f] : folders_) f.replan = true;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto& [id, f] : folders_) {
+        f.replan = true;
+        if (f.state->config.peers.contains(key)) {
+            f.state->peerStats[key].lastSeen = now;
+            f.dirty = true;
+        }
+    }
 }
 
 void SyncService::peerGone(const uconnect::DevId& dev) {
@@ -179,7 +224,14 @@ void SyncService::peerGone(const uconnect::DevId& dev) {
     peers_.erase(it);
     if (devOfKey_.value(key) == dev) devOfKey_.remove(key);
     emit offersChanged(key, {});
-    for (auto& [id, f] : folders_) f.replan = true;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto& [id, f] : folders_) {
+        f.replan = true;
+        if (f.state->config.peers.contains(key)) {
+            f.state->peerStats[key].lastSeen = now;
+            f.dirty = true;
+        }
+    }
 }
 
 void SyncService::reset() {
@@ -205,7 +257,7 @@ void SyncService::sendOffers(const uconnect::DevId& dev) {
     if (it == peers_.end()) return;
     QJsonArray offers;
     for (const auto& [id, f] : folders_)
-        if (f.state->config.peers.value(it->second.key).receive)
+        if (f.state->config.peers.value(it->second.key).sends())
             offers.append(QJsonObject{{"id", id}, {"label", f.state->config.label}});
     enqueue(dev, encodeControl({{"t", "sync.offers"}, {"folders", offers}}));
 }
@@ -216,7 +268,7 @@ void SyncService::sendHellos(const uconnect::DevId& dev, bool reply) {
     Peer& peer = it->second;
     for (const auto& [id, f] : folders_) {
         const Grant g = f.state->config.peers.value(peer.key);
-        if ((!g.receive && !g.contribute) || peer.helloSent.contains(id)) continue;
+        if ((!g.sends() && !g.accepts()) || peer.helloSent.contains(id)) continue;
         peer.helloSent.insert(id);
         const auto r = f.state->remotes.constFind(peer.key);
         enqueue(dev, encodeControl({{"t", "sync.hello"},
@@ -235,7 +287,7 @@ void SyncService::onHello(const uconnect::DevId& dev, const QJsonObject& msg) {
     Folder* f = folder(id);
     if (!f) return;
     const Grant g = f->state->config.peers.value(p->second.key);
-    if (g.receive) {
+    if (g.sends()) {
         // It has our index up to `seen`, unless our index started over since.
         const bool same = msg.value("peerEpoch").toString() == QString::number(f->state->epoch);
         p->second.sent[id] = same ? quint64(std::max<qint64>(0, msg.value("seen").toInteger())) : 0;
@@ -245,9 +297,9 @@ void SyncService::onHello(const uconnect::DevId& dev, const QJsonObject& msg) {
     // Our hello may have arrived before it had this folder: until its index
     // comes, answer with ours so it knows to send it. Replies are not
     // answered, so two devices cannot keep this going.
-    const bool reply = !msg.value("reply").toBool() && g.contribute && !p->second.heard.contains(id);
+    const bool reply = !msg.value("reply").toBool() && g.accepts() && !p->second.heard.contains(id);
     if (reply) p->second.helloSent.remove(id);
-    if (g.receive || g.contribute) sendHellos(dev, reply);
+    if (g.sends() || g.accepts()) sendHellos(dev, reply);
 }
 
 void SyncService::sendIndex(const uconnect::DevId& dev, const QString& folderId, bool full) {
@@ -275,13 +327,19 @@ void SyncService::sendIndex(const uconnect::DevId& dev, const QString& folderId,
     }
     if (!batch.isEmpty() || (full && first)) flush();
     sent = f->state->seq;
+    auto& stats = f->state->peerStats[p->second.key];
+    if (stats.sentSeq != sent) {
+        stats.sentSeq = sent;
+        f->dirty  = true;
+        f->replan = true;  // what the peer still lacks changed
+    }
 }
 
 void SyncService::onIndex(const uconnect::DevId& dev, const QJsonObject& msg) {
     const auto p = peers_.find(dev);
     if (p == peers_.end()) return;
     Folder* f = folder(msg.value("folder").toString());
-    if (!f || !f->state->config.peers.value(p->second.key).contribute) return;
+    if (!f || !f->state->config.peers.value(p->second.key).accepts()) return;
     p->second.heard.insert(msg.value("folder").toString());
     QVector<FileEntry> entries;
     for (const auto& v : msg.value("entries").toArray())
@@ -332,6 +390,10 @@ void SyncService::work() {
         if (now >= f.nextCleanup) cleanKept(id);
         if (!f.scanning && (f.rescanSoon || now >= f.nextScan)) startScan(id);
         requestBlocks(id);
+        if (now >= f.nextFree) {
+            f.nextFree = now + kFreeEvery;
+            f.free     = f.root.isEmpty() ? -1 : QStorageInfo(f.root).bytesAvailable();
+        }
     }
     for (auto& [dev, peer] : peers_)
         for (const QString& id : peer.listening) sendIndex(dev, id, false);
@@ -368,6 +430,7 @@ void SyncService::startScan(const QString& folderId) {
             f->scanning = false;
             if (!result || !result->ok) return;
             if (f->state->applyScan(*result, seqAtStart) > 0) f->dirty = true;
+            f->leftOut = result->leftOut;
             f->blocked.clear();  // what was in the way may be gone
             f->replan = true;
         });
@@ -519,6 +582,7 @@ void SyncService::plan(const QString& folderId) {
     // from files here, which may be the very files about to go.
     f->needFiles = 0;
     f->needBytes = 0;
+    f->queued.clear();
     bool allStarted = true;
     bool newRules   = false;
     for (const Planned& p : files) {
@@ -528,21 +592,110 @@ void SyncService::plan(const QString& folderId) {
             if (qsizetype(f->pulls.size()) < kMaxPulls) startPull(*f, folderId, p.d.target, p.d.sources);
             else allStarted = false;
         }
+        if (!f->pulls.contains(p.path)) f->queued << p.path;
         if (p.path == QLatin1String(kIgnoreFile) && f->pulls.contains(p.path)) newRules = true;
     }
     // Deletes bottom-up, once every fetch has taken what it needs from here,
     // and not while new ignore rules are on the way: what they ignore is not
-    // to be deleted here.
+    // to be deleted here. A round that would remove much of the folder at
+    // once (a device wiped its copy, say) waits for the user instead.
+    QStringList pending;
+    int applied = 0;
     if (allStarted && !newRules) {
         std::sort(deletes.begin(), deletes.end(), [](const Planned& a, const Planned& b) { return a.path > b.path; });
-        for (const Planned& p : deletes) apply(*f, folderId, p.d);
+        qint64 live = 0;
+        for (const FileEntry& e : f->state->local)
+            if (!e.deleted) ++live;
+        const int  n       = int(deletes.size());
+        const bool guarded = guardMin_ > 0 && n >= guardMin_ &&
+                             (n >= guardMany_ || double(n) >= guardShare_ * double(std::max<qint64>(live, 1)));
+        for (const Planned& p : deletes) {
+            if (guarded && !f->approvedDeletes.contains(p.path)) {
+                pending << p.path;
+                continue;
+            }
+            apply(*f, folderId, p.d);
+            f->approvedDeletes.remove(p.path);
+            ++applied;
+        }
+        if (pending.isEmpty()) f->approvedDeletes.clear();
     } else if (!deletes.isEmpty()) {
         f->replan = true;
     }
-    if (!adopts.isEmpty() || !dirs.isEmpty() || !deletes.isEmpty()) {
+    std::sort(pending.begin(), pending.end());
+    if (!pending.isEmpty()) {
+        const QString signature = QStringLiteral("deletes|") + pending.join(QLatin1Char('|'));
+        if (!f->logged.contains(signature)) {
+            f->logged.insert(signature);
+            emit event(folderId, {}, QStringLiteral("deletes:%1").arg(pending.size()));
+        }
+    }
+    f->pendingDeletes = pending;
+    if (!adopts.isEmpty() || !dirs.isEmpty() || applied > 0) {
         f->dirty  = true;
         f->replan = true;  // settles in another round
     }
+
+    // What each member still lacks from us, or we from it; and when there
+    // was nothing either way while it was connected.
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    for (auto g = f->state->config.peers.cbegin(); g != f->state->config.peers.cend(); ++g) {
+        const QString& key = g.key();
+        Folder::Need need;
+        if (g->sends())
+            for (const FileEntry& e : f->state->local) {
+                if (e.skipped || !pendingFor(*f, e, key)) continue;
+                if (e.deleted || e.dir) {
+                    ++need.sendChanges;
+                } else {
+                    ++need.sendFiles;
+                    need.sendBytes += e.size;
+                }
+            }
+        if (g->accepts()) {
+            for (const Planned& p : files)
+                if (p.d.sources.contains(key)) {
+                    ++need.receiveFiles;
+                    need.receiveBytes += p.d.target.size;
+                }
+            for (const Planned& p : deletes)
+                if (p.d.sources.contains(key) || p.d.following == key) ++need.receiveChanges;
+            for (const Planned& p : dirs)
+                if (p.d.following == key) ++need.receiveChanges;
+        }
+        const auto r = f->state->remotes.constFind(key);
+        if (r != f->state->remotes.cend())
+            for (const FileEntry& e : r->entries)
+                if (e.skipped) ++need.skipped;
+        f->needs.insert(key, need);
+        if (need.sendFiles + need.sendChanges + need.receiveFiles + need.receiveChanges == 0 && devOfKey_.contains(key) &&
+            !f->scanning) {
+            auto& stats = f->state->peerStats[key];
+            if (nowMs / 60000 != stats.lastInSync / 60000) f->dirty = true;  // saved once a minute
+            stats.lastInSync = nowMs;
+        }
+    }
+    for (auto it = f->needs.begin(); it != f->needs.end();)
+        it = f->state->config.peers.contains(it.key()) ? std::next(it) : f->needs.erase(it);
+}
+
+bool SyncService::pendingFor(const Folder& f, const FileEntry& e, const QString& key) const {
+    quint64 sentSeq = 0;
+    if (const auto st = f.state->peerStats.constFind(key); st != f.state->peerStats.cend()) sentSeq = st->sentSeq;
+    if (const Peer* p = peerOf(key)) sentSeq = std::max(sentSeq, p->sent.value(f.state->config.id));
+    if (e.seq > sentSeq) return true;
+    const auto r = f.state->remotes.constFind(key);
+    if (r == f.state->remotes.cend()) return false;  // it never sends its index: nothing more to know
+    const auto theirs = r->entries.constFind(e.path);
+    if (theirs == r->entries.cend()) return !e.deleted;
+    return !theirs->skipped && compare(theirs->version, e.version) == Order::Older;
+}
+
+const SyncService::Peer* SyncService::peerOf(const QString& key) const {
+    const auto d = devOfKey_.constFind(key);
+    if (d == devOfKey_.cend()) return nullptr;
+    const auto p = peers_.find(*d);
+    return p == peers_.end() ? nullptr : &p->second;
 }
 
 // Moves the file at `from` to `to.path`, if the disk still holds what the
@@ -802,7 +955,10 @@ void SyncService::onData(const uconnect::DevId& dev, std::span<const uint8_t> me
     pull.missing.removeOne(r.block);
     pull.requested.remove(r.block);
     pull.lastProgress = Clock::now();
-    if (auto peer = peers_.find(dev); peer != peers_.end()) --peer->second.inflight;
+    if (auto peer = peers_.find(dev); peer != peers_.end()) {
+        --peer->second.inflight;
+        peer->second.received.add(r.data.size());
+    }
     const QString folderId = r.folder, path = r.path;
     requests_.erase(it);
     if (pull.missing.isEmpty()) finishPull(folderId, path);
@@ -942,7 +1098,7 @@ void SyncService::onGet(const uconnect::DevId& dev, const QJsonObject& msg) {
         enqueue(dev, encodeControl({{"t", "sync.err"}, {"id", qint64(*id)}, {"code", code}}));
     };
     Folder* f = folder(msg.value("folder").toString());
-    if (!f || !f->state->config.peers.value(p->second.key).receive) return refuse("forbidden");
+    if (!f || !f->state->config.peers.value(p->second.key).sends()) return refuse("forbidden");
     const QString path = msg.value("path").toString();
     const auto    l    = f->state->local.constFind(path);
     if (!isValidSyncPath(path) || l == f->state->local.cend() || l->deleted || l->dir || l->skipped ||
@@ -968,6 +1124,11 @@ void SyncService::onGet(const uconnect::DevId& dev, const QJsonObject& msg) {
     }
     for (qsizetype at = 0; at < data.size(); at += kFrameSize)
         enqueue(dev, dataFrame(*id, data.constData() + at, std::min<qsizetype>(kFrameSize, data.size() - at)));
+    Peer& peer = p->second;
+    peer.served.add(data.size());
+    peer.serving       = path;
+    peer.servingFolder = msg.value("folder").toString();
+    peer.servedAt      = Clock::now();
 }
 
 // --- messages ---------------------------------------------------------------------
@@ -985,14 +1146,26 @@ bool SyncService::handleMessage(const uconnect::DevId& dev, std::span<const uint
     if (!peers_.contains(dev)) return true;  // not a trusted, proven peer: nothing to say to it
 
     if (t == QLatin1String("sync.offers")) {
-        QVariantList offers;
+        QVariantList  offers;
+        QSet<QString> offered;
         for (const auto& v : msg->value("folders").toArray()) {
             const QJsonObject o = v.toObject();
             const QString     id = o.value("id").toString();
             if (id.size() != 32 || QByteArray::fromHex(id.toLatin1()).size() != 16) continue;
+            offered.insert(id);
             offers << QVariantMap{{"id", id}, {"label", o.value("label").toString().left(100)}};
         }
-        emit offersChanged(peers_.at(dev).key, offers);
+        // A folder it no longer sends us: what we held of its index is no
+        // longer ours to act on. Its next hello brings a full index.
+        Peer& peer = peers_.at(dev);
+        for (auto& [id, f] : folders_) {
+            if (offered.contains(id) || !f.state->remotes.contains(peer.key)) continue;
+            f.state->remotes.remove(peer.key);
+            peer.heard.remove(id);
+            f.dirty  = true;
+            f.replan = true;
+        }
+        emit offersChanged(peer.key, offers);
     } else if (t == QLatin1String("sync.hello")) {
         onHello(dev, *msg);
     } else if (t == QLatin1String("sync.index")) {
@@ -1033,16 +1206,44 @@ void SyncService::rescan(const QString& folderId) {
 
 // --- status -----------------------------------------------------------------------
 
+namespace {
+
+qint64 doneOf(const sync::FileEntry& target, int missing) {
+    return std::min<qint64>(target.size, qint64(target.blocks.size() - missing) * target.blockSize);
+}
+
+}  // namespace
+
 QVariantMap SyncService::folderStatus(const QString& folderId, const Folder& f) const {
-    qint64 files = 0, bytes = 0;
+    qint64 files = 0, bytes = 0, dirs = 0;
     for (const FileEntry& e : f.state->local) {
-        if (e.deleted || e.dir) continue;
+        if (e.deleted) continue;
+        if (e.dir) {
+            ++dirs;
+            continue;
+        }
         ++files;
         bytes += e.size;
     }
     qint64 fetched = 0;
-    for (const auto& [path, p] : f.pulls)
-        fetched += qint64(p.target.blocks.size() - p.missing.size()) * p.target.blockSize;
+    QVariantList transfers;
+    for (const auto& [path, p] : f.pulls) {
+        fetched += doneOf(p.target, int(p.missing.size()));
+        QString key;
+        for (auto r = requests_.crbegin(); r != requests_.crend() && key.isEmpty(); ++r)
+            if (r->second.folder == folderId && r->second.path == path)
+                if (auto peer = peers_.find(r->second.dev); peer != peers_.end()) key = peer->second.key;
+        if (key.isEmpty())
+            for (const QString& source : p.sources)
+                if (devOfKey_.contains(source)) {
+                    key = source;
+                    break;
+                }
+        transfers << QVariantMap{{"path", path}, {"size", p.target.size},
+                                 {"done", doneOf(p.target, int(p.missing.size()))}, {"key", key}};
+    }
+    QVariantList pending;
+    for (const QString& path : f.pendingDeletes.mid(0, 200)) pending << path;
     const QString state = f.state->config.paused ? QStringLiteral("paused")
                         : f.root.isEmpty()       ? QStringLiteral("missing")
                         : f.needFiles > 0        ? QStringLiteral("syncing")
@@ -1055,12 +1256,73 @@ QVariantMap SyncService::folderStatus(const QString& folderId, const Folder& f) 
         {"state", state},
         {"files", files},
         {"bytes", bytes},
+        {"dirs", dirs},
+        {"free", f.free},
         {"needFiles", f.needFiles},
         {"needBytes", std::max<qint64>(0, f.needBytes - fetched)},
         {"conflicts", f.conflicts},
         {"blocked", blocked},
         {"held", f.held},
+        {"members", memberStatus(folderId, f)},
+        {"pendingDeletes", pending},
+        {"pendingDeleteCount", f.pendingDeletes.size()},
+        {"transfers", transfers},
     };
+}
+
+QVariantList SyncService::memberStatus(const QString& folderId, const Folder& f) const {
+    QVariantList out;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const auto   now   = Clock::now();
+    QStringList keys = f.state->config.peers.keys();
+    std::sort(keys.begin(), keys.end());
+    for (const QString& key : keys) {
+        const Grant     g    = f.state->config.peers.value(key);
+        const Peer*     peer = peerOf(key);
+        const Folder::Need need  = f.needs.value(key);
+        const auto         stats = f.state->peerStats.value(key);
+        // What is on its way from it does not count as left.
+        qint64 receiveBytes = need.receiveBytes;
+        for (const auto& [path, p] : f.pulls)
+            if (p.sources.contains(key)) receiveBytes -= doneOf(p.target, int(p.missing.size()));
+        receiveBytes = std::max<qint64>(0, receiveBytes);
+        QString current;
+        bool    sending = false;
+        if (peer) {
+            const auto d = devOfKey_.constFind(key);
+            for (auto r = requests_.crbegin(); r != requests_.crend(); ++r)
+                if (r->second.dev == *d && r->second.folder == folderId) {
+                    current = r->second.path;
+                    break;
+                }
+            if (current.isEmpty() && peer->servingFolder == folderId && now - peer->servedAt < 3s) {
+                current = peer->serving;
+                sending = true;
+            }
+        }
+        const qint64 rate     = peer ? peer->received.rate() : 0;
+        const qint64 sendRate = peer ? peer->served.rate() : 0;
+        out << QVariantMap{
+            {"key", key},
+            {"online", peer != nullptr},
+            {"paused", g.paused},
+            {"toSendFiles", need.sendFiles},
+            {"toSendBytes", need.sendBytes},
+            {"toSendChanges", need.sendChanges},
+            {"toReceiveFiles", need.receiveFiles},
+            {"toReceiveBytes", receiveBytes},
+            {"toReceiveChanges", need.receiveChanges},
+            {"current", current},
+            {"sending", sending},
+            {"rate", rate},
+            {"sendRate", sendRate},
+            {"eta", rate > 0 && receiveBytes > 0 ? qint64(receiveBytes / rate) : qint64(-1)},
+            {"skipped", need.skipped},
+            {"lastSeen", peer ? nowMs : stats.lastSeen},
+            {"lastInSync", stats.lastInSync},
+        };
+    }
+    return out;
 }
 
 void SyncService::emitStatus(const QString& folderId) {
@@ -1068,8 +1330,385 @@ void SyncService::emitStatus(const QString& folderId) {
     if (!f) return;
     const QVariantMap status = folderStatus(folderId, *f);
     if (status == f->lastStatus) return;
+    // Progress alone need not reach the UI with every block.
+    const auto now = Clock::now();
+    if (status.value("state") == f->lastStatus.value("state") && now - f->lastEmit < kEmitEvery) return;
+    f->lastEmit   = now;
     f->lastStatus = status;
     emit folderChanged(folderId, status);
+}
+
+// --- the folder as the user sees it -------------------------------------------------
+
+QVariantList SyncService::files(const QString& folderId) const {
+    const auto it = folders_.find(folderId);
+    if (it == folders_.end()) return {};
+    const Folder&     f = it->second;
+    const SyncFolder& s = *f.state;
+    const auto since = [this](const QString& key) { return sinceOf(key); };
+    QSet<QString> conflicts;
+    for (const QVariant& c : f.conflicts) conflicts.insert(c.toMap().value("path").toString());
+    QStringList sendKeys;
+    for (auto g = s.config.peers.cbegin(); g != s.config.peers.cend(); ++g)
+        if (g->sends()) sendKeys << g.key();
+
+    QSet<QString> paths(f.leftOut.keyBegin(), f.leftOut.keyEnd());
+    for (const QString& p : s.allPaths()) paths.insert(p);
+    QStringList sorted(paths.begin(), paths.end());
+    std::sort(sorted.begin(), sorted.end());
+
+    QVariantList out;
+    for (const QString& path : sorted) {
+        QVariantMap row{{"path", path}, {"name", path.section(QLatin1Char('/'), -1)}};
+        auto fill = [&](const FileEntry& e) {
+            row.insert("dir", e.dir);
+            row.insert("size", e.size);
+            row.insert("mtime", e.mtime);
+            row.insert("version", versionMap(e.version));
+        };
+        QString state, detail;
+        double  progress = -1;
+        const auto local = s.local.constFind(path);
+        const bool mine  = local != s.local.cend() && !local->deleted;
+        if (mine) fill(*local);
+
+        if (const auto left = f.leftOut.constFind(path); left != f.leftOut.cend()) {
+            row.insert("dir", left->dir);
+            row.insert("size", left->size);
+            row.insert("mtime", 0);
+            state  = left->skip ? QStringLiteral("skipped") : QStringLiteral("ignored");
+            detail = (left->skip ? s.skip : s.ignore).explain(path, left->dir).pattern;
+        } else {
+            bool isDir = mine && local->dir;
+            for (const auto& r : s.remotes)
+                if (const auto e = r.entries.constFind(path); e != r.entries.cend() && e->dir) isDir = true;
+            const Decision d = s.decide(path, since);
+            if (!s.participates(path, isDir)) {
+                if (!mine) {  // only other devices have it; here the rules leave it out
+                    for (const auto& r : s.remotes)
+                        if (const auto e = r.entries.constFind(path); e != r.entries.cend() && !e->deleted) {
+                            fill(*e);
+                            break;
+                        }
+                    if (!row.contains("dir")) continue;
+                }
+                const bool ignored = s.ignore.matches(path, isDir);
+                state  = ignored ? QStringLiteral("ignored") : QStringLiteral("skipped");
+                detail = (ignored ? s.ignore : s.skip).explain(path, isDir).pattern;
+            } else if (conflicts.contains(path) || (d.kind == Decision::Conflict && !d.apply)) {
+                if (!mine)
+                    for (const Candidate& c : d.candidates)
+                        if (!c.entry.deleted) {
+                            fill(c.entry);
+                            break;
+                        }
+                if (!row.contains("dir")) fill(d.candidates.isEmpty() ? FileEntry{} : d.candidates.first().entry);
+                state = QStringLiteral("conflict");
+            } else if (const auto pull = f.pulls.find(path); pull != f.pulls.end()) {
+                fill(pull->second.target);
+                bool online = false;
+                for (const QString& source : pull->second.sources) online = online || devOfKey_.contains(source);
+                if (online) {
+                    state    = QStringLiteral("transferring");
+                    progress = pull->second.target.size > 0
+                                   ? double(doneOf(pull->second.target, int(pull->second.missing.size()))) /
+                                         double(pull->second.target.size)
+                                   : 1.0;
+                } else {
+                    state  = QStringLiteral("receive");
+                    detail = QStringLiteral("waiting");
+                }
+            } else if (const auto b = f.blocked.constFind(path); b != f.blocked.cend()) {
+                if (!mine) fill(d.target);
+                state  = QStringLiteral("blocked");
+                detail = *b;
+            } else if (mine && local->skipped) {
+                state  = QStringLiteral("held");
+                detail = s.heldReason(path);
+                if (detail.isEmpty()) {
+                    state  = QStringLiteral("skipped");
+                    detail = s.skip.explain(path, local->dir).pattern;
+                }
+            } else if (d.kind == Decision::Apply || (d.kind == Decision::Conflict && d.apply)) {
+                if (d.target.deleted) {
+                    if (!mine) continue;
+                    state  = QStringLiteral("receive");
+                    detail = QStringLiteral("delete");
+                } else {
+                    if (!mine) fill(d.target);
+                    state = QStringLiteral("receive");
+                    bool online = false;
+                    for (const QString& source : d.sources) online = online || devOfKey_.contains(source);
+                    if (!online) detail = QStringLiteral("waiting");
+                }
+            } else if (mine) {
+                int lacking = 0;
+                for (const QString& key : sendKeys)
+                    if (pendingFor(f, *local, key)) ++lacking;
+                state = lacking > 0 ? QStringLiteral("send") : QStringLiteral("synced");
+                if (lacking > 0) detail = QString::number(lacking);
+            } else {
+                continue;  // a tombstone, or nothing to do
+            }
+        }
+        row.insert("state", state);
+        row.insert("detail", detail);
+        row.insert("progress", progress);
+        out << row;
+    }
+    return out;
+}
+
+QVariantMap SyncService::fileInfo(const QString& folderId, const QString& path) const {
+    const auto it = folders_.find(folderId);
+    if (it == folders_.end()) return {};
+    const Folder&     f = it->second;
+    const SyncFolder& s = *f.state;
+    QVariantMap out{{"path", path}};
+    if (const auto l = s.local.constFind(path); l != s.local.cend()) {
+        out.insert("dir", l->dir);
+        out.insert("deleted", l->deleted);
+        out.insert("size", l->size);
+        out.insert("mtime", l->mtime);
+        out.insert("hash", QString::fromLatin1(l->hash.toHex()));
+        out.insert("version", versionMap(l->version));
+        out.insert("skipped", l->skipped);
+    }
+    QVariantList holders;
+    QStringList  keys = s.remotes.keys();
+    std::sort(keys.begin(), keys.end());
+    for (const QString& key : keys) {
+        const auto e = s.remotes[key].entries.constFind(path);
+        if (e == s.remotes[key].entries.cend()) continue;
+        holders << QVariantMap{{"key", key},         {"size", e->size},       {"mtime", e->mtime},
+                               {"version", versionMap(e->version)}, {"deleted", e->deleted}, {"dir", e->dir},
+                               {"skipped", e->skipped}, {"hash", QString::fromLatin1(e->hash.toHex())}};
+    }
+    out.insert("holders", holders);
+    QVariantList kept;
+    for (const QVariant& v : keptFiles(folderId))
+        if (v.toMap().value("path").toString() == path) kept << v;
+    out.insert("kept", kept);
+    for (const QVariant& v : files(folderId)) {
+        const QVariantMap row = v.toMap();
+        if (row.value("path").toString() != path) continue;
+        out.insert("state", row.value("state"));
+        out.insert("detail", row.value("detail"));
+        out.insert("progress", row.value("progress"));
+        if (!out.contains("dir")) {
+            out.insert("dir", row.value("dir"));
+            out.insert("size", row.value("size"));
+            out.insert("mtime", row.value("mtime"));
+            out.insert("version", row.value("version"));
+        }
+        break;
+    }
+    return out;
+}
+
+// --- rules ------------------------------------------------------------------------
+
+QString SyncService::rulesPath(const Folder& f, bool skipFile) const {
+    return QDir(f.root).filePath(QLatin1String(skipFile ? kSkipFile : kIgnoreFile));
+}
+
+QString SyncService::rulesText(const QString& folderId, bool skipFile) const {
+    const auto it = folders_.find(folderId);
+    if (it == folders_.end() || it->second.root.isEmpty()) return {};
+    QFile file(rulesPath(it->second, skipFile));
+    return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.read(1024 * 1024)) : QString();
+}
+
+QVariantMap SyncService::previewRules(const QString& folderId, bool skipFile, const QString& text,
+                                      const QString& probe) const {
+    const auto it = folders_.find(folderId);
+    if (it == folders_.end()) return {};
+    const Folder&     f     = it->second;
+    const SyncFolder& s     = *f.state;
+    const IgnoreRules rules(text);
+    const IgnoreRules& other = skipFile ? s.ignore : s.skip;  // the file not being edited, as it is
+
+    QVariantList problems;
+    for (const IgnoreRules::Problem& p : rules.problems()) problems << QVariantMap{{"line", p.line}, {"pattern", p.pattern}};
+
+    QSet<QString> paths(f.leftOut.keyBegin(), f.leftOut.keyEnd());
+    QHash<QString, bool> dirs;
+    for (const FileEntry& e : s.local)
+        if (!e.deleted) {
+            paths.insert(e.path);
+            dirs.insert(e.path, e.dir);
+        }
+    for (const auto& r : s.remotes)
+        for (const FileEntry& e : r.entries)
+            if (!e.deleted) {
+                paths.insert(e.path);
+                if (!dirs.contains(e.path)) dirs.insert(e.path, e.dir);
+            }
+    for (auto l = f.leftOut.cbegin(); l != f.leftOut.cend(); ++l)
+        if (!dirs.contains(l.key())) dirs.insert(l.key(), l->dir);
+    QStringList sorted(paths.begin(), paths.end());
+    std::sort(sorted.begin(), sorted.end());
+
+    QVariantList matches;
+    qint64 stop = 0, resume = 0;
+    for (const QString& path : sorted) {
+        const bool dir = dirs.value(path);
+        const IgnoreRules::Match m = rules.explain(path, dir);
+        if (m.line > 0 && matches.size() < kMaxListed)
+            matches << QVariantMap{{"path", path}, {"dir", dir}, {"line", m.line}, {"pattern", m.pattern},
+                                   {"negate", m.negate}, {"via", m.via}};
+        if (dir) continue;
+        const bool wouldBeOut = rules.matches(path, false) || other.matches(path, false);
+        const auto local      = s.local.constFind(path);
+        const bool syncedNow  = local != s.local.cend() && !local->deleted && !local->skipped && s.participates(path);
+        if (syncedNow && wouldBeOut) ++stop;
+        const auto left = f.leftOut.constFind(path);
+        if (left != f.leftOut.cend() && left->skip == skipFile && !wouldBeOut) ++resume;
+    }
+    QVariantMap out{{"problems", problems}, {"matches", matches}, {"stop", stop}, {"resume", resume}};
+    if (!probe.isEmpty()) {
+        QString p = probe.trimmed();
+        p.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        while (p.startsWith(QLatin1Char('/'))) p.remove(0, 1);
+        const bool dir = p.endsWith(QLatin1Char('/')) || dirs.value(p);
+        while (p.endsWith(QLatin1Char('/'))) p.chop(1);
+        const IgnoreRules::Match m = rules.explain(p, dir);
+        out.insert("probe", QVariantMap{{"path", p}, {"dir", dir}, {"line", m.line}, {"pattern", m.pattern},
+                                        {"negate", m.negate}, {"via", m.via},
+                                        {"excluded", m.line > 0 && !m.negate}});
+    }
+    return out;
+}
+
+bool SyncService::saveRules(const QString& folderId, bool skipFile, const QString& text) {
+    Folder* f = folder(folderId);
+    if (!f || f->root.isEmpty()) return false;
+    QSaveFile file(rulesPath(*f, skipFile));
+    if (!file.open(QIODevice::WriteOnly)) return false;
+    file.write(text.toUtf8());
+    if (!file.commit()) return false;
+    f->rescanSoon = true;
+    f->replan     = true;
+    return true;
+}
+
+bool SyncService::addRule(const QString& folderId, bool skipFile, const QString& path) {
+    Folder* f = folder(folderId);
+    if (!f || f->root.isEmpty() || !isValidSyncPath(path)) return false;
+    QString text = rulesText(folderId, skipFile);
+    if (!text.isEmpty() && !text.endsWith(QLatin1Char('\n'))) text += QLatin1Char('\n');
+    text += exactPattern(path) + QLatin1Char('\n');
+    return saveRules(folderId, skipFile, text);
+}
+
+// --- kept files -------------------------------------------------------------------
+
+QVariantList SyncService::keptFiles(const QString& folderId) const {
+    const auto it = folders_.find(folderId);
+    if (it == folders_.end() || it->second.root.isEmpty()) return {};
+    const QString root = QDir(it->second.root).filePath(QLatin1String(kKeptDir));
+    if (!QFileInfo(root).isDir()) return {};
+    QVariantList out;
+    std::function<void(const QString&, const QString&)> walk = [&](const QString& dir, const QString& rel) {
+        for (const QFileInfo& fi : QDir(dir).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden)) {
+            if (fi.isSymLink() || fi.isJunction()) continue;
+            const QString child = rel.isEmpty() ? fi.fileName() : rel + QLatin1Char('/') + fi.fileName();
+            if (fi.isDir()) {
+                walk(fi.absoluteFilePath(), child);
+                continue;
+            }
+            const auto m = kKeptName.match(fi.fileName());
+            QString   original = fi.fileName();
+            qint64    when     = fi.lastModified().toMSecsSinceEpoch();
+            if (m.hasMatch()) {
+                original = m.captured(1) + m.captured(3);
+                const QDateTime stamp = QDateTime::fromString(m.captured(2), QStringLiteral("yyyyMMdd-HHmmss"));
+                if (stamp.isValid()) when = stamp.toMSecsSinceEpoch();
+            }
+            out << QVariantMap{{"kept", child},
+                               {"path", rel.isEmpty() ? original : rel + QLatin1Char('/') + original},
+                               {"time", when},
+                               {"size", fi.size()}};
+        }
+    };
+    walk(root, {});
+    std::sort(out.begin(), out.end(), [](const QVariant& a, const QVariant& b) {
+        return a.toMap().value("time").toLongLong() > b.toMap().value("time").toLongLong();
+    });
+    return out;
+}
+
+bool SyncService::restoreKept(const QString& folderId, const QString& kept) {
+    Folder* f = folder(folderId);
+    if (!f || f->root.isEmpty()) return false;
+    const QString keptRoot = QDir(f->root).filePath(QLatin1String(kKeptDir));
+    const QString source   = QDir(keptRoot).filePath(kept);
+    const QString real     = realPath(source);
+    if (real.isEmpty() || !isWithin(real, keptRoot) || !QFileInfo(source).isFile()) return false;
+    const QFileInfo fi(source);
+    const auto      m        = kKeptName.match(fi.fileName());
+    const QString   original = m.hasMatch() ? m.captured(1) + m.captured(3) : fi.fileName();
+    const QString   relDir   = kept.contains(QLatin1Char('/')) ? kept.section(QLatin1Char('/'), 0, -2) : QString();
+    const QString   relPath  = relDir.isEmpty() ? original : relDir + QLatin1Char('/') + original;
+    if (!isValidSyncPath(relPath) || !safeParent(*f, relPath, true)) return false;
+    const QString target = uniquePath(QFileInfo(absolute(*f, relPath)).absolutePath(), original);
+    if (!QFile::rename(source, target)) return false;
+    f->rescanSoon = true;  // it comes back as a change of ours
+    return true;
+}
+
+bool SyncService::discardKept(const QString& folderId, const QString& kept) {
+    Folder* f = folder(folderId);
+    if (!f || f->root.isEmpty()) return false;
+    const QString keptRoot = QDir(f->root).filePath(QLatin1String(kKeptDir));
+    const QString source   = QDir(keptRoot).filePath(kept);
+    const QString real     = realPath(source);
+    if (real.isEmpty() || !isWithin(real, keptRoot) || !QFileInfo(source).isFile()) return false;
+    return (useTrash_ && QFile::moveToTrash(source)) || QFile::remove(source);
+}
+
+// --- held deletes, transfers --------------------------------------------------------
+
+void SyncService::confirmDeletes(const QString& folderId, bool apply) {
+    Folder* f = folder(folderId);
+    if (!f || f->pendingDeletes.isEmpty()) return;
+    if (apply) {
+        for (const QString& path : f->pendingDeletes) f->approvedDeletes.insert(path);
+    } else {
+        // Ours again, newer than the deletes: the other devices take them back.
+        for (const QString& path : f->pendingDeletes) f->state->keepMine(path);
+    }
+    f->pendingDeletes.clear();
+    f->dirty  = true;
+    f->replan = true;
+}
+
+QVariantList SyncService::transfers() const {
+    QVariantList out, queued;
+    for (const auto& [id, f] : folders_) {
+        const QVariantMap status = folderStatus(id, f);
+        for (const QVariant& v : status.value("transfers").toList()) {
+            QVariantMap t = v.toMap();
+            t.insert("folder", id);
+            t.insert("active", true);
+            out << t;
+        }
+        for (const QString& path : f.queued) {
+            qint64 size = 0;
+            for (const auto& r : f.state->remotes)
+                if (const auto e = r.entries.constFind(path); e != r.entries.cend() && !e->deleted) size = e->size;
+            queued << QVariantMap{{"folder", id}, {"path", path}, {"size", size}, {"done", 0}, {"key", QString()},
+                                  {"active", false}};
+        }
+    }
+    out += queued;
+    return out;
+}
+
+qint64 SyncService::receiveRate() const {
+    qint64 rate = 0;
+    for (const auto& [dev, peer] : peers_) rate += peer.received.rate();
+    return rate;
 }
 
 }  // namespace ucd

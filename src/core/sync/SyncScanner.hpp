@@ -34,6 +34,14 @@ struct ScanResult {
     // Present but named so that some member could not hold it: path ->
     // nameProblem(). Not synced; the user is told.
     QHash<QString, QString> unsupported;
+    // Present but left out by the rules (nothing inside a left-out folder
+    // is looked at): path -> what left it out.
+    struct LeftOut {
+        bool   dir  = false;
+        qint64 size = 0;
+        bool   skip = false;  // .syncskip (this device only); else .syncignore
+    };
+    QHash<QString, LeftOut> leftOut;
 };
 
 ScanResult scanFolder(const ScanInput& input);

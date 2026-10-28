@@ -24,6 +24,7 @@
 #include <QVector>
 
 #include "core/sync/SyncFolder.hpp"
+#include "core/sync/SyncScanner.hpp"
 #include "uconnect/types.hpp"
 
 class QTimer;
@@ -61,6 +62,54 @@ public:
     void resolve(const QString& folderId, const QString& path, const QString& choice, const QString& key);
     void rescan(const QString& folderId);
 
+    // --- what the user sees of a folder (docs/protocol.md has the rules) ---
+
+    // Everything in the folder as sync sees it, sorted by path: [{path,
+    // name, dir, size, mtime, state, progress, detail, version: {memberId:
+    // n}}]. `state`: synced | send (a change of ours some device has not
+    // got yet; `detail` how many) | receive (a change to fetch; `detail`
+    // "waiting" when no device online has it) | transferring (`progress`
+    // 0..1) | conflict | ignored (.syncignore) | skipped (.syncskip; for
+    // both, `detail` is the pattern) | held (not syncable here; `detail` the
+    // reason, see SyncFolder::heldReason()) | blocked (`detail` the reason,
+    // as in the "blocked:" events).
+    QVariantList files(const QString& folderId) const;
+    // One path in depth: {path, dir, size, mtime, hash, version, state,
+    // holders: [{key, size, mtime, version, deleted, dir, skipped}], kept:
+    // [{kept, time, size}] (its versions in .synctrash)}.
+    QVariantMap fileInfo(const QString& folderId, const QString& path) const;
+
+    // Editing .syncignore (`skipFile` false) and .syncskip (true). The
+    // preview says what `text` would do: {problems: [{line, pattern}],
+    // matches: [{path, dir, line, pattern, negate, via}] for every known
+    // path a rule decides, stop: files synced now that would stop, resume:
+    // files left out now that would sync, probe: {line, pattern, negate,
+    // via} for `probe`}.
+    QString     rulesText(const QString& folderId, bool skipFile) const;
+    QVariantMap previewRules(const QString& folderId, bool skipFile, const QString& text,
+                             const QString& probe = {}) const;
+    bool saveRules(const QString& folderId, bool skipFile, const QString& text);
+    // Adds a pattern matching exactly `path` ("Ignore everywhere" / "Skip on this device").
+    bool addRule(const QString& folderId, bool skipFile, const QString& path);
+
+    // Files syncing set aside in .synctrash: [{kept (its path there), path
+    // (where it was), time, size}], newest first. Restoring puts one back
+    // (beside what is there now, if anything), as a new change of ours.
+    QVariantList keptFiles(const QString& folderId) const;
+    bool restoreKept(const QString& folderId, const QString& kept);
+    bool discardKept(const QString& folderId, const QString& kept);
+
+    // Deletes held back by the large-delete guard (folderStatus()
+    // `pendingDeletes`): apply them, or keep the files, which makes them
+    // changes of ours that the other devices take back.
+    void confirmDeletes(const QString& folderId, bool apply);
+
+    // Transfers across every folder: [{folder, path, size, done, key,
+    // active}], active ones first, then what waits its turn.
+    QVariantList transfers() const;
+    // Bytes per second fetched from every peer, over the last seconds.
+    qint64 receiveRate() const;
+
     // Tests.
     void setScanInterval(int ms) { scanInterval_ = ms; }
     void setStableAfter(int ms) { stableAfter_ = ms; }
@@ -68,19 +117,32 @@ public:
     // deleted) after this many days.
     void setKeepDays(int days) { keepDays_ = days; }
     void setUseTrash(bool use) { useTrash_ = use; }
+    // The large-delete guard: holds back a round of deletes of at least
+    // `min` paths that is also at least `share` of the folder's files, or
+    // `many` paths however large the folder. 0 for `min` turns it off.
+    void setDeleteGuard(int min, int many, double share) {
+        guardMin_   = min;
+        guardMany_  = many;
+        guardShare_ = share;
+    }
 
 signals:
     // The folders a peer offers this device: [{id, label}].
     void offersChanged(const QString& peerKey, const QVariantList& offers);
-    // A folder's state: {id, state, error, needFiles, needBytes, files,
-    // bytes, conflicts: [...]}; see folderStatus().
+    // A folder's state: {id, state, files, bytes, dirs, free, needFiles,
+    // needBytes, conflicts, blocked, held, members: [{key, online,
+    // paused, toSendFiles, toSendBytes, toReceiveFiles, toReceiveBytes,
+    // current, sending, rate, eta, skipped, lastSeen, lastInSync}],
+    // pendingDeletes: [path], pendingDeleteCount, transfers: [{path,
+    // size, done, key}]}; see folderStatus().
     void folderChanged(const QString& folderId, const QVariantMap& status);
     // Something the user should hear about, once. `kind`: "conflict" (theirs
     // to resolve), "following:<key>" (behind both sides, followed that
     // peer's chain), "kept" (stayed on our chain), "waiting" (no holder
     // online), or "blocked:<reason>" with reason outside | in_the_way |
     // changed | not_empty | io | clash, or "held:<reason>" (see
-    // SyncFolder::heldReason()) for a file present here that is not synced.
+    // SyncFolder::heldReason()) for a file present here that is not synced,
+    // or "deletes:<n>" (`path` empty): that many deletes wait for the user.
     void event(const QString& folderId, const QString& path, const QString& kind);
 
 private:
@@ -111,7 +173,29 @@ private:
         QVariantList  conflicts;
         QVariantList  held;  // [{path, reason}]: present here but not synced
         QVariantMap   lastStatus;
+        Clock::time_point lastEmit;
         qint64 needFiles = 0, needBytes = 0;
+        QStringList   queued;  // files to fetch that have not started
+        QHash<QString, sync::ScanResult::LeftOut> leftOut;  // by the last scan
+        // The large-delete guard.
+        QStringList   pendingDeletes;
+        QSet<QString> approvedDeletes;
+        qint64        free = -1;  // bytes left on the disk, looked up now and then
+        Clock::time_point nextFree;
+        // What each member still lacks from us, or we from it (by key), as
+        // of the last plan.
+        struct Need {
+            qint64 sendFiles = 0, sendBytes = 0, sendChanges = 0;
+            qint64 receiveFiles = 0, receiveBytes = 0, receiveChanges = 0;
+            qint64 skipped = 0;  // paths it holds back
+        };
+        QHash<QString, Need> needs;
+    };
+    // Bytes moved lately, to give a rate.
+    struct Meter {
+        std::deque<std::pair<Clock::time_point, qint64>> samples;
+        void   add(qint64 bytes);
+        qint64 rate() const;  // bytes per second over the last seconds
     };
     struct Peer {
         QString key;
@@ -121,6 +205,10 @@ private:
         QSet<QString>           heard;      // folders whose index it has sent us
         std::deque<std::vector<uint8_t>> queue;
         int inflight = 0;  // block requests to it
+        Meter    received, served;
+        QString  serving;  // the file it last asked a block of
+        QString  servingFolder;
+        Clock::time_point servedAt;
     };
     struct Request {
         uconnect::DevId dev{};
@@ -168,7 +256,13 @@ private:
     bool    safeParent(const Folder& f, const QString& path, bool create) const;
     qint64  sinceOf(const QString& key) const;
     QVariantMap folderStatus(const QString& folderId, const Folder& f) const;
+    QVariantList memberStatus(const QString& folderId, const Folder& f) const;
     void    emitStatus(const QString& folderId);
+    const Peer* peerOf(const QString& key) const;
+    QString rulesPath(const Folder& f, bool skipFile) const;
+    // Whether a change of ours at `path` (its entry) has yet to reach the
+    // peer with `key`.
+    bool    pendingFor(const Folder& f, const sync::FileEntry& e, const QString& key) const;
 
     SendFn    send_;
     PeerKeyFn peerKey_;
@@ -189,6 +283,9 @@ private:
     int  stableAfter_  = 2000;
     bool useTrash_     = true;
     int  keepDays_     = 30;
+    int    guardMin_   = 10;
+    int    guardMany_  = 25;
+    double guardShare_ = 0.5;
     Clock::time_point lastSave_;
 };
 

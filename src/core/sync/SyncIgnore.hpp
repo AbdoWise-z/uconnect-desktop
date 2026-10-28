@@ -29,16 +29,38 @@ public:
     bool isEmpty() const { return rules_.isEmpty(); }
     const QString& text() const { return text_; }
 
+    // The rule that decided `path`: the last one matching it (or a folder
+    // above it, named in `via`), `negate` when that rule brought it back.
+    // `line` is 0 when no rule matches, so the path is not excluded.
+    struct Match {
+        int     line = 0;  // 1-based line in the text
+        QString pattern;   // the line as written
+        bool    negate  = false;
+        QString via;       // the folder above `path` the rule matched, if any
+    };
+    Match explain(const QString& path, bool isDir) const;
+
+    // Lines that are not usable patterns, and are skipped.
+    struct Problem {
+        int     line = 0;
+        QString pattern;
+    };
+    const QVector<Problem>& problems() const { return problems_; }
+
 private:
     struct Rule {
         QRegularExpression regex;
         bool               negate  = false;
         bool               dirOnly = false;
+        int                line    = 0;
+        QString            pattern;
     };
     bool matchesItself(const QString& path, bool isDir) const;
+    const Rule* lastMatching(const QString& path, bool isDir) const;
 
-    QVector<Rule> rules_;
-    QString       text_;
+    QVector<Rule>    rules_;
+    QVector<Problem> problems_;
+    QString          text_;
 };
 
 // A pattern matching exactly `path`, for adding one file to .syncskip.
