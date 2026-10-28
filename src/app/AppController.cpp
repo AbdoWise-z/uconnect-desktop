@@ -176,6 +176,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     loadNetworkRules();
     loadActivity();
     loadSync();
+    migrateSyncPermissions();
 
     session_ = new Session;
     session_->moveToThread(&worker_);
@@ -1392,6 +1393,28 @@ void AppController::clearStorageActivity() {
 }
 
 // --- folder sync -----------------------------------------------------------------
+
+// Before sync 1.3 a device took part by having special rules; now it needs
+// Offer sync or Receive sync. Once: every member of a synced folder that has
+// special rules and neither permission gets both, so nothing stops syncing
+// on update.
+void AppController::migrateSyncPermissions() {
+    QSettings settings;
+    const auto key = QStringLiteral("syncPermsMigrated");
+    if (settings.value(key, false).toBool()) return;
+    for (const sync::FolderConfig& c : syncFolders_) {
+        for (auto it = c.peers.begin(); it != c.peers.end(); ++it) {
+            const auto s = special_.find(it.key());
+            if (s == special_.end() || s->permissions.contains(perm::SyncOffer) ||
+                s->permissions.contains(perm::SyncReceive))
+                continue;
+            s->permissions << perm::SyncOffer << perm::SyncReceive;
+            s->permissions.sort();
+            saveSpecialRules(it.key());
+        }
+    }
+    settings.setValue(key, true);
+}
 
 void AppController::loadSync() {
     QSettings settings;

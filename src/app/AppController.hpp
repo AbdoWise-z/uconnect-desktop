@@ -396,6 +396,7 @@ private:
     void appendLog(const QString& line);
     void addActivity(const QVariantMap& entry);
     void loadSync();
+    void migrateSyncPermissions();
     void saveSync() const;
     void pushSync();
     void addSyncEvent(const QString& folderId, const QString& path, const QString& kind);
