@@ -257,6 +257,12 @@ Where the project stands (updated 2026-10-28):
   `SyncServiceTest` and the offscreen `SyncViewTest`; the conflict view
   compares size and date per device but does not yet show the contents side
   by side (the other device's version is only fetched when you take it).
+- **Sync engine cost (2026-10-28):** planning is paced by how long a round
+  takes (it used to run again after every finished file, quadratic in the
+  folder), a fetch reuses one index of local blocks per change of the index,
+  and the state file is written every 30 s while fetches run. The same
+  change on the phone (uconnect-mobile #3) also moved the engine off the UI
+  isolate; here it already ran on the Session thread.
 
 ## License
 

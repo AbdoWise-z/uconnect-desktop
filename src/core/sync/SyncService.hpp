@@ -167,6 +167,12 @@ private:
         Clock::time_point nextScan;
         bool    dirty = false;     // state to save
         bool    replan = true;     // decisions to make again
+        Clock::time_point nextPlan;  // planning a large folder is paced by how long it takes
+        // Every block of every file here, by hash: where a fetch can copy it
+        // from. Built once per change of the index, not once per fetch.
+        QHash<QByteArray, std::pair<QString, qint64>> blockIndex;
+        quint64 blockIndexSeq = 0;
+        bool    blockIndexValid = false;
         std::map<QString, Pull> pulls;
         QHash<QString, QString> blocked;  // path -> why it cannot be applied now
         QSet<QString> logged;             // conflicts already told
@@ -235,6 +241,7 @@ private:
     void plan(const QString& folderId);
     void apply(Folder& f, const QString& folderId, const sync::Decision& d);
     void startPull(Folder& f, const QString& folderId, const sync::FileEntry& target, const QStringList& sources);
+    const QHash<QByteArray, std::pair<QString, qint64>>& blockIndex(Folder& f);
     void requestBlocks(const QString& folderId);
     void finishPull(const QString& folderId, const QString& path);
     void dropPull(Folder& f, const QString& path);

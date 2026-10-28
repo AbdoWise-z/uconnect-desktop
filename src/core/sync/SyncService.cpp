@@ -35,6 +35,8 @@ constexpr int    kMaxPulls      = 32;               // files being fetched per f
 constexpr qint64 kPumpBudget    = 8 * 1024 * 1024;  // bytes sent per event-loop turn
 constexpr auto   kRequestTimeout = 30s;
 constexpr auto   kSaveEvery      = 2s;
+constexpr auto   kSaveWhileFetching = 30s;  // the whole index, rewritten; a rescan rebuilds it anyway
+constexpr auto   kMaxPlanPause   = 5s;
 constexpr auto   kCleanEvery     = 1h;
 constexpr auto   kRateWindow     = 5s;    // rates are averaged over this long
 constexpr auto   kEmitEvery      = 400ms; // progress reaches the UI this often
@@ -385,8 +387,15 @@ void SyncService::work() {
     for (auto& [id, f] : folders_) {
         if (f.state->config.paused) continue;
         // Planning need not wait for a scan: a scan's result leaves alone
-        // whatever changed after it began.
-        if (f.replan) plan(id);
+        // whatever changed after it began. Every finished fetch asks for
+        // another round; a round over a large folder takes a while, so the
+        // next waits a few times that long rather than running every tick.
+        if (f.replan && now >= f.nextPlan) {
+            const auto began = Clock::now();
+            plan(id);
+            const auto took = Clock::now() - began;
+            f.nextPlan = Clock::now() + std::min<Clock::duration>(took * 4, kMaxPlanPause);
+        }
         if (now >= f.nextCleanup) cleanKept(id);
         if (!f.scanning && (f.rescanSoon || now >= f.nextScan)) startScan(id);
         requestBlocks(id);
@@ -397,7 +406,11 @@ void SyncService::work() {
     }
     for (auto& [dev, peer] : peers_)
         for (const QString& id : peer.listening) sendIndex(dev, id, false);
-    if (now - lastSave_ >= kSaveEvery) {
+    // The state file is the whole index; while fetches are running it changes
+    // with every file, so it is written less often then.
+    bool fetching = false;
+    for (const auto& [id, f] : folders_) fetching = fetching || !f.pulls.empty();
+    if (now - lastSave_ >= (fetching ? kSaveWhileFetching : kSaveEvery)) {
         lastSave_ = now;
         for (auto& [id, f] : folders_)
             if (f.dirty) {
@@ -861,11 +874,7 @@ void SyncService::startPull(Folder& f, const QString& folderId, const FileEntry&
     // Where each block can come from without the network: the part file of an
     // earlier attempt, or any file here that has it (a rename, a copy, an
     // earlier version).
-    QHash<QByteArray, std::pair<QString, qint64>> local;
-    for (const FileEntry& e : f.state->local) {
-        if (e.deleted || e.dir || e.skipped) continue;
-        for (int i = 0; i < e.blocks.size(); ++i) local.insert(e.blocks[i], {e.path, qint64(i) * e.blockSize});
-    }
+    const auto& local = blockIndex(f);
     for (int i = 0; i < target.blocks.size(); ++i) {
         const qint64 offset = qint64(i) * target.blockSize;
         const qint64 length = target.blockLength(i);
@@ -884,6 +893,18 @@ void SyncService::startPull(Folder& f, const QString& folderId, const FileEntry&
     p.lastProgress = Clock::now();
     f.pulls[path] = std::move(p);
     if (f.pulls[path].missing.isEmpty()) finishPull(folderId, path);
+}
+
+const QHash<QByteArray, std::pair<QString, qint64>>& SyncService::blockIndex(Folder& f) {
+    if (f.blockIndexValid && f.blockIndexSeq == f.state->seq) return f.blockIndex;
+    f.blockIndex.clear();
+    for (const FileEntry& e : f.state->local) {
+        if (e.deleted || e.dir || e.skipped) continue;
+        for (int i = 0; i < e.blocks.size(); ++i) f.blockIndex.insert(e.blocks[i], {e.path, qint64(i) * e.blockSize});
+    }
+    f.blockIndexSeq   = f.state->seq;
+    f.blockIndexValid = true;
+    return f.blockIndex;
 }
 
 void SyncService::requestBlocks(const QString& folderId) {
