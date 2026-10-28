@@ -15,7 +15,7 @@ ColumnLayout {
     property var members: []
     // Progress changes every second; the rows (with their checkboxes) are
     // rebuilt only when the set of members or their grants change.
-    readonly property string signature: JSON.stringify(members.map(m => [m.key, m.name, m.receive, m.contribute, m.paused, m.special]))
+    readonly property string signature: JSON.stringify(members.map(m => [m.key, m.name, m.receive, m.contribute, m.paused, m.syncs]))
     property var stableMembers: []
     onSignatureChanged: stableMembers = members
     Component.onCompleted: stableMembers = members
@@ -69,7 +69,7 @@ ColumnLayout {
         wrapMode: Text.WordWrap
         color: Theme.textSecondary
         font.pixelSize: Theme.smallFontSize
-        text: qsTr("Send: the device gets this folder and your changes. Accept: you take its changes. A device that only gets sent the folder keeps a copy without changing yours. Only devices that proved their identity can take part. Pausing a device keeps its grants but stops both directions for now.")
+        text: qsTr("Send: the device gets this folder and your changes. Accept: you take its changes. A device that only gets sent the folder keeps a copy without changing yours. A device takes part once it proved its identity and is granted Offer sync or Receive sync here. Pausing a device keeps its grants but stops both directions for now.")
     }
 
     Repeater {
@@ -146,11 +146,11 @@ ColumnLayout {
                 Text {
                     Layout.fillWidth: true
                     Layout.leftMargin: 36
-                    visible: !member.modelData.special
+                    visible: !member.modelData.syncs
                     wrapMode: Text.WordWrap
                     font.pixelSize: Theme.smallFontSize
                     color: Theme.warning
-                    text: qsTr("Not syncing: this device has no special rules here.")
+                    text: qsTr("Not syncing: this device is granted neither Offer sync nor Receive sync here.")
                 }
                 Text {
                     Layout.fillWidth: true

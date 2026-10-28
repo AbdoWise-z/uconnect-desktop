@@ -41,8 +41,10 @@
 - **Storage.** Browse, download and upload files and whole folders in the
   folders a device shares, with read-only shares and a log of what others did.
 - **Folder sync.** Keep a folder the same on several devices, phones
-  included, with conflicts kept rather than overwritten. Only devices with
-  special rules take part. The Synced Folders window shows every file with
+  included, with conflicts kept rather than overwritten. A device takes part
+  once you grant it **Offer sync** or **Receive sync**, like any other
+  permission (special rules, a network rule or the defaults). The Synced
+  Folders window shows every file with
   its state (synced, waiting to send or receive, transferring with progress,
   in conflict, ignored, skipped, or held back), with search, a filter and
   a history per file; edits `.syncignore` (every device) and `.syncskip`

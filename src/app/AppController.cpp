@@ -243,7 +243,8 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     connect(session_, &Session::logMessage, this, &AppController::appendLog);
     SyncService* sync = session_->sync();
     connect(sync, &SyncService::offersChanged, this, [this](const QString& key, const QVariantList& offers) {
-        if (offers.isEmpty()) syncOffers_.remove(key);
+        // Shown only from a device granted Receive sync here.
+        if (offers.isEmpty() || !mayReceiveSyncFrom(key)) syncOffers_.remove(key);
         else syncOffers_.insert(key, offers);
         emit syncChanged();
     });
@@ -1130,6 +1131,25 @@ QStringList AppController::currentPermissionsOf(const QString& key) const {
     return defaultPermissions_;
 }
 
+QStringList AppController::permissionsOfKey(const QString& key) const {
+    for (const PeerRecord& p : peers_.peers())
+        if (p.identityKey == key && p.identityState == QLatin1String("verified")) return p.permissions;
+    QStringList out = defaultPermissions_;
+    if (const auto it = special_.constFind(key); it != special_.constEnd())
+        for (const QString& p : it->permissions)
+            if (!out.contains(p)) out << p;
+    return out;
+}
+
+bool AppController::syncsWithKey(const QString& key) const {
+    const QStringList perms = permissionsOfKey(key);
+    return perms.contains(perm::SyncOffer) || perms.contains(perm::SyncReceive);
+}
+
+bool AppController::mayReceiveSyncFrom(const QString& key) const {
+    return permissionsOfKey(key).contains(perm::SyncReceive);
+}
+
 void AppController::addSpecialRules(const QString& key, const QString& name) {
     if (!keyFromHex(key) || special_.contains(key)) return;
     special_.insert(key, {name.left(64), {}, QDateTime::currentDateTimeUtc()});
@@ -1244,6 +1264,14 @@ void AppController::pushAccessPolicy() {
     policy.rules          = networkRules_;
     policy.localAddresses = localAddresses_;
     onSession([s = session_, policy] { s->setAccessPolicy(policy); });
+    // Offers already shown are checked against the new permissions; the
+    // session tells sync about every connected peer again.
+    bool dropped = false;
+    for (auto it = syncOffers_.begin(); it != syncOffers_.end();) {
+        if (mayReceiveSyncFrom(it.key())) ++it;
+        else { it = syncOffers_.erase(it); dropped = true; }
+    }
+    if (dropped) emit syncChanged();
 }
 
 // --- network rules ------------------------------------------------------------
@@ -1435,9 +1463,16 @@ QVariantList AppController::syncFolders() const {
         folder.insert("path", QDir::toNativeSeparators(c.path));
         folder.insert("paused", c.paused);
         if (!folder.contains("state")) folder.insert("state", c.paused ? "paused" : "scanning");
-        // Only devices with special rules sync, so they are the ones that can
-        // be made members; members are listed anyway, as they hold grants.
-        QStringList keys = special_.keys();
+        // Devices granted Offer sync or Receive sync here can be made
+        // members, as far as is known (special rules, connected peers);
+        // members are listed anyway, as they hold grants.
+        QStringList keys;
+        for (const QString& key : special_.keys())
+            if (syncsWithKey(key)) keys << key;
+        for (const PeerRecord& p : peers_.peers())
+            if (!p.identityKey.isEmpty() && p.identityState == QLatin1String("verified") &&
+                syncsWithKey(p.identityKey) && !keys.contains(p.identityKey))
+                keys << p.identityKey;
         for (auto it = c.peers.begin(); it != c.peers.end(); ++it)
             if (!keys.contains(it.key())) keys << it.key();
         QHash<QString, QVariantMap> engine;  // what sync knows of each member
@@ -1458,7 +1493,7 @@ QVariantList AppController::syncFolders() const {
             m.insert("receive", g.receive);
             m.insert("contribute", g.contribute);
             m.insert("paused", g.paused);
-            m.insert("special", special_.contains(key));
+            m.insert("syncs", syncsWithKey(key));
             m.insert("online", online.contains(key));
             members << m;
         }
@@ -1505,6 +1540,7 @@ QVariantList AppController::syncFolders() const {
 QVariantList AppController::syncOffers() const {
     QVariantList out;
     for (auto it = syncOffers_.cbegin(); it != syncOffers_.cend(); ++it) {
+        if (!mayReceiveSyncFrom(it.key())) continue;
         for (const QVariant& v : *it) {
             const QVariantMap offer = v.toMap();
             const QString     id    = offer.value("id").toString();
@@ -1532,9 +1568,8 @@ QString AppController::createSyncFolder(const QUrl& folder, const QString& label
 
 bool AppController::joinSyncFolder(const QString& key, const QString& id, const QString& label, const QUrl& folder) {
     const QString path = folder.toLocalFile();
-    // Folders sync only with devices that have special rules.
-    const bool known = special_.contains(key);
-    if (path.isEmpty() || !QFileInfo(path).isDir() || !known) return false;
+    // Only from a device granted Receive sync here.
+    if (path.isEmpty() || !QFileInfo(path).isDir() || !mayReceiveSyncFrom(key)) return false;
     if (std::any_of(syncFolders_.begin(), syncFolders_.end(), [&](const sync::FolderConfig& c) { return c.id == id; }))
         return false;
     sync::FolderConfig c;

@@ -1323,7 +1323,7 @@ Window {
             spacing: 8
             TitledSeparator { text: qsTr("Synced Folders") }
             Help {
-                text: qsTr("A synced folder stays the same on every device it is shared with. Only devices with special rules take part, as you choose per folder. The Synced Folders window shows each folder's files, rules, devices and the files syncing set aside.")
+                text: qsTr("A synced folder stays the same on every device it is shared with. A device takes part once you grant it Offer sync or Receive sync (its permissions), then you choose per folder. The Synced Folders window shows each folder's files, rules, devices and the files syncing set aside.")
             }
             UButton {
                 text: qsTr("Open Synced Folders...")

@@ -32,6 +32,7 @@ struct Node {
     std::unique_ptr<SyncService> svc;
     QVariantMap                  status;
     QStringList                  events;
+    QHash<QString, int>          offered;  // peer key -> folders in its last offers
 };
 
 class Net : public QObject {
@@ -43,6 +44,7 @@ public:
     std::set<std::pair<int, int>>     links;
     std::map<std::pair<int, int>, qint64> since;
     std::map<std::pair<int, int>, int>    inFlight;
+    std::set<std::pair<int, int>>     noOffers;  // (from, to): `from` offers nothing to `to`
     qint64 dataBytes = 0;  // block data delivered, all links
 
     Node& add(const QString& name) {
@@ -64,7 +66,9 @@ public:
                 const int other = indexOf(d);
                 const auto it   = since.find({std::min(index, other), std::max(index, other)});
                 return other >= 0 && it != since.end() ? it->second : qint64(-1);
-            });
+            },
+            nullptr,
+            [this, index](const uconnect::DevId& d) { return !noOffers.count({index, indexOf(d)}); });
         n->svc->setIdentity(n->key, n->state);
         n->svc->setScanInterval(150);
         n->svc->setStableAfter(0);
@@ -74,6 +78,8 @@ public:
                 [raw](const QString&, const QVariantMap& s) { raw->status = s; });
         connect(n->svc.get(), &SyncService::event, this,
                 [raw](const QString&, const QString& path, const QString& kind) { raw->events << path + " " + kind; });
+        connect(n->svc.get(), &SyncService::offersChanged, this,
+                [raw](const QString& key, const QVariantList& offers) { raw->offered[key] = int(offers.size()); });
         nodes.push_back(std::move(n));
         return *nodes.back();
     }
@@ -792,6 +798,25 @@ private slots:
         n.nodes[0]->svc->setFolders({c});
         QTRY_COMPARE_WITH_TIMEOUT(contents(at(1, "b.txt")), QByteArray("b"), 10000);
         QTRY_COMPARE_WITH_TIMEOUT(contents(at(0, "c.txt")), QByteArray("c"), 10000);
+    }
+
+    void offersFollowThePermission() {
+        Net& n = *net_;
+        n.add("alice");
+        n.add("bob");
+        n.join(0);  // alice shares; bob has not joined
+        n.noOffers.insert({0, 1});
+        n.link(0, 1);
+        QTest::qWait(400);
+        QCOMPARE(n.nodes[1]->offered.value(n.nodes[0]->key, 0), 0);  // not offered without the permission
+        // Granted: alice tells bob about her folder when told of him again.
+        n.noOffers.erase({0, 1});
+        n.nodes[0]->svc->peerUp(n.nodes[1]->dev);
+        QTRY_COMPARE(n.nodes[1]->offered.value(n.nodes[0]->key, 0), 1);
+        // Taken away again: the offers it gets are empty, so it forgets them.
+        n.noOffers.insert({0, 1});
+        n.nodes[0]->svc->peerUp(n.nodes[1]->dev);
+        QTRY_COMPARE(n.nodes[1]->offered.value(n.nodes[0]->key, 1), 0);
     }
 
     void listsTransfers() {

@@ -40,8 +40,11 @@ public:
     using PeerKeyFn = std::function<QString(const uconnect::DevId&)>;
     // When the connection to a peer began, ms since epoch; -1 if none.
     using SinceFn = std::function<qint64(const uconnect::DevId&)>;
+    // Whether a peer is told which folders it is a member of (its "Offer
+    // sync" permission here); without it the offers it gets are empty.
+    using OfferFn = std::function<bool(const uconnect::DevId&)>;
 
-    SyncService(SendFn send, PeerKeyFn peerKey, SinceFn since, QObject* parent = nullptr);
+    SyncService(SendFn send, PeerKeyFn peerKey, SinceFn since, QObject* parent = nullptr, OfferFn mayOffer = {});
     ~SyncService() override;
 
     // This device's identity key and where folder state is kept. Needed
@@ -273,6 +276,7 @@ private:
 
     SendFn    send_;
     PeerKeyFn peerKey_;
+    OfferFn   mayOffer_;  // empty: every peer
     SinceFn   since_;
     QString   myKey_;
     QString   me_;

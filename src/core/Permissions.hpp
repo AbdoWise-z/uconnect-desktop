@@ -24,6 +24,8 @@ inline const QString ControlInput    = QStringLiteral("control.input");
 inline const QString ControlDirect   = QStringLiteral("control.direct");
 inline const QString DisplayShow     = QStringLiteral("display.show");
 inline const QString DisplayDirect   = QStringLiteral("display.direct");
+inline const QString SyncOffer       = QStringLiteral("sync.offer");
+inline const QString SyncReceive     = QStringLiteral("sync.receive");
 }  // namespace perm
 
 struct PermissionInfo {

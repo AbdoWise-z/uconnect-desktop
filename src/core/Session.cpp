@@ -106,9 +106,10 @@ Session::Session(QObject* parent)
                 const QString key  = have && it->second.identity ? keyToHex(*it->second.identity) : QString();
                 emit storageActivity(hex(dev), name, key, action, path, detail);
             });
-    // Sync is only for peers that proved who they are and have special rules
-    // (network rules and defaults never reach it); each folder then names its
-    // members (by key) and what they may send and receive.
+    // Sync is for peers that proved who they are and are granted Offer sync
+    // or Receive sync here, from any layer (special rules, a network rule,
+    // the defaults); each folder then names its members (by key) and what
+    // they may send and receive. Offers go only to peers with Offer sync.
     sync_ = new SyncService(
         [this](const uconnect::DevId& dev, std::span<const uint8_t> bytes) {
             return topic_ && topic_->send(dev, bytes);
@@ -116,14 +117,17 @@ Session::Session(QObject* parent)
         [this](const uconnect::DevId& dev) {
             const auto it = peers_.find(dev);
             if (it == peers_.end() || !it->second.identity) return QString();
-            const QString key = keyToHex(*it->second.identity);
-            return policy_.special.contains(key) ? key : QString();
+            const PermissionSet perms = permissionsFor(dev);
+            return perms.contains(perm::SyncOffer) || perms.contains(perm::SyncReceive)
+                       ? keyToHex(*it->second.identity)
+                       : QString();
         },
         [this](const uconnect::DevId& dev) {
             const auto it = peers_.find(dev);
             return it == peers_.end() ? qint64(-1) : it->second.connectedAt;
         },
-        this);
+        this,
+        [this](const uconnect::DevId& dev) { return permissionsFor(dev).contains(perm::SyncOffer); });
     pollTimer_->setInterval(kPollInterval);
     snapshotTimer_->setInterval(kSnapshotInterval);
     connect(pollTimer_, &QTimer::timeout, this, &Session::poll);

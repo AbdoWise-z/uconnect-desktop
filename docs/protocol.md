@@ -145,6 +145,8 @@ apps warn when the defaults include one.
 | `storage.write` | `fs.rename`, `fs.delete`, `fs.move`, and `fs.write` with `"replace":true` |
 | `camera.view`, `screen.view`, `screen.direct`, `control.input`, `control.direct` | screen, camera and control sessions (section 7) |
 | `display.show`, `display.direct` | extended display requests, and accepting them without asking (7.6) |
+| `sync.offer` | the peer is sent `sync.offers` naming the folders it is a member of, and takes part in sync (6.1) |
+| `sync.receive` | the peer's `sync.offers` are shown, so this device can join its folders, and it takes part in sync (6.1) |
 
 A saved grant of `storage.download`, from an earlier version, means `storage.read`.
 
@@ -159,9 +161,10 @@ number 0-255. `m.m.m.x` is this device's /24, `100.x.x.x` anything starting
 peer's direct connection arrives from, never against addresses a peer reports
 about itself; a peer reached through the relay matches no rule.
 
-Folder sync does not use these ids. It has its own grants, **send** and
-**accept**, per folder and per peer (6.1). They are not listed in
-`perm.granted`; `sync.offers` tells a peer which folders it is sent.
+Folder sync takes part through `sync.offer` and `sync.receive` (above), and
+has its own grants within a folder, **send** and **accept**, per folder and
+per peer (6.1). Those are not listed in `perm.granted`; `sync.offers` tells a
+peer which folders it is sent.
 
 ## 5. Storage
 
@@ -412,10 +415,14 @@ member through any chain of members that are online.
 - **Folder id.** A folder has a random 128-bit id (32 hex digits), the same
   on every member, and a label.
 - **Who takes part.** Only a peer that has proven its identity (`id`,
-  section 3) **and** has special rules on this device (4), and only in folders
-  whose grants name its key. Network rules and defaults never reach sync.
-  Any other peer gets no sync messages, and its sync messages are ignored;
-  removing a device's special rules takes it out of every folder.
+  section 3) **and** is granted `sync.offer` or `sync.receive` on this device
+  (4, from any layer: special rules, a network rule or the defaults), and
+  only in folders whose grants name its key. Any other peer gets no sync
+  messages, and its sync messages are ignored; taking both permissions away
+  takes a device out of every folder. `sync.offers` names folders only to a
+  peer with `sync.offer` (an empty list otherwise, so it forgets earlier
+  offers); a peer's offers are shown to the user only if it has
+  `sync.receive`. Before sync 1.3, taking part needed special rules.
 - **Grants.** Each device decides two things, per folder and per peer key:
   - **send:** give the peer this folder's index and blocks.
   - **accept:** take the peer's changes into this device's copy.
@@ -971,6 +978,7 @@ request gets `busy`.
 | screen/camera 1.0 | consented screen/camera sessions, H.264 datagrams, feedback/recovery, control, cursor, shared sources (section 7) |
 | sync 1.0 | folder sync (section 6): `sync.offers`, `sync.hello` (with `reply`), `sync.index`, `sync.get`, `sync.err`, kind 4; per-folder send/accept grants; `skip` for `.syncskip` and held-back names; strict names and case clashes (6.6); renames in place; `.synctrash` |
 | sync 1.2 | a folder that leaves a peer's `sync.offers` is forgotten by the receiver; `sync.hello` again after a grant change; a peer may be paused in a folder. No message changed shape |
+| sync 1.3 | taking part follows two ordinary permissions, `sync.offer` and `sync.receive` (4, 6.1), granted like any other, instead of special rules. Local policy only: no message changed shape |
 | display 1.0 | extended display (7.6): `display` service, `display.show` / `display.direct`, `dsp.request`, `dsp.wait`, `dsp.err`, `dsp.accept`, the screen session under `dsp.*`, datagram kinds 4 and 5 |
 | rules 1.0 | trust replaced by special rules; network rules per topic (4.2); `rules.get`, `rules.list`, `rules.err`. Sync membership needs a proven identity, special rules and the folder's grants (sync 1.1); sharing needs a proven identity, and any source may grant sensitive permissions, defaults included (screen/camera 1.1, display 1.1). Only local policy changed: no message changed shape |
 | screen/camera 1.2 | the viewer chooses the frame rate, width and (new `maxBitrate`) bitrate to receive, within the host's limits; `scr.stats` and the playout fields of `scr.report` (7.2); frames converted in parallel but sent in order; higher starting bitrates |

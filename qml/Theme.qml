@@ -124,7 +124,7 @@ QtObject {
     readonly property int stateFailed: 4
     readonly property int stateClosed: 5
 
-    readonly property var services: ["storage", "camera", "screen", "control", "display"]
+    readonly property var services: ["storage", "camera", "screen", "control", "display", "sync"]
 
     function serviceLabel(service) {
         switch (service) {
@@ -133,6 +133,7 @@ QtObject {
         case "screen": return qsTr("Screen Sharing")
         case "control": return qsTr("Remote Control")
         case "display": return qsTr("Extended Display")
+        case "sync": return qsTr("Folder Sync")
         }
         return service
     }

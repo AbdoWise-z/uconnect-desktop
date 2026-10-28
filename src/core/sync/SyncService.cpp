@@ -88,10 +88,11 @@ qint64 SyncService::Meter::rate() const {
     return sum / std::chrono::duration_cast<std::chrono::seconds>(kRateWindow).count();
 }
 
-SyncService::SyncService(SendFn send, PeerKeyFn peerKey, SinceFn since, QObject* parent)
+SyncService::SyncService(SendFn send, PeerKeyFn peerKey, SinceFn since, QObject* parent, OfferFn mayOffer)
     : QObject(parent),
       send_(std::move(send)),
       peerKey_(std::move(peerKey)),
+      mayOffer_(std::move(mayOffer)),
       since_(std::move(since)),
       workTimer_(new QTimer(this)),
       pumpTimer_(new QTimer(this)) {
@@ -258,9 +259,10 @@ void SyncService::sendOffers(const uconnect::DevId& dev) {
     const auto it = peers_.find(dev);
     if (it == peers_.end()) return;
     QJsonArray offers;
-    for (const auto& [id, f] : folders_)
-        if (f.state->config.peers.value(it->second.key).sends())
-            offers.append(QJsonObject{{"id", id}, {"label", f.state->config.label}});
+    if (!mayOffer_ || mayOffer_(dev))
+        for (const auto& [id, f] : folders_)
+            if (f.state->config.peers.value(it->second.key).sends())
+                offers.append(QJsonObject{{"id", id}, {"label", f.state->config.label}});
     enqueue(dev, encodeControl({{"t", "sync.offers"}, {"folders", offers}}));
 }
 

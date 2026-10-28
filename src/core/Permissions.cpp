@@ -88,6 +88,10 @@ const std::vector<PermissionInfo>& permissionTable() {
          false,
 #endif
          true},
+        {perm::SyncOffer, "sync", tr("Offer sync"),
+         tr("Be offered this device's synced folders, and be sent the folders it is a member of."), true},
+        {perm::SyncReceive, "sync", tr("Receive sync"),
+         tr("Have its synced folders offered here, so this device can join them."), true},
     };
     return table;
 }

@@ -385,6 +385,12 @@ private:
     void         saveNetworkRules();
     void         refreshLocalAddresses();
     QStringList  currentPermissionsOf(const QString& key) const;
+    // What a device with this key is granted here, as far as is known: for
+    // a connected peer every layer, otherwise its special rules and the
+    // defaults; and the two sync questions asked of it.
+    QStringList  permissionsOfKey(const QString& key) const;
+    bool         syncsWithKey(const QString& key) const;
+    bool         mayReceiveSyncFrom(const QString& key) const;
     void loadSpecialRules();
     void saveSpecialRules(const QString& key);
     void appendLog(const QString& line);
