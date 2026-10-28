@@ -323,6 +323,10 @@ qt_add_qml_module(uconnect_desktop
         qml/StorageActivityWindow.qml
         qml/PreviewPopup.qml
         qml/SyncWindow.qml
+        qml/SyncFilesView.qml
+        qml/SyncRulesView.qml
+        qml/SyncDevicesView.qml
+        qml/SyncKeptView.qml
         qml/TransfersPopup.qml
         ${_ucd_screen_qml}
         # controls
@@ -534,6 +538,12 @@ if (UCD_BUILD_TESTS)
             "QT_PLUGIN_PATH=${QT6_INSTALL_PREFIX}/plugins"
             "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
     endif ()
+
+    ucd_add_test(SyncViewTest)
+    target_link_libraries(SyncViewTest PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+    target_compile_definitions(SyncViewTest PRIVATE UCD_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    get_property(_ucd_gui_test_environment TEST StorageViewTest PROPERTY ENVIRONMENT)
+    set_tests_properties(SyncViewTest PROPERTIES ENVIRONMENT "${_ucd_gui_test_environment}")
 
     ucd_add_test(SettingsTest)
     target_sources(SettingsTest PRIVATE

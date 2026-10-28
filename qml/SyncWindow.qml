@@ -5,16 +5,18 @@ import QtQuick.Dialogs
 import UConnect
 
 // Folders kept the same on several devices. Left: this device's synced
-// folders and the ones connected devices offer. Right: the selected folder's
-// state, the devices it syncs with, and its conflicts.
+// folders, the ones connected devices offer, and the transfers under way.
+// Right: the selected folder, in views: what is going on (Overview), what
+// is in it (Files), its rules (Rules), the devices it syncs with and where
+// each is at (Devices), and what syncing set aside (Kept Files).
 Window {
     id: win
 
     title: qsTr("Synced Folders")
-    width: 1000
-    height: 660
-    minimumWidth: 760
-    minimumHeight: 440
+    width: 1060
+    height: 700
+    minimumWidth: 800
+    minimumHeight: 480
     color: Theme.canvas
 
     property string selectedId: ""
@@ -24,14 +26,30 @@ Window {
             if (f.id === selectedId) return f
         return folders.length > 0 ? folders[0] : null
     }
+    readonly property string currentId: current ? current.id : ""
     readonly property var openOffers: App.syncOffers.filter(o => !o.joined)
+    readonly property var transfers: App.syncTransfers
     property var pendingJoin: null
     // The selected folder's members, rebuilt only when they change, not with
     // every bit of progress (which would recreate the checkboxes under the mouse).
     property var members: []
     readonly property string membersSignature: current ? JSON.stringify(current.members) : ""
     onMembersSignatureChanged: members = current ? current.members : []
+    readonly property var memberNames: {
+        const names = {}
+        for (const m of members) names[m.key] = m.name
+        return names
+    }
     property string pendingPath: ""
+    // Which view of the folder is shown: 0 overview, 1 files, 2 rules, 3 devices, 4 kept.
+    property int view: 0
+    readonly property var views: [
+        { label: qsTr("Overview"), icon: "info" },
+        { label: qsTr("Files"), icon: "list" },
+        { label: qsTr("Rules"), icon: "rules" },
+        { label: qsTr("Devices"), icon: "devices" },
+        { label: qsTr("Kept Files"), icon: "restore" }
+    ]
 
     function stateText(f) {
         if (!f) return ""
@@ -41,15 +59,29 @@ Window {
         const syncing = f.state === "syncing"
                       ? qsTr("Fetching %1 file(s), %2").arg(f.needFiles).arg(Theme.formatBytes(f.needBytes))
                       : f.state === "scanning" ? qsTr("Looking for changes...") : qsTr("Up to date")
-        return conflicts > 0 ? syncing + " · " + qsTr("%1 conflict(s)").arg(conflicts) : syncing
+        const parts = [syncing]
+        if (conflicts > 0) parts.push(qsTr("%1 conflict(s)").arg(conflicts))
+        if (f.pendingDeleteCount > 0) parts.push(qsTr("%1 delete(s) waiting for you").arg(f.pendingDeleteCount))
+        return parts.join(" · ")
     }
     function stateColor(f) {
         if (!f) return Theme.textSecondary
-        if (f.conflicts && f.conflicts.length > 0) return Theme.warning
+        if ((f.conflicts && f.conflicts.length > 0) || f.pendingDeleteCount > 0) return Theme.warning
         if (f.state === "missing") return Theme.error
         if (f.state === "syncing" || f.state === "scanning") return Theme.accent
         if (f.state === "paused") return Theme.textSecondary
         return Theme.success
+    }
+    function summaryText(f) {
+        if (!f || f.files === undefined) return ""
+        let s = qsTr("%1 file(s) in %2 folder(s), %3").arg(f.files).arg(f.dirs).arg(Theme.formatBytes(f.bytes))
+        if (f.free >= 0) s += " · " + qsTr("%1 free on this disk").arg(Theme.formatBytes(f.free))
+        return s
+    }
+    function candidateText(c) {
+        if (c.deleted) return qsTr("deleted")
+        if (c.dir) return qsTr("a folder")
+        return Theme.formatBytes(c.size) + ", " + Qt.formatDateTime(new Date(c.mtime), "yyyy-MM-dd hh:mm")
     }
     function show() {
         visible = true
@@ -114,9 +146,9 @@ Window {
             anchors.fill: parent
             spacing: 0
 
-            // --- left: folders and offers ----------------------------------------
+            // --- left: folders, offers and transfers ---------------------------------
             Rectangle {
-                Layout.preferredWidth: 280
+                Layout.preferredWidth: 290
                 Layout.fillHeight: true
                 color: Theme.panel
 
@@ -236,6 +268,90 @@ Window {
                         text: qsTr("New Synced Folder...")
                         onClicked: newDialog.open()
                     }
+
+                    // Transfers across every folder.
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 6
+                        implicitHeight: 1
+                        color: Theme.divider
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        UIcon {
+                            name: "swap"
+                            size: 14
+                            color: Theme.textSecondary
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.smallFontSize
+                            text: {
+                                const t = win.transfers
+                                if (!t || !t.active || t.active.length === 0)
+                                    return t && t.queued > 0 ? qsTr("%1 file(s) waiting to be fetched").arg(t.queued) : qsTr("No transfers")
+                                let s = qsTr("%1 transfer(s)").arg(t.active.length)
+                                if (t.queued > 0) s += " · " + qsTr("%1 queued").arg(t.queued)
+                                if (t.rate > 0) s += " · " + qsTr("%1/s").arg(Theme.formatBytes(t.rate))
+                                return s
+                            }
+                        }
+                        ULink {
+                            visible: win.transfers && win.transfers.active && win.transfers.active.length > 0
+                            text: transferList.visible ? qsTr("Hide") : qsTr("Show")
+                            font.pixelSize: Theme.smallFontSize
+                            onClicked: transferList.visible = !transferList.visible
+                        }
+                    }
+                    ListView {
+                        id: transferList
+                        objectName: "syncTransferList"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.min(160, contentHeight)
+                        visible: false
+                        clip: true
+                        model: win.transfers && win.transfers.active ? win.transfers.active : []
+                        boundsBehavior: Flickable.StopAtBounds
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            width: ListView.view.width
+                            spacing: 2
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.path
+                                textFormat: Text.PlainText
+                                elide: Text.ElideMiddle
+                                color: Theme.text
+                                font.pixelSize: Theme.smallFontSize
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 5
+                                    radius: 2.5
+                                    color: Theme.pressed
+                                    Rectangle {
+                                        width: parent.width * (modelData.size > 0 ? Math.min(1, modelData.done / modelData.size) : 0)
+                                        height: parent.height
+                                        radius: 2.5
+                                        color: Theme.accent
+                                    }
+                                }
+                                Text {
+                                    text: qsTr("%1 of %2 · from %3").arg(Theme.formatBytes(modelData.done)).arg(Theme.formatBytes(modelData.size)).arg(modelData.device)
+                                    textFormat: Text.PlainText
+                                    color: Theme.textSecondary
+                                    font.pixelSize: 10
+                                }
+                            }
+                            Item { implicitHeight: 2 }
+                        }
+                    }
                 }
             }
             Rectangle {
@@ -258,294 +374,418 @@ Window {
                     text: qsTr("A synced folder stays the same on every device it is shared with: a change on any of them reaches the others. Create one, or join one another of your devices offers you.")
                 }
 
-                ScrollView {
-                    id: scroll
+                ColumnLayout {
                     anchors.fill: parent
+                    anchors.leftMargin: 16
+                    anchors.rightMargin: 16
                     visible: win.current !== null
-                    contentWidth: availableWidth
+                    spacing: 6
 
-                    ColumnLayout {
-                        width: scroll.availableWidth - 32
-                        x: 16
-                        spacing: 6
-
-                        // Header
-                        RowLayout {
+                    // Header
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 14
+                        spacing: 8
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            Layout.topMargin: 14
-                            spacing: 8
-                            ColumnLayout {
+                            spacing: 2
+                            Text {
                                 Layout.fillWidth: true
-                                spacing: 2
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: win.current ? win.current.label : ""
-                                    textFormat: Text.PlainText
-                                    elide: Text.ElideRight
-                                    color: Theme.text
-                                    font.pixelSize: 16
-                                    font.bold: true
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: win.current ? win.current.path : ""
-                                    textFormat: Text.PlainText
-                                    elide: Text.ElideMiddle
-                                    color: Theme.textSecondary
-                                    font.pixelSize: Theme.smallFontSize
-                                }
-                            }
-                            UButton {
-                                text: qsTr("Open")
-                                onClicked: App.openSyncFolder(win.current.id)
-                            }
-                            UButton {
-                                text: qsTr("Kept Files")
-                                onClicked: App.openSyncKept(win.current.id)
-                            }
-                            UButton {
-                                text: qsTr("Rescan")
-                                enabled: win.current && !win.current.paused
-                                onClicked: App.rescanSyncFolder(win.current.id)
-                            }
-                            UButton {
-                                text: win.current && win.current.paused ? qsTr("Resume") : qsTr("Pause")
-                                onClicked: App.setSyncPaused(win.current.id, !win.current.paused)
-                            }
-                            UButton {
-                                text: qsTr("Leave...")
-                                onClicked: {
-                                    prompt.pending = { id: win.current.id }
-                                    prompt.ask(qsTr("Stop syncing “%1”?").arg(win.current.label),
-                                               qsTr("The files stay in the folder on this device. Other devices keep syncing it among themselves."),
-                                               [{ id: "leave", label: qsTr("Stop Syncing"), primary: true }])
-                                }
-                            }
-                        }
-                        RowLayout {
-                            spacing: 6
-                            StatusDot { color: win.stateColor(win.current) }
-                            Text {
-                                text: win.stateText(win.current)
-                                color: Theme.textSecondary
+                                text: win.current ? win.current.label : ""
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                                color: Theme.text
+                                font.pixelSize: 16
+                                font.bold: true
                             }
                             Text {
-                                visible: win.current !== null && win.current.files !== undefined
-                                text: win.current && win.current.files !== undefined
-                                      ? " · " + qsTr("%1 files, %2").arg(win.current.files).arg(Theme.formatBytes(win.current.bytes))
-                                      : ""
+                                Layout.fillWidth: true
+                                text: win.current ? win.current.path : ""
+                                textFormat: Text.PlainText
+                                elide: Text.ElideMiddle
                                 color: Theme.textSecondary
+                                font.pixelSize: Theme.smallFontSize
                             }
                         }
+                        UButton {
+                            text: qsTr("Open")
+                            onClicked: App.openSyncFolder(win.current.id)
+                        }
+                        UButton {
+                            text: qsTr("Kept Files")
+                            onClicked: win.view = 4
+                        }
+                        UButton {
+                            text: qsTr("Rescan")
+                            enabled: win.current && !win.current.paused
+                            onClicked: App.rescanSyncFolder(win.current.id)
+                        }
+                        UButton {
+                            text: win.current && win.current.paused ? qsTr("Resume") : qsTr("Pause")
+                            onClicked: App.setSyncPaused(win.current.id, !win.current.paused)
+                        }
+                        UButton {
+                            text: qsTr("Leave...")
+                            onClicked: {
+                                prompt.pending = { id: win.current.id }
+                                prompt.ask(qsTr("Stop syncing “%1”?").arg(win.current.label),
+                                           qsTr("The files stay in the folder on this device. Other devices keep syncing it among themselves."),
+                                           [{ id: "leave", label: qsTr("Stop Syncing"), primary: true }])
+                            }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        StatusDot { color: win.stateColor(win.current) }
+                        Text {
+                            text: win.stateText(win.current)
+                            color: Theme.textSecondary
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: text.length > 0
+                            text: win.current && win.current.files !== undefined ? " · " + win.summaryText(win.current) : ""
+                            elide: Text.ElideRight
+                            color: Theme.textSecondary
+                        }
+                    }
 
-                        Help {
-                            text: qsTr("Files that syncing deletes, or that you give up in a conflict, are kept in .synctrash inside the folder for 30 days, then moved to the Recycle Bin.")
-                        }
-
-                        // Conflicts
-                        Section {
-                            visible: win.current && win.current.conflicts.length > 0
-                            text: qsTr("Conflicts")
-                        }
-                        Help {
-                            visible: win.current && win.current.conflicts.length > 0
-                            text: qsTr("Devices changed these files without seeing each other's change. Whatever you choose reaches every device; a version you give up here is kept in .synctrash.")
-                        }
+                    // The views.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        spacing: 2
                         Repeater {
-                            model: win.current ? win.current.conflicts : []
+                            model: win.views
                             delegate: Rectangle {
-                                id: conflict
                                 required property var modelData
-                                Layout.fillWidth: true
-                                implicitHeight: conflictColumn.implicitHeight + 20
+                                required property int index
+                                implicitWidth: tabRow.implicitWidth + 20
+                                implicitHeight: 28
                                 radius: Theme.radius
-                                color: Theme.panel
-                                border.color: modelData.involved ? Theme.warning : Theme.border
-
-                                ColumnLayout {
-                                    id: conflictColumn
-                                    anchors.fill: parent
-                                    anchors.margins: 10
+                                color: win.view === index ? Theme.selection : tabArea.containsMouse ? Theme.hover : "transparent"
+                                RowLayout {
+                                    id: tabRow
+                                    anchors.centerIn: parent
                                     spacing: 6
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: conflict.modelData.path
-                                        textFormat: Text.PlainText
-                                        elide: Text.ElideMiddle
-                                        color: Theme.text
-                                        font.bold: true
+                                    UIcon {
+                                        name: modelData.icon
+                                        size: 14
+                                        color: win.view === index ? Theme.text : Theme.textSecondary
                                     }
                                     Text {
+                                        text: modelData.label
+                                        color: win.view === index ? Theme.text : Theme.textSecondary
+                                    }
+                                    Rectangle {
+                                        visible: index === 0 && win.current && (win.current.conflicts.length > 0 || win.current.pendingDeleteCount > 0)
+                                        implicitWidth: 7
+                                        implicitHeight: 7
+                                        radius: 3.5
+                                        color: Theme.warning
+                                    }
+                                }
+                                MouseArea {
+                                    id: tabArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: win.view = index
+                                }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 1
+                        color: Theme.divider
+                    }
+
+                    StackLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        currentIndex: win.view
+
+                        // Overview: conflicts, deletes waiting, held names, events.
+                        ScrollView {
+                            id: scroll
+                            contentWidth: availableWidth
+                            clip: true
+
+                            ColumnLayout {
+                                width: scroll.availableWidth
+                                spacing: 6
+
+                                Help {
+                                    Layout.topMargin: 6
+                                    text: qsTr("Files that syncing deletes, or that you give up in a conflict, are kept in .synctrash inside the folder for 30 days, then moved to the Recycle Bin. Kept Files lists them and puts them back.")
+                                }
+
+                                // Deletes held back.
+                                Banner {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: 8
+                                    visible: win.current && win.current.pendingDeleteCount > 0
+                                    kind: "error"
+                                    text: qsTr("Another device removed %1 files at once; they are kept here until you choose. Delete them here too (they go to .synctrash), or keep them everywhere: they become changes of yours that the other devices take back.").arg(win.current ? win.current.pendingDeleteCount : 0)
+                                    UButton {
+                                        text: qsTr("Keep Everywhere")
+                                        onClicked: App.confirmSyncDeletes(win.current.id, false)
+                                    }
+                                    UButton {
+                                        text: qsTr("Delete Here Too")
+                                        primary: true
+                                        onClicked: App.confirmSyncDeletes(win.current.id, true)
+                                    }
+                                }
+                                Repeater {
+                                    model: win.current && win.current.pendingDeleteCount > 0 ? win.current.pendingDeletes.slice(0, 12) : []
+                                    delegate: Text {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        text: modelData
+                                        textFormat: Text.PlainText
+                                        elide: Text.ElideMiddle
+                                        font.pixelSize: Theme.smallFontSize
+                                        color: Theme.textSecondary
+                                    }
+                                }
+                                Help {
+                                    Layout.leftMargin: 12
+                                    visible: win.current && win.current.pendingDeleteCount > 12
+                                    text: qsTr("… and %1 more. The Files view, filtered to Pending, lists them all.").arg(win.current ? win.current.pendingDeleteCount - 12 : 0)
+                                }
+
+                                // Conflicts
+                                Section {
+                                    visible: win.current && win.current.conflicts.length > 0
+                                    text: qsTr("Conflicts")
+                                }
+                                Help {
+                                    visible: win.current && win.current.conflicts.length > 0
+                                    text: qsTr("Devices changed these files without seeing each other's change. Whatever you choose reaches every device; a version you give up here is kept in .synctrash.")
+                                }
+                                Repeater {
+                                    model: win.current ? win.current.conflicts : []
+                                    delegate: Rectangle {
+                                        id: conflict
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        implicitHeight: conflictColumn.implicitHeight + 20
+                                        radius: Theme.radius
+                                        color: Theme.panel
+                                        border.color: modelData.involved ? Theme.warning : Theme.border
+
+                                        ColumnLayout {
+                                            id: conflictColumn
+                                            anchors.fill: parent
+                                            anchors.margins: 10
+                                            spacing: 6
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: conflict.modelData.path
+                                                    textFormat: Text.PlainText
+                                                    elide: Text.ElideMiddle
+                                                    color: Theme.text
+                                                    font.bold: true
+                                                }
+                                                UIconButton {
+                                                    glyph: "open"
+                                                    tip: qsTr("Open this device's version")
+                                                    visible: conflict.modelData.candidates.some(c => c.mine && !c.deleted)
+                                                    onClicked: App.openSyncPath(win.current.id, conflict.modelData.path)
+                                                }
+                                                UIconButton {
+                                                    glyph: "history"
+                                                    tip: qsTr("History")
+                                                    onClicked: {
+                                                        win.view = 1
+                                                        filesView.showHistory(conflict.modelData.path)
+                                                    }
+                                                }
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                wrapMode: Text.WordWrap
+                                                textFormat: Text.PlainText
+                                                color: Theme.textSecondary
+                                                text: conflict.modelData.involved
+                                                      ? qsTr("You changed it here while another device changed it too.")
+                                                      : conflict.modelData.waiting
+                                                      ? qsTr("Other devices changed it differently; waiting for one of them to connect.")
+                                                      : conflict.modelData.following.length > 0
+                                                      ? qsTr("Other devices changed it differently. Following %1's version, the device connected longest.").arg(conflict.modelData.followingName)
+                                                      : qsTr("Other devices changed it differently. Keeping the version this device has.")
+                                            }
+                                            // The versions side by side.
+                                            Repeater {
+                                                model: conflict.modelData.candidates
+                                                delegate: RowLayout {
+                                                    id: candidate
+                                                    required property var modelData
+                                                    Layout.fillWidth: true
+                                                    spacing: 8
+                                                    Avatar {
+                                                        name: candidate.modelData.name
+                                                        seed: candidate.modelData.key
+                                                        size: 18
+                                                    }
+                                                    Text {
+                                                        Layout.preferredWidth: 160
+                                                        text: candidate.modelData.name
+                                                        textFormat: Text.PlainText
+                                                        elide: Text.ElideRight
+                                                        color: Theme.text
+                                                        font.bold: candidate.modelData.mine
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: win.candidateText(candidate.modelData)
+                                                        textFormat: Text.PlainText
+                                                        elide: Text.ElideRight
+                                                        color: Theme.textSecondary
+                                                        font.pixelSize: Theme.smallFontSize
+                                                    }
+                                                    UButton {
+                                                        visible: candidate.modelData.mine
+                                                        primary: conflict.modelData.involved
+                                                        text: conflict.modelData.involved ? qsTr("Keep Mine") : qsTr("Keep This Version")
+                                                        onClicked: App.resolveSyncConflict(win.current.id, conflict.modelData.path, "mine", "")
+                                                    }
+                                                    UButton {
+                                                        visible: !candidate.modelData.mine && candidate.modelData.key.length > 0
+                                                        text: qsTr("Take %1's").arg(candidate.modelData.name)
+                                                        onClicked: App.resolveSyncConflict(win.current.id, conflict.modelData.path, "theirs", candidate.modelData.key)
+                                                    }
+                                                }
+                                            }
+                                            Flow {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                UButton {
+                                                    text: qsTr("Stop Syncing This File")
+                                                    onClicked: App.resolveSyncConflict(win.current.id, conflict.modelData.path, "skip", "")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Held back
+                                Section {
+                                    visible: win.current && win.current.held && win.current.held.length > 0
+                                    text: qsTr("Not synced here")
+                                }
+                                Help {
+                                    visible: win.current && win.current.held && win.current.held.length > 0
+                                    text: qsTr("Synced names follow the strictest rules of every system, so any device can hold every file. These stay on this device, untouched, until the cause goes.")
+                                }
+                                Repeater {
+                                    model: win.current && win.current.held ? win.current.held : []
+                                    delegate: ColumnLayout {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        spacing: 0
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: modelData.path
+                                            textFormat: Text.PlainText
+                                            elide: Text.ElideMiddle
+                                            color: Theme.text
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: modelData.text
+                                            textFormat: Text.PlainText
+                                            wrapMode: Text.WordWrap
+                                            color: Theme.textSecondary
+                                            font.pixelSize: Theme.smallFontSize
+                                        }
+                                    }
+                                }
+
+                                // Events
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Section {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Recent events")
+                                    }
+                                    ULink {
+                                        Layout.topMargin: 14
+                                        visible: App.syncEvents.length > 0
+                                        text: qsTr("Clear")
+                                        font.pixelSize: Theme.smallFontSize
+                                        onClicked: App.clearSyncEvents()
+                                    }
+                                }
+                                Repeater {
+                                    model: win.current ? App.syncEvents.filter(e => e.folderId === win.current.id).slice(0, 50) : []
+                                    delegate: Text {
+                                        required property var modelData
                                         Layout.fillWidth: true
                                         wrapMode: Text.WordWrap
                                         textFormat: Text.PlainText
                                         color: Theme.textSecondary
-                                        text: conflict.modelData.involved
-                                              ? qsTr("You changed it here while another device changed it too.")
-                                              : conflict.modelData.waiting
-                                              ? qsTr("Other devices changed it differently; waiting for one of them to connect.")
-                                              : conflict.modelData.following.length > 0
-                                              ? qsTr("Other devices changed it differently. Following %1's version, the device connected longest.").arg(conflict.modelData.followingName)
-                                              : qsTr("Other devices changed it differently. Keeping the version this device has.")
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        textFormat: Text.PlainText
-                                        color: Theme.textSecondary
                                         font.pixelSize: Theme.smallFontSize
-                                        text: conflict.modelData.candidates.map(c =>
-                                            c.name + ": " + (c.deleted ? qsTr("deleted") : c.dir ? qsTr("a folder")
-                                                             : Theme.formatBytes(c.size) + ", "
-                                                               + Qt.formatDateTime(new Date(c.mtime), "yyyy-MM-dd hh:mm"))).join("   ·   ")
-                                    }
-                                    Flow {
-                                        Layout.fillWidth: true
-                                        spacing: 6
-                                        UButton {
-                                            visible: conflict.modelData.candidates.some(c => c.mine)
-                                            primary: conflict.modelData.involved
-                                            text: conflict.modelData.involved ? qsTr("Keep Mine") : qsTr("Keep This Version")
-                                            onClicked: App.resolveSyncConflict(win.current.id, conflict.modelData.path, "mine", "")
-                                        }
-                                        Repeater {
-                                            model: conflict.modelData.candidates.filter(c => !c.mine && c.key.length > 0)
-                                            delegate: UButton {
-                                                required property var modelData
-                                                text: qsTr("Take %1's").arg(modelData.name)
-                                                onClicked: App.resolveSyncConflict(win.current.id, conflict.modelData.path,
-                                                                                   "theirs", modelData.key)
-                                            }
-                                        }
-                                        UButton {
-                                            text: qsTr("Stop Syncing This File")
-                                            onClicked: App.resolveSyncConflict(win.current.id, conflict.modelData.path, "skip", "")
-                                        }
+                                        text: Qt.formatDateTime(new Date(modelData.time), "hh:mm:ss") + "  " + modelData.text
                                     }
                                 }
+                                Help {
+                                    visible: win.current && App.syncEvents.filter(e => e.folderId === win.current.id).length === 0
+                                    text: qsTr("Nothing to report.")
+                                }
+                                Item { implicitHeight: 16 }
                             }
                         }
 
-                        // Held back
-                        Section {
-                            visible: win.current && win.current.held && win.current.held.length > 0
-                            text: qsTr("Not synced here")
+                        // Files
+                        Item {
+                            SyncFilesView {
+                                id: filesView
+                                anchors.fill: parent
+                                anchors.topMargin: 8
+                                anchors.bottomMargin: 12
+                                folderId: win.currentId
+                                memberNames: win.memberNames
+                            }
                         }
-                        Help {
-                            visible: win.current && win.current.held && win.current.held.length > 0
-                            text: qsTr("Synced names follow the strictest rules of every system, so any device can hold every file. These stay on this device, untouched, until the cause goes.")
-                        }
-                        Repeater {
-                            model: win.current && win.current.held ? win.current.held : []
-                            delegate: ColumnLayout {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                spacing: 0
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: modelData.path
-                                    textFormat: Text.PlainText
-                                    elide: Text.ElideMiddle
-                                    color: Theme.text
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: modelData.text
-                                    textFormat: Text.PlainText
-                                    wrapMode: Text.WordWrap
-                                    color: Theme.textSecondary
-                                    font.pixelSize: Theme.smallFontSize
-                                }
+
+                        // Rules
+                        Item {
+                            SyncRulesView {
+                                anchors.fill: parent
+                                anchors.topMargin: 8
+                                anchors.bottomMargin: 12
+                                folderId: win.currentId
                             }
                         }
 
                         // Devices
-                        Section { text: qsTr("Devices") }
-                        Help {
-                            text: qsTr("Send: the device gets this folder and your changes. Accept: you take its changes. A device that only gets sent the folder keeps a copy without changing yours. Only devices that proved their identity can take part.")
-                        }
-                        Repeater {
-                            model: win.members
-                            delegate: RowLayout {
-                                id: member
-                                required property var modelData
-                                Layout.fillWidth: true
-                                spacing: 10
-                                Avatar {
-                                    name: member.modelData.name
-                                    seed: member.modelData.key
-                                    size: 22
-                                }
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 0
-                                    RowLayout {
-                                        spacing: 6
-                                        Text {
-                                            text: member.modelData.name
-                                            textFormat: Text.PlainText
-                                            color: Theme.text
-                                        }
-                                        StatusDot {
-                                            color: member.modelData.online ? Theme.success : Theme.textDisabled
-                                        }
-                                    }
-                                    Text {
-                                        text: member.modelData.fingerprint
-                                        color: Theme.textDisabled
-                                        font.pixelSize: Theme.smallFontSize
-                                    }
-                                }
-                                UCheckBox {
-                                    text: qsTr("Send")
-                                    checked: member.modelData.receive
-                                    onToggled: App.setSyncMember(win.current.id, member.modelData.key, checked,
-                                                                 member.modelData.contribute)
-                                }
-                                UCheckBox {
-                                    text: qsTr("Accept")
-                                    checked: member.modelData.contribute
-                                    onToggled: App.setSyncMember(win.current.id, member.modelData.key,
-                                                                 member.modelData.receive, checked)
-                                }
+                        ScrollView {
+                            id: devicesScroll
+                            contentWidth: availableWidth
+                            clip: true
+                            SyncDevicesView {
+                                width: devicesScroll.availableWidth
+                                folderId: win.currentId
+                                members: win.current ? win.current.members : []
                             }
-                        }
-                        Help {
-                            visible: win.current && win.members.length === 0
-                            text: qsTr("Your devices appear here once they connect and prove their identity.")
                         }
 
-                        // Events
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Section {
-                                Layout.fillWidth: true
-                                text: qsTr("Recent events")
-                            }
-                            ULink {
-                                Layout.topMargin: 14
-                                visible: App.syncEvents.length > 0
-                                text: qsTr("Clear")
-                                font.pixelSize: Theme.smallFontSize
-                                onClicked: App.clearSyncEvents()
+                        // Kept files
+                        Item {
+                            SyncKeptView {
+                                anchors.fill: parent
+                                anchors.topMargin: 8
+                                anchors.bottomMargin: 12
+                                folderId: win.currentId
                             }
                         }
-                        Repeater {
-                            model: win.current ? App.syncEvents.filter(e => e.folderId === win.current.id).slice(0, 50) : []
-                            delegate: Text {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                wrapMode: Text.WordWrap
-                                textFormat: Text.PlainText
-                                color: Theme.textSecondary
-                                font.pixelSize: Theme.smallFontSize
-                                text: Qt.formatDateTime(new Date(modelData.time), "hh:mm:ss") + "  " + modelData.text
-                            }
-                        }
-                        Help {
-                            visible: win.current && App.syncEvents.filter(e => e.folderId === win.current.id).length === 0
-                            text: qsTr("Nothing to report.")
-                        }
-                        Item { implicitHeight: 16 }
                     }
                 }
             }

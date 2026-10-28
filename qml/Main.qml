@@ -299,6 +299,7 @@ ApplicationWindow {
 
     SettingsWindow {
         id: settingsWindow
+        onServiceRequested: (service) => root.openService(service, "")
     }
 
     SpecialRulesDialog {

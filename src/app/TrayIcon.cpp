@@ -119,6 +119,9 @@ TrayIcon::TrayIcon(AppController* app, ScreenController* screen, ScreenControlle
     connect(app_, &AppController::snapshotChanged, this, &TrayIcon::update);
     connect(app_, &AppController::topicLinkChanged, this, &TrayIcon::update);
     connect(app_, &AppController::firstRunChanged, this, &TrayIcon::update);
+    connect(app_, &AppController::trayMessage, this, [this](const QString& title, const QString& text) {
+        if (icon_) icon_->showMessage(title, text, QGuiApplication::windowIcon(), 8000);
+    });
     connect(screen_, &ScreenController::hostingChanged, this, &TrayIcon::update);
     connect(camera_, &ScreenController::hostingChanged, this, &TrayIcon::update);
     connect(display_, &DisplayController::hostingChanged, this, &TrayIcon::update);

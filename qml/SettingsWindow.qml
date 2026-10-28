@@ -12,6 +12,8 @@ Window {
 
     property string currentPage: "general"
     property string query: ""
+    // A page asks the main window to open a service window (the synced folders).
+    signal serviceRequested(string service)
 
     readonly property var pages: [
         { id: "general", title: qsTr("General"), depth: 0, icon: "settings", keywords: "appearance color colour scheme theme dark light system startup automatically tray close minimize background login sign in boot hidden" },
@@ -23,6 +25,7 @@ Window {
         { id: "screen", title: Theme.serviceLabel("screen"), depth: 1, parent: "services", icon: "screen", keywords: "display" },
         { id: "control", title: Theme.serviceLabel("control"), depth: 1, parent: "services", icon: "mouse", keywords: "mouse keyboard" },
         { id: "display", title: Theme.serviceLabel("display"), depth: 1, parent: "services", icon: "cast", keywords: "monitor second screen extend driver tablet" },
+        { id: "sync", title: qsTr("Synced Folders"), depth: 1, parent: "services", icon: "sync", keywords: "sync folders notifications tray conflicts deletes kept trash rules ignore skip" },
         { id: "sharing", title: qsTr("Sharing"), depth: 0, icon: "share", keywords: "camera screen display video encoder codec stop shortcut hotkey" },
         { id: "watching", title: qsTr("Watching"), depth: 0, icon: "visibility", keywords: "view watch control other devices keyboard webcam virtual camera" },
         { id: "permissions", title: qsTr("Permissions"), depth: 0, icon: "shield", keywords: "special rules identity fingerprint default access device" },
@@ -158,6 +161,7 @@ Window {
         property int relayMode: 0
         property bool debugOnStartup
         property bool closeToTray
+        property bool syncNotifications: true
         property bool launchAtLogin
         property bool startHidden
         property var sharedFolders: []
@@ -382,6 +386,7 @@ Window {
                                      || draft.relayMode !== App.relayMode
                                      || draft.debugOnStartup !== App.debugOnStartup
                                      || draft.closeToTray !== App.closeToTray
+                                     || draft.syncNotifications !== App.syncNotifications
                                      || draft.launchAtLogin !== App.launchAtLogin
                                      || draft.startHidden !== App.startHidden
                                      || draft.sharedFolders.join("
@@ -408,6 +413,7 @@ Window {
         draft.relayMode = App.relayMode
         draft.debugOnStartup = App.debugOnStartup
         draft.closeToTray = App.closeToTray
+        draft.syncNotifications = App.syncNotifications
         draft.launchAtLogin = App.launchAtLogin
         draft.startHidden = App.startHidden
         draft.sharedFolders = App.sharedFolders.slice()
@@ -434,6 +440,7 @@ Window {
             relayMode: draft.relayMode,
             debugOnStartup: draft.debugOnStartup,
             closeToTray: draft.closeToTray,
+            syncNotifications: draft.syncNotifications,
             launchAtLogin: draft.launchAtLogin,
             startHidden: draft.startHidden,
             sharedFolders: draft.sharedFolders,
@@ -1311,6 +1318,36 @@ Window {
     // Settings several services share: camera, screen sharing and extended
     // display all stop with one shortcut and encode with the same codecs.
     Component {
+        id: syncPage
+        ColumnLayout {
+            spacing: 8
+            TitledSeparator { text: qsTr("Synced Folders") }
+            Help {
+                text: qsTr("A synced folder stays the same on every device it is shared with. Only devices with special rules take part, as you choose per folder. The Synced Folders window shows each folder's files, rules, devices and the files syncing set aside.")
+            }
+            UButton {
+                text: qsTr("Open Synced Folders...")
+                onClicked: dlg.serviceRequested("sync")
+            }
+            TitledSeparator { text: qsTr("Notifications") }
+            UCheckBox {
+                text: qsTr("Tell me in the system tray about sync problems")
+                checked: draft.syncNotifications
+                onToggled: draft.syncNotifications = checked
+            }
+            Indented {
+                Help {
+                    text: qsTr("Conflicts that are yours to resolve, names that cannot sync, many deletes arriving at once, and a device that stays behind for a long time. The status bar shows them either way.")
+                }
+            }
+            TitledSeparator { text: qsTr("Kept Files") }
+            Help {
+                text: qsTr("Files that syncing deletes, or that you give up in a conflict, wait in .synctrash inside the folder for 30 days, then go to the Recycle Bin. Each folder's Kept Files view lists them and puts them back.")
+            }
+        }
+    }
+
+    Component {
         id: sharingPage
         ColumnLayout {
             spacing: 8
@@ -1591,6 +1628,7 @@ Window {
         case "screen":
         case "control":
         case "display": return servicePage
+        case "sync": return syncPage
         case "sharing": return sharingPage
         case "watching": return watchingPage
         case "permissions": return permissionsPage

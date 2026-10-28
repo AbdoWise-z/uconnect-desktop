@@ -9,6 +9,7 @@
 #include <QClipboard>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QProcess>
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -59,12 +60,14 @@ constexpr auto DownloadFolder = "storage/downloadFolder";
 constexpr auto MaxUploadMB    = "storage/maxUploadMB";
 constexpr auto DefaultPerms   = "permissions/defaults";
 constexpr auto Special        = "special";  // a group per public key with special rules
+constexpr auto SyncNotify     = "syncNotifications";
 constexpr auto LegacyTrust    = "trust";    // before special rules: trusted devices
 }  // namespace Key
 
 constexpr int kMaxBatchFiles = 10000;
 constexpr int kMaxActivity   = 1000;
 constexpr int kMaxSyncEvents = 200;
+constexpr qint64 kBehindAfterMs = 15 * 60 * 1000;  // a device that makes no progress this long is "behind"
 
 // Kept beside the identity, one JSON object per line, oldest first.
 QString activityFile() {
@@ -141,6 +144,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     if (forceRelay_) relayMode_ = 1;
     debugOnStartup_ = settings.value(Key::DebugOnStartup, false).toBool();
     closeToTray_    = settings.value(Key::CloseToTray, true).toBool();
+    syncNotifications_ = settings.value(Key::SyncNotify, true).toBool();
     startHidden_    = settings.value(Key::StartHidden, true).toBool();
     profile_        = options.profile;
     // Registered with the system, not in settings; registering again keeps
@@ -245,6 +249,7 @@ AppController::AppController(const LaunchOptions& options, QObject* parent) : QO
     });
     connect(sync, &SyncService::folderChanged, this, [this](const QString& id, const QVariantMap& status) {
         syncStatus_.insert(id, status);
+        checkSyncBehind(id, status);
         emit syncChanged();
     });
     connect(sync, &SyncService::event, this, &AppController::addSyncEvent);
@@ -521,6 +526,7 @@ void AppController::applySettings(const QVariantMap& values) {
     }
     applyBool(Key::DebugOnStartup, debugOnStartup_);
     applyBool(Key::CloseToTray, closeToTray_);
+    applyBool(Key::SyncNotify, syncNotifications_);
 
     const bool hiddenBefore = startHidden_;
     applyBool(Key::StartHidden, startHidden_);
@@ -1372,8 +1378,11 @@ void AppController::loadSync() {
         c.paused = settings.value("paused", false).toBool();
         const QStringList receive    = settings.value("receive").toStringList();
         const QStringList contribute = settings.value("contribute").toStringList();
+        const QStringList pausedPeers = settings.value("pausedPeers").toStringList();
         for (const QString& key : receive) c.peers[key].receive = true;
         for (const QString& key : contribute) c.peers[key].contribute = true;
+        for (const QString& key : pausedPeers)
+            if (c.peers.contains(key)) c.peers[key].paused = true;
         settings.endGroup();
         if (!c.path.isEmpty()) syncFolders_ << c;
     }
@@ -1388,13 +1397,15 @@ void AppController::saveSync() const {
         settings.setValue("label", c.label);
         settings.setValue("path", c.path);
         settings.setValue("paused", c.paused);
-        QStringList receive, contribute;
+        QStringList receive, contribute, pausedPeers;
         for (auto it = c.peers.begin(); it != c.peers.end(); ++it) {
             if (it->receive) receive << it.key();
             if (it->contribute) contribute << it.key();
+            if (it->paused) pausedPeers << it.key();
         }
         settings.setValue("receive", receive);
         settings.setValue("contribute", contribute);
+        settings.setValue("pausedPeers", pausedPeers);
         settings.endGroup();
     }
 }
@@ -1429,14 +1440,40 @@ QVariantList AppController::syncFolders() const {
         QStringList keys = special_.keys();
         for (auto it = c.peers.begin(); it != c.peers.end(); ++it)
             if (!keys.contains(it.key())) keys << it.key();
+        QHash<QString, QVariantMap> engine;  // what sync knows of each member
+        for (const QVariant& v : folder.value("members").toList()) engine.insert(v.toMap().value("key").toString(), v.toMap());
         QVariantList members;
         for (const QString& key : keys) {
             const sync::Grant g = c.peers.value(key);
-            members << QVariantMap{{"key", key}, {"name", deviceName(key)}, {"fingerprint", fingerprintOfHex(key)},
-                                   {"receive", g.receive}, {"contribute", g.contribute},
-                                   {"special", special_.contains(key)}, {"online", online.contains(key)}};
+            QVariantMap m = engine.value(key);
+            for (const char* zero : {"toSendFiles", "toSendBytes", "toSendChanges", "toReceiveFiles", "toReceiveBytes",
+                                     "toReceiveChanges", "rate", "sendRate", "skipped", "lastSeen", "lastInSync"})
+                if (!m.contains(zero)) m.insert(zero, 0);
+            if (!m.contains("eta")) m.insert("eta", -1);
+            if (!m.contains("current")) m.insert("current", QString());
+            if (!m.contains("sending")) m.insert("sending", false);
+            m.insert("key", key);
+            m.insert("name", deviceName(key));
+            m.insert("fingerprint", fingerprintOfHex(key));
+            m.insert("receive", g.receive);
+            m.insert("contribute", g.contribute);
+            m.insert("paused", g.paused);
+            m.insert("special", special_.contains(key));
+            m.insert("online", online.contains(key));
+            members << m;
         }
         folder.insert("members", members);
+        QVariantList transfers;
+        for (const QVariant& v : folder.value("transfers").toList()) {
+            QVariantMap t = v.toMap();
+            t.insert("device", deviceName(t.value("key").toString()));
+            transfers << t;
+        }
+        folder.insert("transfers", transfers);
+        if (!folder.contains("pendingDeletes")) folder.insert("pendingDeletes", QVariantList{});
+        if (!folder.contains("pendingDeleteCount")) folder.insert("pendingDeleteCount", 0);
+        if (!folder.contains("dirs")) folder.insert("dirs", 0);
+        if (!folder.contains("free")) folder.insert("free", -1);
         // Conflicts with device names for the keys.
         QVariantList conflicts;
         for (const QVariant& v : folder.value("conflicts").toList()) {
@@ -1535,6 +1572,199 @@ void AppController::setSyncMember(const QString& id, const QString& key, bool re
     }
 }
 
+void AppController::setSyncMemberPaused(const QString& id, const QString& key, bool paused) {
+    for (sync::FolderConfig& c : syncFolders_) {
+        if (c.id != id || !c.peers.contains(key) || c.peers[key].paused == paused) continue;
+        c.peers[key].paused = paused;
+        saveSync();
+        pushSync();
+        return;
+    }
+}
+
+QVariantMap AppController::syncTransfers() const {
+    QVariantList active;
+    qint64       queued = 0;
+    QHash<QString, qint64> rates;  // by key: one meter per peer, whatever the folder
+    for (const sync::FolderConfig& c : syncFolders_) {
+        const QVariantMap status = syncStatus_.value(c.id);
+        const QVariantList list = status.value("transfers").toList();
+        for (const QVariant& v : list) {
+            QVariantMap t = v.toMap();
+            t.insert("folder", c.id);
+            t.insert("label", c.label);
+            t.insert("device", deviceName(t.value("key").toString()));
+            active << t;
+        }
+        queued += std::max<qint64>(0, status.value("needFiles").toLongLong() - list.size());
+        for (const QVariant& v : status.value("members").toList()) {
+            const QVariantMap m = v.toMap();
+            rates[m.value("key").toString()] = std::max(rates.value(m.value("key").toString()), m.value("rate").toLongLong());
+        }
+    }
+    qint64 rate = 0;
+    for (qint64 r : rates) rate += r;
+    return {{"active", active}, {"queued", queued}, {"rate", rate}};
+}
+
+void AppController::loadSyncFiles(const QString& id) {
+    onSession([this, s = session_, id] {
+        const QVariantList files = s->sync()->files(id);
+        QMetaObject::invokeMethod(this, [this, id, files] { emit syncFilesLoaded(id, files); }, Qt::QueuedConnection);
+    });
+}
+
+void AppController::loadSyncFileInfo(const QString& id, const QString& path) {
+    onSession([this, s = session_, id, path] {
+        const QVariantMap info = s->sync()->fileInfo(id, path);
+        QMetaObject::invokeMethod(this, [this, id, path, info] { emit syncFileInfoLoaded(id, path, info); },
+                                  Qt::QueuedConnection);
+    });
+}
+
+void AppController::loadSyncRules(const QString& id, bool skipFile) {
+    onSession([this, s = session_, id, skipFile] {
+        const QString text = s->sync()->rulesText(id, skipFile);
+        QMetaObject::invokeMethod(this, [this, id, skipFile, text] { emit syncRulesLoaded(id, skipFile, text); },
+                                  Qt::QueuedConnection);
+    });
+}
+
+void AppController::previewSyncRules(const QString& id, bool skipFile, const QString& text, const QString& probe) {
+    onSession([this, s = session_, id, skipFile, text, probe] {
+        const QVariantMap preview = s->sync()->previewRules(id, skipFile, text, probe);
+        QMetaObject::invokeMethod(this, [this, id, skipFile, preview] { emit syncRulesPreviewed(id, skipFile, preview); },
+                                  Qt::QueuedConnection);
+    });
+}
+
+void AppController::saveSyncRules(const QString& id, bool skipFile, const QString& text) {
+    onSession([this, s = session_, id, skipFile, text] {
+        const bool ok = s->sync()->saveRules(id, skipFile, text);
+        QMetaObject::invokeMethod(this, [this, skipFile, ok] {
+            emit notify(ok ? (skipFile ? tr("Saved .syncskip. It applies to this device only.")
+                                       : tr("Saved .syncignore. It reaches every device in the folder."))
+                           : tr("Could not write the rules file."));
+        }, Qt::QueuedConnection);
+    });
+}
+
+void AppController::addSyncRule(const QString& id, bool skipFile, const QString& path) {
+    onSession([this, s = session_, id, skipFile, path] {
+        const bool ok = s->sync()->addRule(id, skipFile, path);
+        QMetaObject::invokeMethod(this, [this, skipFile, path, ok] {
+            emit notify(!ok ? tr("Could not write the rules file.")
+                        : skipFile ? tr("%1 is skipped on this device from now on. Its copy here stays as it is.").arg(path)
+                                   : tr("%1 is ignored everywhere from now on. Copies stay on disk.").arg(path));
+        }, Qt::QueuedConnection);
+    });
+}
+
+void AppController::loadSyncKept(const QString& id) {
+    onSession([this, s = session_, id] {
+        const QVariantList kept = s->sync()->keptFiles(id);
+        QMetaObject::invokeMethod(this, [this, id, kept] { emit syncKeptLoaded(id, kept); }, Qt::QueuedConnection);
+    });
+}
+
+void AppController::restoreSyncKept(const QString& id, const QString& kept) {
+    onSession([this, s = session_, id, kept] {
+        const bool ok = s->sync()->restoreKept(id, kept);
+        QMetaObject::invokeMethod(this, [this, id, ok] {
+            emit notify(ok ? tr("Restored. It syncs to the other devices as a new change.")
+                           : tr("Could not restore that file."));
+            loadSyncKept(id);
+        }, Qt::QueuedConnection);
+    });
+}
+
+void AppController::discardSyncKept(const QString& id, const QString& kept) {
+    onSession([this, s = session_, id, kept] {
+        const bool ok = s->sync()->discardKept(id, kept);
+        QMetaObject::invokeMethod(this, [this, id, ok] {
+            if (!ok) emit notify(tr("Could not remove that file."));
+            loadSyncKept(id);
+        }, Qt::QueuedConnection);
+    });
+}
+
+void AppController::confirmSyncDeletes(const QString& id, bool apply) {
+    onSession([s = session_, id, apply] { s->sync()->confirmDeletes(id, apply); });
+}
+
+void AppController::openSyncPath(const QString& id, const QString& path) const {
+    for (const sync::FolderConfig& c : syncFolders_)
+        if (c.id == id) QDesktopServices::openUrl(QUrl::fromLocalFile(QDir(c.path).filePath(path)));
+}
+
+void AppController::showSyncPath(const QString& id, const QString& path) const {
+    for (const sync::FolderConfig& c : syncFolders_) {
+        if (c.id != id) continue;
+        const QString abs = QDir(c.path).filePath(path);
+#if defined(Q_OS_WIN)
+        if (QFileInfo::exists(abs)) {
+            QProcess::startDetached(QStringLiteral("explorer"), {QStringLiteral("/select,"), QDir::toNativeSeparators(abs)});
+            return;
+        }
+#elif defined(Q_OS_MACOS)
+        if (QFileInfo::exists(abs)) {
+            QProcess::startDetached(QStringLiteral("open"), {QStringLiteral("-R"), abs});
+            return;
+        }
+#endif
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(abs).isDir() ? abs : QFileInfo(abs).absolutePath()));
+    }
+}
+
+QString AppController::syncMemberName(const QString& memberId) const {
+    if (identity_ && sync::memberIdOf(keyToHex(identity_->publicKey())) == memberId) return tr("This device");
+    for (auto it = special_.cbegin(); it != special_.cend(); ++it)
+        if (sync::memberIdOf(it.key()) == memberId) return deviceName(it.key());
+    for (const sync::FolderConfig& c : syncFolders_)
+        for (auto it = c.peers.cbegin(); it != c.peers.cend(); ++it)
+            if (sync::memberIdOf(it.key()) == memberId) return deviceName(it.key());
+    for (const PeerRecord& p : peers_.peers())
+        if (!p.identityKey.isEmpty() && sync::memberIdOf(p.identityKey) == memberId) return deviceName(p.identityKey);
+    return tr("Device %1…").arg(memberId.left(8));
+}
+
+void AppController::checkSyncBehind(const QString& folderId, const QVariantMap& status) {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QString label;
+    for (const sync::FolderConfig& c : syncFolders_)
+        if (c.id == folderId) label = c.label;
+    for (const QVariant& v : status.value("members").toList()) {
+        const QVariantMap m    = v.toMap();
+        const QString     key  = m.value("key").toString();
+        const qint64      left = m.value("toSendBytes").toLongLong() + m.value("toReceiveBytes").toLongLong() +
+                            m.value("toSendChanges").toLongLong() + m.value("toReceiveChanges").toLongLong();
+        Behind& b = syncBehind_[folderId + QLatin1Char('|') + key];
+        if (!m.value("online").toBool() || m.value("paused").toBool() || left == 0) {
+            b.left  = -1;
+            b.since = now;
+            b.told  = false;
+            continue;
+        }
+        if (left != b.left) {
+            b.left  = left;
+            b.since = now;
+            continue;
+        }
+        if (!b.told && now - b.since >= kBehindAfterMs) {
+            b.told = true;
+            const QString text = tr("%1 has been behind in %2 for %3 with no progress. Check its connection, "
+                                    "or whether it is paused there.")
+                                     .arg(deviceName(key), label, tr("%1 min").arg((now - b.since) / 60000));
+            syncEvents_.prepend(QVariantMap{{"time", QDateTime::currentDateTime().toString(Qt::ISODate)},
+                                            {"folderId", folderId}, {"folder", label}, {"path", QString()},
+                                            {"kind", QStringLiteral("behind")}, {"text", text}});
+            while (syncEvents_.size() > kMaxSyncEvents) syncEvents_.removeLast();
+            emit notify(text);
+            if (syncNotifications_) emit trayMessage(label, text);
+        }
+    }
+}
+
 void AppController::setSyncPaused(const QString& id, bool paused) {
     for (sync::FolderConfig& c : syncFolders_) {
         if (c.id != id || c.paused == paused) continue;
@@ -1625,14 +1855,21 @@ void AppController::addSyncEvent(const QString& folderId, const QString& path, c
                   "another case, and this device can hold only one.").arg(path);
     else if (kind == QLatin1String("blocked:outside"))
         text = tr("Refused %1: it would be outside the synced folder.").arg(path);
+    else if (kind.startsWith(QLatin1String("deletes:")))
+        text = tr("Another device removed %1 files at once. They are kept here until you choose to delete "
+                  "them or keep them everywhere.").arg(kind.mid(8));
     else
         text = tr("Could not write %1.").arg(path);
     syncEvents_.prepend(QVariantMap{{"time", QDateTime::currentDateTime().toString(Qt::ISODate)},
                                     {"folderId", folderId}, {"folder", label}, {"path", path},
                                     {"kind", kind.section(QLatin1Char(':'), 0, 0)}, {"text", text}});
     while (syncEvents_.size() > kMaxSyncEvents) syncEvents_.removeLast();
-    if (kind == QLatin1String("conflict") || kind.startsWith(QLatin1String("following:")))
+    const bool problem = kind == QLatin1String("conflict") || kind.startsWith(QLatin1String("held:")) ||
+                         kind.startsWith(QLatin1String("deletes:"));
+    if (kind == QLatin1String("conflict") || kind.startsWith(QLatin1String("following:")) ||
+        kind.startsWith(QLatin1String("deletes:")))
         emit notify(tr("%1: %2").arg(label, text));
+    if (problem && syncNotifications_) emit trayMessage(label, text);
     emit syncChanged();
 }
 
@@ -1643,3 +1880,4 @@ void AppController::appendLog(const QString& line) {
 }
 
 }  // namespace ucd
+

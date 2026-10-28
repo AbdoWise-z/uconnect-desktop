@@ -42,7 +42,19 @@
   folders a device shares, with read-only shares and a log of what others did.
 - **Folder sync.** Keep a folder the same on several devices, phones
   included, with conflicts kept rather than overwritten. Only devices with
-  special rules take part.
+  special rules take part. The Synced Folders window shows every file with
+  its state (synced, waiting to send or receive, transferring with progress,
+  in conflict, ignored, skipped, or held back), with search, a filter and
+  a history per file; edits `.syncignore` (every device) and `.syncskip`
+  (this device only) in place, with a live preview of which line decides
+  each path and a warning about what would stop syncing; shows, per device,
+  whether it is online or when it was last seen, what is left to send and
+  receive with a time estimate, the file in flight, when it was last fully
+  in sync and how much it holds back, and lets you pause one device; lists
+  the files syncing set aside in `.synctrash` and restores them; and holds
+  back a round of deletes that would remove much of the folder at once
+  until you choose. Transfers across folders are listed with their speed,
+  and sync problems reach the system tray.
 - **Screen, camera and remote control.** Share a screen or a camera, or be
   controlled, each behind a consent prompt on the sharing device unless that
   device's rules allow it without asking, with a sharing bar and a hotkey to
@@ -221,7 +233,7 @@ the rest.
 
 ## Known issues and next up
 
-Where the project stands (updated 2026-10-24):
+Where the project stands (updated 2026-10-28):
 
 - **Streaming over mobile data** now holds a lag budget of a second on both
   ends and recovers lost packets without keyframes; a phone on cellular data
@@ -240,6 +252,11 @@ Where the project stands (updated 2026-10-24):
   pass, and the mobile host's single-viewer limit.
 - Test coverage of the media layer is simulated (`MediaTransportTest`) plus
   the offscreen `StreamBenchTest`; see [docs/screen-testing.md](docs/screen-testing.md).
+- **Folder sync UI (2026-10-28):** the file list, rules editor, per-device
+  status, kept files, large-delete guard and transfer list are covered by
+  `SyncServiceTest` and the offscreen `SyncViewTest`; the conflict view
+  compares size and date per device but does not yet show the contents side
+  by side (the other device's version is only fetched when you take it).
 
 ## License
 

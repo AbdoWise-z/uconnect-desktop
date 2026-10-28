@@ -106,14 +106,24 @@ class AppController : public QObject {
     // [{time, devId, device, fingerprint, action, path, detail}].
     Q_PROPERTY(QVariantList storageActivity READ storageActivity NOTIFY storageActivityChanged)
     // --- folder sync ---
-    // [{id, label, path, paused, state, files, bytes, needFiles, needBytes,
-    //   conflicts, blocked, members: [{key, name, fingerprint, receive,
-    //   contribute, online}]}]
+    // [{id, label, path, paused, state, files, bytes, dirs, free, needFiles,
+    //   needBytes, conflicts, blocked, held, pendingDeletes,
+    //   pendingDeleteCount, transfers, members: [{key, name, fingerprint,
+    //   receive, contribute, paused, special, online, lastSeen, lastInSync,
+    //   toSendFiles, toSendBytes, toSendChanges, toReceiveFiles,
+    //   toReceiveBytes, toReceiveChanges, current, sending, rate,
+    //   sendRate, eta, skipped}]}]; see SyncService::folderChanged().
     Q_PROPERTY(QVariantList syncFolders READ syncFolders NOTIFY syncChanged)
     // Folders connected devices offer this one: [{key, device, id, label, joined}].
     Q_PROPERTY(QVariantList syncOffers READ syncOffers NOTIFY syncChanged)
     // Conflicts and problems, newest first: [{time, folderId, folder, path, text}].
     Q_PROPERTY(QVariantList syncEvents READ syncEvents NOTIFY syncChanged)
+    // Transfers across every synced folder: {active: [{folder, label, path,
+    // size, done, key, device}], queued, rate (bytes/s fetched)}.
+    Q_PROPERTY(QVariantMap syncTransfers READ syncTransfers NOTIFY syncChanged)
+    // Sync problems (conflicts, deletes waiting, names that cannot sync, a
+    // device that stays behind) also go to the system tray.
+    Q_PROPERTY(bool syncNotifications READ syncNotifications NOTIFY settingsChanged)
 
 public:
     QObject* screen() const;
@@ -170,6 +180,8 @@ public:
     QVariantList syncFolders() const;
     QVariantList syncOffers() const;
     QVariantList syncEvents() const { return syncEvents_; }
+    QVariantMap  syncTransfers() const;
+    bool         syncNotifications() const { return syncNotifications_; }
 
     // Sync. A new folder starts with no members; add them with
     // setSyncMember(). Joining an offer makes the offering device a member
@@ -188,6 +200,26 @@ public:
     // Opens .synctrash, where files sync removed or set aside wait 30 days.
     Q_INVOKABLE void    openSyncKept(const QString& id);
     Q_INVOKABLE void    clearSyncEvents();
+    // A member that is paused keeps its grants but gets and gives nothing.
+    Q_INVOKABLE void    setSyncMemberPaused(const QString& id, const QString& key, bool paused);
+    // The folder's files, rules and kept files come from the sync thread and
+    // arrive through the *Loaded signals below.
+    Q_INVOKABLE void    loadSyncFiles(const QString& id);
+    Q_INVOKABLE void    loadSyncFileInfo(const QString& id, const QString& path);
+    Q_INVOKABLE void    loadSyncRules(const QString& id, bool skipFile);
+    Q_INVOKABLE void    previewSyncRules(const QString& id, bool skipFile, const QString& text, const QString& probe);
+    Q_INVOKABLE void    saveSyncRules(const QString& id, bool skipFile, const QString& text);
+    // "Ignore everywhere" (`skipFile` false) or "Skip on this device" for one path.
+    Q_INVOKABLE void    addSyncRule(const QString& id, bool skipFile, const QString& path);
+    Q_INVOKABLE void    loadSyncKept(const QString& id);
+    Q_INVOKABLE void    restoreSyncKept(const QString& id, const QString& kept);
+    Q_INVOKABLE void    discardSyncKept(const QString& id, const QString& kept);
+    // Deletes held back by the large-delete guard: apply them, or keep the files.
+    Q_INVOKABLE void    confirmSyncDeletes(const QString& id, bool apply);
+    Q_INVOKABLE void    openSyncPath(const QString& id, const QString& path) const;
+    Q_INVOKABLE void    showSyncPath(const QString& id, const QString& path) const;
+    // The device behind a version vector's member id, or the id shortened.
+    Q_INVOKABLE QString syncMemberName(const QString& memberId) const;
     Q_INVOKABLE void clearStorageActivity();
 
     PeerListModel*     peers() { return &peers_; }
@@ -297,6 +329,14 @@ signals:
     void snapshotChanged();
     // A short, transient message for the status bar.
     void notify(const QString& message);
+    // A message for the system tray.
+    void trayMessage(const QString& title, const QString& text);
+    // Answers to loadSyncFiles() and the other sync loads.
+    void syncFilesLoaded(const QString& id, const QVariantList& files);
+    void syncFileInfoLoaded(const QString& id, const QString& path, const QVariantMap& info);
+    void syncRulesLoaded(const QString& id, bool skipFile, const QString& text);
+    void syncRulesPreviewed(const QString& id, bool skipFile, const QVariantMap& preview);
+    void syncKeptLoaded(const QString& id, const QVariantList& kept);
     // `readOnly`: the folder is in a share its device keeps read-only.
     void storageListed(quint32 requestId, const QString& path, const QVariantList& entries,
                        const QString& error, bool readOnly);
@@ -353,6 +393,9 @@ private:
     void saveSync() const;
     void pushSync();
     void addSyncEvent(const QString& folderId, const QString& path, const QString& kind);
+    // A device that has had the same amount left to sync for a long time
+    // while connected is told about, once.
+    void checkSyncBehind(const QString& folderId, const QVariantMap& status);
     QString deviceName(const QString& key) const;
     // Why a file present here is not synced, for people; see
     // SyncFolder::heldReason().
@@ -460,6 +503,13 @@ private:
     QHash<QString, QVariantMap>   syncStatus_;  // by folder id
     QHash<QString, QVariantList>  syncOffers_;  // by peer key
     QVariantList                  syncEvents_;
+    bool                          syncNotifications_ = true;
+    struct Behind {
+        qint64 left  = -1;  // bytes to send and receive, as last seen
+        qint64 since = 0;   // ms since epoch, when it was last different
+        bool   told  = false;
+    };
+    QHash<QString, Behind>        syncBehind_;  // by folder id + member key
     std::deque<QString> log_;
     QString             serverReport_;
 
