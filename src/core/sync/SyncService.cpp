@@ -680,15 +680,18 @@ void SyncService::plan(const QString& folderId) {
 }
 
 bool SyncService::pendingFor(const Folder& f, const FileEntry& e, const QString& key) const {
+    // The peer's own index says best what it has. Only a peer that never
+    // sends one is judged by how much of our index it was sent.
+    const auto r = f.state->remotes.constFind(key);
+    if (r != f.state->remotes.cend()) {
+        const auto theirs = r->entries.constFind(e.path);
+        if (theirs == r->entries.cend()) return !e.deleted;
+        return !theirs->skipped && compare(theirs->version, e.version) == Order::Older;
+    }
     quint64 sentSeq = 0;
     if (const auto st = f.state->peerStats.constFind(key); st != f.state->peerStats.cend()) sentSeq = st->sentSeq;
     if (const Peer* p = peerOf(key)) sentSeq = std::max(sentSeq, p->sent.value(f.state->config.id));
-    if (e.seq > sentSeq) return true;
-    const auto r = f.state->remotes.constFind(key);
-    if (r == f.state->remotes.cend()) return false;  // it never sends its index: nothing more to know
-    const auto theirs = r->entries.constFind(e.path);
-    if (theirs == r->entries.cend()) return !e.deleted;
-    return !theirs->skipped && compare(theirs->version, e.version) == Order::Older;
+    return e.seq > sentSeq;
 }
 
 const SyncService::Peer* SyncService::peerOf(const QString& key) const {
