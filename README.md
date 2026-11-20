@@ -186,7 +186,10 @@ Phones join the same topics with
 
 The Linux packages need glibc 2.39 or newer (Ubuntu 24.04 or as new). macOS
 asks for Screen Recording (and Accessibility, for being controlled) the first
-time they are needed.
+time they are needed, and again after each update: the packages are ad-hoc
+signed, so macOS takes an update for a different app, and uConnect clears the
+previous version's entries when a new one first opens (otherwise they would
+stay switched on in System Settings and refuse it all the same).
 
 ## Building
 

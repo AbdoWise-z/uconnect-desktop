@@ -350,8 +350,10 @@ qt_add_qml_module(uconnect_desktop
 )
 
 if (APPLE)
-    target_sources(uconnect_desktop PRIVATE src/app/DockReopen_mac.mm)
-    target_link_libraries(uconnect_desktop PRIVATE "-framework AppKit")
+    target_sources(uconnect_desktop PRIVATE src/app/DockReopen_mac.mm src/app/PrivacyGrants_mac.mm)
+    set_source_files_properties(src/app/PrivacyGrants_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(uconnect_desktop PRIVATE "-framework AppKit" "-framework Security"
+        "-framework ApplicationServices")
 endif ()
 target_link_libraries(uconnect_desktop PRIVATE
     uconnect_desktop_core
@@ -481,6 +483,7 @@ if (UCD_BUILD_TESTS)
 
     ucd_add_test(IdentityTest)
     ucd_add_test(NetworkRulesTest)
+    ucd_add_test(PrivacyGrantsTest)
     ucd_add_test(ScreenFoundationTest)
     ucd_add_test(MediaTransportTest)
     if (NOT TARGET uconnect_rendezvous)  # uconnect adds it itself when building the server

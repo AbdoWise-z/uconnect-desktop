@@ -8,6 +8,7 @@
 #include "app/QrImage.hpp"
 #include "app/SingleInstance.hpp"
 #include "app/TrayIcon.hpp"
+#include "core/PrivacyGrants.hpp"
 #ifdef UCD_HAS_SCREEN
 #include "core/display/DriverSetup.hpp"
 #endif
@@ -50,6 +51,15 @@ int main(int argc, char* argv[]) {
     // Already running (perhaps in the tray): bring that one back instead.
     ucd::SingleInstance instance;
     if (instance.forwarded()) return 0;
+#ifdef Q_OS_MACOS
+    // An update is a different app to macOS's privacy settings: the grants on
+    // record for the build before it can no longer be used, and block being
+    // asked again. Forget them before anything needs one.
+    if (const QStringList forgotten = ucd::privacy::forgetStaleGrants(); !forgotten.isEmpty()) {
+        qInfo().noquote() << "[privacy] This is a different build from the one macOS gave access to; forgot its"
+                          << forgotten.join(QStringLiteral(", ")) << "grants so macOS asks again.";
+    }
+#endif
     // Closing the window leaves the app in the tray; it ends through Exit.
     QGuiApplication::setQuitOnLastWindowClosed(false);
 
