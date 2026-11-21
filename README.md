@@ -85,8 +85,9 @@
   Linux uses a [v4l2loopback](https://github.com/umlaeute/v4l2loopback)
   device (not tested yet).
 - **Extended display.** A Windows or macOS computer gains a real extra monitor,
-  shown full screen on another device: pick the resolution and refresh rate,
-  or match the other screen. Windows uses the uConnect display driver
+  shown full screen on another device, which can be another computer or a
+  phone or tablet running uConnect Mobile: pick the resolution and refresh
+  rate, or match the other screen. Windows uses the uConnect display driver
   ([uconnect-vdd](https://github.com/AbdoWise-z/uconnect-vdd)), installed by
   the app; macOS needs nothing extra.
 - **Lives in the tray.** Closing the window keeps uConnect running in the
@@ -182,7 +183,9 @@ confirmation; on macOS, choose **Open Anyway** under System Settings → Privacy
 | Tray, start at sign-in   | ✓ | ✓ | ✓ (where the desktop has a tray) |
 
 Phones join the same topics with
-[uConnect Mobile](https://github.com/AbdoWise-z/uconnect-mobile) (Android).
+[uConnect Mobile](https://github.com/AbdoWise-z/uconnect-mobile) (Android; an
+iOS build exists but has only run in the simulator). A phone or tablet can
+also be the extended display.
 
 The Linux packages need glibc 2.39 or newer (Ubuntu 24.04 or as new). macOS
 asks for Screen Recording (and Accessibility, for being controlled) the first

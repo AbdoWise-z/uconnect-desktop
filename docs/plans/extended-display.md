@@ -752,7 +752,12 @@ calendar time for the signing certificate.
 - Setting Windows scale (DPI) from the host, through the undocumented
   display-config call.
 - HDR virtual monitors.
-- The Flutter app as a display device: tablets are the obvious screens, with
-  touch as input.
+- ~~The Flutter app as a display device.~~ Done in uconnect-mobile
+  (2026-11-21, `lib/core/screen/display_sink.dart`): a phone or tablet offers
+  `display`, answers `dsp.request` with its own screen in landscape, and shows
+  the monitor full screen. Run with this app on a Mac as the host and a phone
+  on mobile data: a 1920x862 monitor at 60 Hz, shown at 53-63 fps. Not yet run
+  with a Windows host or with both on one Wi-Fi network. Still to do there:
+  touch as input (see decision 8 above).
 - Audio routed to the display device.
 - Linux X11 hosts, through `evdi`.
